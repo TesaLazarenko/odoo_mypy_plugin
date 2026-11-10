@@ -96,12 +96,14 @@ def test_bases_of_new_model_are_its_mixins(registry: Registry) -> None:
     ]
 
 
-def test_bases_of_extension_are_previous_classes_of_the_model(registry: Registry) -> None:
+def test_bases_of_extension_are_previous_classes_and_their_parents(registry: Registry) -> None:
+    # Odoo's registry class keeps the earlier classes' parents among its bases.
     left = registry.contribution("left.m.P")
     assert left is not None
 
     assert [base.fullname for base in registry.bases(left)] == [
-        "odoo.addons.base.models.partner.Partner"
+        "odoo.addons.base.models.partner.Partner",
+        "odoo.addons.base.models.partner.Mixin",
     ]
 
 
@@ -110,7 +112,11 @@ def test_model_tips_merges_unrelated_extensions(registry: Registry) -> None:
 
     assert [tip.fullname for tip in tips] == ["top.m.P"]
     top = tips[0]
-    assert sorted(base.fullname for base in registry.bases(top)) == ["left.m.P", "right.m.P"]
+    assert [base.fullname for base in registry.bases(top)] == [
+        "right.m.P",
+        "left.m.P",
+        "odoo.addons.base.models.partner.Mixin",
+    ]
 
 
 def test_model_tips_respects_dependency_view(registry: Registry) -> None:
@@ -185,7 +191,7 @@ def test_model_tips_repeated_query_answered_from_cache(
     registry: Registry, mocker: MockerFixture
 ) -> None:
     first = registry.model_tips("res.partner", "top")
-    compute = mocker.spy(registry, "_compute_tips")
+    compute = mocker.spy(registry, "_predecessors")
 
     second = registry.model_tips("res.partner", "top")
 

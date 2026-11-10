@@ -1,11 +1,11 @@
-"""Strongly connected components of a lazily explored directed graph (Tarjan)."""
+"""Graph helpers: strongly connected components (Tarjan) and C3 linearization."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Hashable, Iterable, Iterator
+from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
 from typing import Generic, TypeVar
 
-__all__ = ["components_from"]
+__all__ = ["c3_merge", "components_from"]
 
 T = TypeVar("T", bound=Hashable)
 
@@ -33,6 +33,53 @@ def components_from(
         search.run(start)
     done.update(search.index)
     return search.components
+
+
+def c3_merge(sequences: Iterable[Sequence[T]]) -> tuple[list[T], bool]:
+    """Merge sequences the way Python's C3 linearization does, without ever failing.
+
+    C3 repeatedly takes the first head (scanning the sequences in order) that is in
+    no sequence's tail. Where Python would raise ``TypeError`` (no such head), this
+    takes the head of the first sequence anyway and carries on, so every element is
+    kept and the order of the earlier sequences wins.
+
+    Args:
+        sequences: Each a list of distinct elements; earlier ones take precedence.
+
+    Returns:
+        The merged order, and whether a conflict had to be broken.
+    """
+    lists = [list(reversed(sequence)) for sequence in sequences if sequence]  # head last
+    in_tails: dict[T, int] = {}
+    for items in lists:
+        for item in items[:-1]:
+            in_tails[item] = in_tails.get(item, 0) + 1
+    merged: list[T] = []
+    conflict = False
+    while lists:
+        head = next((items[-1] for items in lists if not in_tails.get(items[-1])), None)
+        if head is None:
+            conflict, head = True, lists[0][-1]
+        merged.append(head)
+        lists = _drop_head(lists, head, in_tails)
+    return merged, conflict
+
+
+def _drop_head(lists: list[list[T]], head: T, in_tails: dict[T, int]) -> list[list[T]]:
+    """Remove the chosen element from every sequence (reversed, so the head is last)."""
+    in_some_tail = in_tails.get(head, 0) > 0  # only after a conflict was broken
+    remaining = []
+    for items in lists:
+        if items[-1] == head:
+            items.pop()
+            if items:
+                in_tails[items[-1]] -= 1  # the new head is no longer in a tail
+        elif in_some_tail and head in items:
+            items.remove(head)
+            in_tails[head] -= 1
+        if items:
+            remaining.append(items)
+    return remaining
 
 
 class _Tarjan(Generic[T]):

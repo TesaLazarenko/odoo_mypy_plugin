@@ -108,8 +108,10 @@ def run_mypy(
     ``bytes`` is written unchanged (BOM, other encodings).
     Pass ``check=["my_mod"]`` to limit which addons are given to mypy,
     ``scripts={"tool.py": "..."}`` to also check files outside any addon, and
-    ``fresh_cache=True`` to start from an empty mypy cache (so that Odoo's own
-    modules are analyzed again in this run).
+    ``fresh_cache=True`` to use a cache of the test's own, empty on the first call
+    (so that Odoo's own modules are analyzed again in this run; a second call in the
+    same test reuses it, for warm-cache checks), and ``flags=[...]`` for extra mypy
+    command-line options.
     The call fails the test if mypy crashes (internal error, exit status 2).
     """
 
@@ -119,6 +121,7 @@ def run_mypy(
         *,
         scripts: dict[str, str] | None = None,
         fresh_cache: bool = False,
+        flags: list[str] | None = None,
     ) -> MypyResult:
         root = tmp_path / "addons"
         root.mkdir(exist_ok=True)
@@ -134,7 +137,7 @@ def run_mypy(
         config.write_text(PYPROJECT.format(odoo_root=odoo_root, addons=root))
         cache = tmp_path / "mypy_cache" if fresh_cache else mypy_cache
         stdout, stderr, status = mypy_api.run(
-            ["--config-file", str(config), "--cache-dir", str(cache), *targets]
+            ["--config-file", str(config), "--cache-dir", str(cache), *(flags or []), *targets]
         )
         captured = capfd.readouterr()
         _assert_no_crash(status, stdout, stderr, captured.out, captured.err)
@@ -144,7 +147,7 @@ def run_mypy(
 
 
 def _write_addon(path: Path, spec: dict[str, object]) -> None:
-    path.mkdir(parents=True)
+    path.mkdir(parents=True, exist_ok=True)
     depends = spec.get("depends", ["base"])
     manifest = spec.get("manifest", "__manifest__.py")
     assert isinstance(manifest, str)

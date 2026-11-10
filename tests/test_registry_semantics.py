@@ -411,14 +411,19 @@ def test_inherit_cycle_any_query_order_gives_same_answers(
     assert _answers(registry) == reference
 
 
-def test_inherit_cycle_members_get_no_bases_and_are_reported(tmp_path: Path) -> None:
-    # A1 -> x.b (B1) -> x.a (A2, the latest class) -> A1: all three are on the cycle.
+def test_inherit_cycle_drops_cycle_edges_and_reports_the_classes_that_make_it(
+    tmp_path: Path,
+) -> None:
+    # A1 -> x.b and B1 -> x.a make the cycle; A2 just extends x.a. Odoo cannot build
+    # either model; the edges inside the cycle are ignored, the rest stays.
     registry = _single(tmp_path, {"__init__.py": "from . import m\n", "m.py": CYCLE})
     members = [_get(registry, name) for name in CYCLE_CLASSES]
 
-    assert [registry.bases(member) for member in members] == [(), (), ()]
-    assert [_names(registry.inherit_cycle(member)) for member in members] == [CYCLE_CLASSES] * 3
-    assert _names(registry.model_tips("x.a", "t_mod")) == ["t_mod.m.A2", "t_mod.m.A1"]
+    assert [_names(registry.bases(member)) for member in members] == [[], [], ["t_mod.m.A1"]]
+    assert [_names(registry.inherit_cycle(member)) for member in members] == [
+        ["t_mod.m.A1", "t_mod.m.B1"]
+    ] * 3
+    assert _names(registry.model_tips("x.a", "t_mod")) == ["t_mod.m.A2"]
 
 
 def test_inherit_mutual_mixins_do_not_recurse(tmp_path: Path) -> None:
@@ -452,10 +457,15 @@ def test_bases_every_model_inherits_base_extensions_last(tmp_path: Path) -> None
         },
     )
 
-    assert _names(registry.bases(_get(registry, "t_mod.m.P"))) == [
+    assert _names(registry.linearization(_get(registry, "t_mod.m.P"))) == [
+        "t_mod.m.P",
         "t_base.m.Partner",
         "phone.m.Base",
         "odoo.addons.base.m.Base",
+    ]
+    assert _names(registry.bases(_get(registry, "t_mod.m.P"))) == [
+        "t_base.m.Partner",
+        "phone.m.Base",
     ]
     assert _names(registry.bases(_get(registry, "phone.m.Base"))) == ["odoo.addons.base.m.Base"]
     assert registry.bases(_get(registry, "odoo.addons.base.m.Base")) == ()

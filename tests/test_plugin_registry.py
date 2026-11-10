@@ -394,17 +394,23 @@ def test_methods_added_to_base_are_visible_on_every_model(run_mypy: RunMypy) -> 
 
                     def action(self) -> None:
                         reveal_type(self._t_helper())
+
+                class Other(models.Model):
+                    _name = "t.other"
+
+                    def action(self) -> None:
+                        reveal_type(self.env["res.users"]._t_helper())
                 """,
             },
         },
         check=["t_user"],
     )
 
-    # env["res.partner"] is still base's own class, built from base's view: merging
-    # later extensions into it is work package 3 ([1], [7] part 3).
+    # res.users is not extended in t_user: env[...] merges t_helper's base extension in.
     assert result.messages("t_user/models.py") == [
         '8: note: Revealed type is "int"',
         '14: note: Revealed type is "int"',
+        '20: note: Revealed type is "int"',
     ]
 
 

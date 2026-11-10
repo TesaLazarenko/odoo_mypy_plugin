@@ -6,11 +6,15 @@ itself and its dependency closure, so every question here is asked from the
 point of view of an addon. Code outside any addon has no such view and is never
 resolved against the registry (see :mod:`odoo_typing.plugin`).
 
-Like ``BaseModel._build_model``, every model but ``base`` inherits ``base`` last,
-and a class only extends classes registered before it. ``_inherit`` cycles, which
-Odoo cannot build, are found as strongly connected components before any bases are
-computed: their classes get no extra bases, so no answer depends on which class
-mypy asks about first.
+Each model's MRO is computed the way Odoo builds its registry class: the
+``LastOrderedSet`` of ``BaseModel._build_model`` (the model's classes, then the
+registry classes of its ``_inherit`` parents, ``base`` last), linearized with C3. A
+class sees the earlier classes of its own model, and every class of its parents in
+its addon's view, also later ones: Odoo extends a parent's registry class in place,
+so a field that ``sms`` adds to ``mail.thread`` is on ``project.task`` for every addon
+that depends on both. ``_inherit`` cycles, which Odoo cannot build, are found as
+strongly connected components of the model graph first; the edges inside them are
+ignored, so no answer depends on which class mypy asks about first.
 
 Everything is computed lazily: the manifests are read on the first question, and
 an addon's files are scanned only when a view that contains the addon is queried.
@@ -22,12 +26,12 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cached_property, partial
 from pathlib import Path
 
 from odoo_typing.addons import BASE, AddonIndex
 from odoo_typing.config import Settings
-from odoo_typing.graphs import components_from
+from odoo_typing.graphs import c3_merge, components_from
 from odoo_typing.scanner import (
     Contribution,
     ModuleScan,
@@ -37,9 +41,11 @@ from odoo_typing.scanner import (
     scan_addon,
 )
 
-__all__ = ["MissingParent", "Registry"]
+__all__ = ["MissingParent", "ModelView", "Registry"]
 
 TipsKey = tuple[str, str, str | None]
+# A registry MRO: classes, and model names standing for a parent's registry class.
+Nodes = tuple["Contribution | str", ...]
 # `_name = "x"`, also chained (`_name = _description = "x"`); %s is the escaped name.
 DEFINITION_TEMPLATE = rb"""_name\s*=\s*(?:\w+\s*=\s*)*[rRuU]?['"]%s['"]"""
 SKIPPED_DIRS = frozenset({"static", "i18n", "node_modules", "__pycache__"})
@@ -63,6 +69,28 @@ class MissingParent:
     missing_depends: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ModelView:
+    """The registry class of a model, as an addon sees it (``env[model]`` there).
+
+    Attributes:
+        model: Odoo model name.
+        addon: The addon whose view this is.
+        chain: Its classes in MRO order, most derived first.
+        tip: The one class whose own MRO has exactly these classes, if any. Otherwise
+            (unrelated extensions, or parents extended outside the tip's view) a merged
+            class is needed.
+        bases: Direct bases for such a merged class: the tips of the model, then of
+            the registry classes it inherits.
+    """
+
+    model: str
+    addon: str
+    chain: tuple[Contribution, ...]
+    tip: Contribution | None
+    bases: tuple[Contribution, ...]
+
+
 class Registry:
     """Lazily scanned index of Odoo model classes."""
 
@@ -81,10 +109,16 @@ class Registry:
         self._by_model: dict[str, dict[str, list[Contribution]]] = {}
         self._candidate_memo: dict[tuple[str, str], tuple[Contribution, ...]] = {}
         self._tips: dict[TipsKey, tuple[Contribution, ...]] = {}
-        self._bases: dict[str, tuple[Contribution, ...]] = {}
-        self._ancestors: dict[str, frozenset[str]] = {}
-        self._explored: set[Contribution] = set()  # classified for _inherit cycles
-        self._cycles: dict[Contribution, tuple[Contribution, ...]] = {}
+        self._mros: dict[TipsKey, Nodes] = {}
+        self._merged: dict[tuple[str, tuple[str, ...]], Nodes] = {}
+        self._conflicts: set[tuple[str, tuple[str, ...]]] = set()
+        self._views: dict[tuple[str, str], ModelView | None] = {}
+        self._view_modules: dict[tuple[str, str], frozenset[str]] = {}
+        self._comodels: dict[str, frozenset[str]] = {}
+        self._covered: dict[str, frozenset[str]] = {}
+        self._edge_addon_memo: dict[str, frozenset[str]] = {}
+        self._explored: dict[str, set[str]] = {}  # per addon: models classified for cycles
+        self._cycles: dict[str, dict[str, frozenset[str]]] = {}
         self._definers: dict[str, tuple[str, ...]] = {}
 
     @cached_property
@@ -177,9 +211,9 @@ class Registry:
     ) -> tuple[Contribution, ...]:
         """Return the most derived classes of a model, as seen from an addon.
 
-        Usually there is exactly one tip: the last class in the inheritance
-        chain. Several tips appear when unrelated addons both extend the model.
-        Answers are cached; mypy asks the same question for every ``env[...]``.
+        A class covers the classes of its model that its own addon sees before it (they
+        are part of its MRO). Usually one class is left: the last of the chain. Several
+        tips appear when unrelated addons both extend the model. Answers are cached.
 
         Args:
             model: Odoo model name.
@@ -192,94 +226,331 @@ class Registry:
         """
         key = (model, addon_name, before.fullname if before else None)
         if key not in self._tips:
-            self._tips[key] = self._compute_tips(model, addon_name, before)
+            live = _since_last_definition(
+                [
+                    item
+                    for item in self._candidates(model, addon_name)
+                    if before is None or item.position < before.position
+                ]
+            )
+            covered = set().union(*(self._predecessors(item) for item in live))
+            self._tips[key] = tuple(item for item in reversed(live) if item not in covered)
         return self._tips[key]
 
-    def _compute_tips(
-        self, model: str, addon_name: str, before: Contribution | None
-    ) -> tuple[Contribution, ...]:
-        candidates = [
-            item
-            for item in self._candidates(model, addon_name)
-            if before is None or item.position < before.position
+    def _predecessors(self, contribution: Contribution) -> frozenset[Contribution]:
+        """The earlier classes of a contribution's model that its addon sees."""
+        if _defines(contribution):
+            return frozenset()  # a (re)definition starts a new registry class
+        candidates = self._candidates(contribution.model, contribution.addon)
+        earlier = [item for item in candidates if item.position < contribution.position]
+        return frozenset(_since_last_definition(earlier))
+
+    def definition(self, model: str, addon_name: str) -> Contribution | None:
+        """The class that defines a model in an addon's view (the last one, if redefined).
+
+        Relational fields are declared with this class as comodel: it is the same for
+        every addon that sees the model.
+        """
+        live = _since_last_definition(list(self._candidates(model, addon_name)))
+        return live[0] if live else None
+
+    # -- dependency edges ------------------------------------------------------------------
+
+    def covered_models(self, module: str, path: str | Path | None = None) -> frozenset[str]:
+        """Models whose whole registry class a module's dependency edges cover.
+
+        Those named by ``env[...]`` or comodel literals in the file, and the comodels of
+        the relational fields that its classes' chains declare (``self.partner_id``).
+
+        Args:
+            module: Module name, as mypy sees it.
+            path: Its source file (needed for files the addon scan did not reach).
+        """
+        if module not in self._covered:
+            scan = self.module_scan(module)
+            source = path if path is not None else scan.path if scan else None
+            addon = self.addon_name_for_path(source) if source is not None else None
+            if addon is None or source is None:
+                return frozenset()
+            models = set(self.referenced_models(source))
+            for contribution in scan.contributions if scan else ():
+                models |= self.chain_comodels(contribution)
+            self._covered[module] = frozenset(models)
+        return self._covered[module]
+
+    def dependency_modules(self, module: str, path: str | Path) -> frozenset[str]:
+        """Modules a module must be analyzed after: see class_modules and view_modules."""
+        addon = self.addon_name_for_path(path)
+        if addon is None:
+            return frozenset()  # nothing is resolved outside addons
+        modules: set[str] = set()
+        scan = self.module_scan(module)
+        for contribution in scan.contributions if scan else ():
+            modules |= self.class_modules(contribution)
+        for model in self.covered_models(module, path):
+            modules |= self.view_modules(model, addon)
+        return frozenset(modules)
+
+    def loaded_with(
+        self, model: str, addon_name: str, module: str, path: str | Path | None = None
+    ) -> bool:
+        """Whether mypy loads a model's whole registry class (``addon_name``'s view) with a module.
+
+        A merged class that refers to classes mypy does not load with the module it is
+        stored in could not be read back from the cache. Every module depends on its
+        parent packages, whose ``__init__`` imports the rest of its addon, so loading a
+        module loads its whole addon, and the modules that the addon's dependency
+        edges name (with their addons). The answer is conservative: it follows one level
+        of those edges.
+
+        Args:
+            model: Odoo model name.
+            addon_name: The view.
+            module: The module that would use the class.
+            path: Its source file (needed for files the addon scan did not reach).
+        """
+        addon = self.addons.addon_for_module(module)
+        if addon is None:
+            return False
+        needed = {self._module_addon(name) for name in self.view_modules(model, addon_name)}
+        reachable = self._edge_addons(addon.name)
+        if needed <= reachable:
+            return True
+        # A file the addon scan did not reach (tests/...): its own edges count too.
+        source = path if path is not None else self._module_path(module)
+        edges = self.dependency_modules(module, source) if source is not None else frozenset()
+        return needed <= reachable | {self._module_addon(name) for name in edges}
+
+    def _edge_addons(self, addon_name: str) -> frozenset[str]:
+        """The addon, and the addons its modules' dependency edges point into."""
+        if addon_name not in self._edge_addon_memo:
+            addons = {addon_name}
+            for scan in self._scans_of(addon_name):
+                edges = self.dependency_modules(scan.module, scan.path)
+                addons.update(self._module_addon(name) for name in edges)
+            self._edge_addon_memo[addon_name] = frozenset(addons)
+        return self._edge_addon_memo[addon_name]
+
+    def _scans_of(self, addon_name: str) -> list[ModuleScan]:
+        self._models_of(addon_name)
+        prefix = self.addons.addons[addon_name].module_prefix
+        return [
+            scan
+            for name, scan in self._by_module.items()
+            if name == prefix or name.startswith(prefix + ".")
         ]
-        covered: set[str] = set()
-        for item in candidates:
-            covered |= self._ancestor_names(item)
-        return tuple(item for item in reversed(candidates) if item.fullname not in covered)
 
-    def bases(self, contribution: Contribution) -> tuple[Contribution, ...]:
-        """Return the classes a contribution inherits from, through ``_inherit``.
+    def _module_addon(self, module: str) -> str:
+        addon = self.addons.addon_for_module(module)
+        return addon.name if addon else ""
 
-        Classes on an ``_inherit`` cycle get none (see :meth:`inherit_cycle`).
+    def _module_path(self, module: str) -> Path | None:
+        scan = self.module_scan(module)
+        return scan.path if scan else None
+
+    # -- linearization, as BaseModel._build_model and Python's C3 build it ------------------
+
+    def linearization(self, contribution: Contribution) -> tuple[Contribution, ...]:
+        """The classes of a contribution's MRO, itself first, as its addon sees them.
+
+        This is the MRO of Odoo's registry class for the model right after the class is
+        registered: the earlier classes of the model, then the registry classes of its
+        ``_inherit`` parents, ``base`` last. A parent's registry class holds *all* its
+        classes in the addon's view, also later ones: Odoo extends it in place.
         """
-        key = contribution.fullname
-        if key not in self._bases:
-            # Recursion below only follows _dependencies() edges; once the cycles
-            # among them are known and cut here, it cannot come back to this class.
-            cyclic = bool(self.inherit_cycle(contribution))
-            self._bases[key] = () if cyclic else self._compute_bases(contribution)
-        return self._bases[key]
+        nodes = self._registry_mro(contribution.model, contribution.addon, contribution)
+        return tuple(node for node in nodes if isinstance(node, Contribution))
 
-    def _compute_bases(self, contribution: Contribution) -> tuple[Contribution, ...]:
-        result: dict[str, Contribution] = {}
-        for parent in _parents(contribution):
-            for base in self._parent_classes(parent, contribution):
-                result.setdefault(base.fullname, base)
-        return tuple(result.values())
+    def view_class(self, model: str, addon_name: str) -> ModelView | None:
+        """Describe the registry class of a model as an addon sees it.
 
-    def _parent_classes(self, parent: str, contribution: Contribution) -> tuple[Contribution, ...]:
-        """The classes that stand for one ``_inherit`` entry among a class's bases.
-
-        Usually the tips of the parent model. For ``base``, which every model
-        inherits, all its classes, most recently loaded first: that is how Odoo's
-        registry class for ``base`` lists them. Unrelated addons extend ``base``
-        (mail, web_editor...); with tips only, two classes could linearize those
-        extensions in different orders, and mypy could not build an MRO for a
-        class that inherits both.
+        Returns:
+            ``None`` if no class in the addon's view defines the model.
         """
-        before = contribution if parent == contribution.model else None
-        if parent != BASE:
-            return self.model_tips(parent, contribution.addon, before)
-        candidates = self._candidates(parent, contribution.addon)
-        return tuple(
-            item
-            for item in reversed(candidates)
-            if before is None or item.position < before.position
+        key = (model, addon_name)
+        if key not in self._views:
+            self._views[key] = self._compute_view(model, addon_name)
+        return self._views[key]
+
+    def _compute_view(self, model: str, addon_name: str) -> ModelView | None:
+        if not self._candidates(model, addon_name):
+            return None
+        nodes = self._registry_mro(model, addon_name, None)
+        chain = tuple(node for node in nodes if isinstance(node, Contribution))
+        tips = self.model_tips(model, addon_name)
+        exact = len(tips) == 1 and set(self.linearization(tips[0])) == set(chain)
+        return ModelView(
+            model=model,
+            addon=addon_name,
+            chain=chain,
+            tip=tips[0] if exact else None,
+            bases=self._direct_bases(model, addon_name, None),
         )
 
-    def _dependencies(self, contribution: Contribution) -> list[Contribution]:
-        """Every class whose bases may be needed to compute this one's bases."""
-        return [
+    def bases(self, contribution: Contribution) -> tuple[Contribution, ...]:
+        """Return the direct bases mypy gets for a contribution.
+
+        These are the tips of its model's earlier classes, then of each registry class
+        among its bases (its ``_inherit`` parents and ``base``). Every class of
+        :meth:`linearization` is one of them or in their MROs.
+        """
+        return self._direct_bases(contribution.model, contribution.addon, contribution)
+
+    def _direct_bases(
+        self, model: str, addon_name: str, through: Contribution | None
+    ) -> tuple[Contribution, ...]:
+        nodes = self._registry_bases(model, addon_name, through)
+        result: dict[Contribution, None] = {}
+        if any(isinstance(node, Contribution) and node is not through for node in nodes):
+            result.update(dict.fromkeys(self.model_tips(model, addon_name, before=through)))
+        for node in nodes:
+            if isinstance(node, str):
+                result.update(dict.fromkeys(self.model_tips(node, addon_name)))
+        return tuple(result)
+
+    def view_modules(self, model: str, addon_name: str) -> frozenset[str]:
+        """Modules that make up a model's registry class as an addon sees it.
+
+        The modules of the tips of the model and of every model in its ``_inherit``
+        closure: each tip's own module depends on the rest of its chain, so these are
+        enough for mypy to analyze every class of the chain first.
+        """
+        key = (model, addon_name)
+        if key not in self._view_modules:
+            nodes = self._registry_mro(model, addon_name, None)
+            self._view_modules[key] = frozenset(
+                tip.module
+                for node in nodes
+                if isinstance(node, str)
+                for tip in self.model_tips(node, addon_name)
+            )
+        return self._view_modules[key]
+
+    def class_modules(self, contribution: Contribution) -> frozenset[str]:
+        """Modules that a contribution's :meth:`linearization` comes from (see view_modules)."""
+        modules: set[str] = set()
+        for node in self._registry_mro(contribution.model, contribution.addon, contribution):
+            if isinstance(node, str):
+                before = contribution if node == contribution.model else None
+                tips = self.model_tips(node, contribution.addon, before=before)
+                modules.update(tip.module for tip in tips)
+        return frozenset(modules)
+
+    def chain_comodels(self, contribution: Contribution) -> frozenset[str]:
+        """Comodels of the relational fields that the classes of a linearization declare."""
+        if contribution.fullname not in self._comodels:
+            self._comodels[contribution.fullname] = frozenset(
+                comodel for item in self.linearization(contribution) for comodel in item.comodels
+            )
+        return self._comodels[contribution.fullname]
+
+    def _registry_mro(self, model: str, addon_name: str, through: Contribution | None) -> Nodes:
+        """MRO of a registry class: a model name stands for a parent's registry class."""
+        key = (model, addon_name, through.fullname if through else None)
+        if key not in self._mros:
+            bases = self._registry_bases(model, addon_name, through)
+            # The model's own classes are leaves (only Model above them) and come first;
+            # the rest is the C3 merge of the parents' registry classes.
+            leaves = tuple(node for node in bases if isinstance(node, Contribution))
+            parents = tuple(node for node in bases if isinstance(node, str))
+            self._mros[key] = (model, *leaves, *self._merge_parents(addon_name, parents))
+        return self._mros[key]
+
+    def _merge_parents(self, addon_name: str, parents: tuple[str, ...]) -> Nodes:
+        key = (addon_name, parents)
+        if key not in self._merged:
+            mros = [self._registry_mro(parent, addon_name, None) for parent in parents]
+            merged, conflict = c3_merge([*mros, parents])
+            self._merged[key] = tuple(merged)
+            if conflict:  # Odoo's own C3 fails here too
+                self._conflicts.add(key)
+        return self._merged[key]
+
+    def mro_conflict(self, contribution: Contribution) -> bool:
+        """Whether the registry classes of a contribution's parents have no C3 order.
+
+        Python (and so Odoo) refuses such a class; :meth:`linearization` still lists
+        every class, taking the first parent's order where they disagree.
+        """
+        bases = self._registry_bases(contribution.model, contribution.addon, contribution)
+        self._registry_mro(contribution.model, contribution.addon, contribution)
+        parents = tuple(node for node in bases if isinstance(node, str))
+        return (contribution.addon, parents) in self._conflicts
+
+    def _registry_bases(self, model: str, addon_name: str, through: Contribution | None) -> Nodes:
+        """``__base_classes`` of a model's registry class, built like ``_build_model``.
+
+        Each class of the model (up to ``through``) is put first, followed by the
+        previous bases where its ``_inherit`` names the model itself, and by its other
+        parents' registry classes; re-adding an element moves it last
+        (``LastOrderedSet``). Parents on an ``_inherit`` cycle and parents that no class
+        in the view defines are left out.
+        """
+        cyclic = self._cyclic_models(model, addon_name)
+        classes = [
             item
-            for parent in _parents(contribution)
-            for item in self._candidates(parent, contribution.addon)
-            if parent != contribution.model or item.position < contribution.position
+            for item in self._candidates(model, addon_name)
+            if through is None or item.position <= through.position
         ]
+        if through is not None and through not in classes:
+            classes.append(through)  # an extension Odoo would reject: see missing_parents
+        bases: Nodes = ()
+        for item in classes:
+            new: dict[Contribution | str, None] = {item: None}
+            for parent in _parents(item):
+                if parent == model:
+                    added = bases  # the registry class's previous bases
+                elif parent in cyclic or not self._candidates(parent, addon_name):
+                    added = ()
+                else:
+                    added = (parent,)
+                _add_last(new, added)
+            bases = tuple(new)
+        return bases
 
-    def _ancestor_names(self, contribution: Contribution) -> frozenset[str]:
-        key = contribution.fullname
-        if key not in self._ancestors:
-            names: set[str] = set()
-            for base in self.bases(contribution):
-                names.add(base.fullname)
-                names |= self._ancestor_names(base)
-            self._ancestors[key] = frozenset(names)
-        return self._ancestors[key]
+    # -- _inherit cycles ---------------------------------------------------------------------
 
-    def inherit_cycle(self, contribution: Contribution) -> tuple[Contribution, ...]:
-        """Return the classes on an ``_inherit`` cycle through this one, if any.
+    def _cyclic_models(self, model: str, addon_name: str) -> frozenset[str]:
+        """The models on an ``_inherit`` cycle through this one, in an addon's view.
 
-        Odoo cannot build such models. The whole strongly connected component is
-        returned (in registration order), so the answer does not depend on which
+        Odoo cannot build such models (a class would be its own base). They are found
+        as strongly connected components of the model graph before any MRO is computed,
+        and the edges inside a component are ignored, so no answer depends on which
         class is asked about first.
         """
-        if contribution not in self._explored:
-            for component in components_from(contribution, self._dependencies, self._explored):
+        explored = self._explored.setdefault(addon_name, set())
+        cycles = self._cycles.setdefault(addon_name, {})
+        if model not in explored:
+            successors = partial(self._model_parents, addon_name=addon_name)
+            for component in components_from(model, successors, explored):
                 if len(component) > 1:
-                    members = tuple(sorted(component, key=lambda item: item.position))
-                    self._cycles.update(dict.fromkeys(members, members))
-        return self._cycles.get(contribution, ())
+                    cycles.update(dict.fromkeys(component, frozenset(component)))
+        return cycles.get(model, frozenset())
+
+    def _model_parents(self, model: str, addon_name: str) -> list[str]:
+        """Models whose registry classes a model's registry class inherits, in a view."""
+        parents = (
+            parent
+            for item in self._candidates(model, addon_name)
+            for parent in _parents(item)
+            if parent != model
+        )
+        return [parent for parent in dict.fromkeys(parents) if self._candidates(parent, addon_name)]
+
+    def inherit_cycle(self, contribution: Contribution) -> tuple[Contribution, ...]:
+        """Return the classes that make an ``_inherit`` cycle through this one's model.
+
+        These are the classes, in the addon's view, whose ``_inherit`` names another
+        model of the cycle, in registration order; empty if there is no cycle.
+        """
+        cyclic = self._cyclic_models(contribution.model, contribution.addon)
+        members = {
+            item
+            for model in cyclic
+            for item in self._candidates(model, contribution.addon)
+            if any(parent in cyclic and parent != item.model for parent in item.parents)
+        }
+        return tuple(sorted(members, key=lambda item: item.position))
 
     def missing_parents(self, contribution: Contribution) -> tuple[MissingParent, ...]:
         """Return the ``_inherit`` entries Odoo would not find when building the class.
@@ -319,6 +590,19 @@ class Registry:
                 and any(_defines(item) for item in self._models_of(name).get(model, ()))
             )
         return self._definers[model]
+
+
+def _add_last(nodes: dict[Contribution | str, None], added: Nodes) -> None:
+    """``LastOrderedSet.add``: an element added again moves to the end."""
+    for node in added:
+        nodes.pop(node, None)
+        nodes[node] = None
+
+
+def _since_last_definition(classes: list[Contribution]) -> list[Contribution]:
+    """The classes from the last one that (re)defines the model: Odoo drops the others."""
+    start = max((index for index, item in enumerate(classes) if _defines(item)), default=0)
+    return classes[start:]
 
 
 def _parents(contribution: Contribution) -> tuple[str, ...]:

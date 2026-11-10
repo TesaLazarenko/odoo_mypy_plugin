@@ -7,14 +7,18 @@ Enable it in ``pyproject.toml``::
 
 What it does:
 
-* ``_inherit``: every model class gets the earlier classes of the same model
-  (and of its ``_inherit`` mixins, and of ``base``) as extra bases, so fields and
-  methods defined elsewhere are visible on ``self`` and ``super()`` works. An
-  ``_inherit`` that Odoo would reject at load time (unknown model, model outside
-  the ``depends``, defined later, cycle) is an ``odoo-model`` error.
-* ``env["model.name"]`` evaluates to that model's class; unknown names are errors.
-* ``fields.Many2one("x")`` / ``One2many`` / ``Many2many`` are bound to the
-  comodel class, so reading the field gives a typed recordset.
+* ``_inherit``: every model class gets the MRO of Odoo's registry class for its model
+  (its model's earlier classes, then every class of its ``_inherit`` mixins and of
+  ``base`` that its addon sees), so fields and methods defined elsewhere are visible
+  on ``self`` and ``super()`` works. An ``_inherit`` that Odoo would reject at load
+  time (unknown model, model outside the ``depends``, defined later, cycle) is an
+  ``odoo-model`` error.
+* ``env["model.name"]`` evaluates to that model's class as the addon sees it: its last
+  class, or a merged class when unrelated addons extend it (or its mixins); unknown
+  names are errors.
+* ``fields.Many2one("x")`` / ``One2many`` / ``Many2many`` are declared with the class
+  that defines the comodel; reading the field gives the comodel as the *reading* addon
+  sees it, like Odoo returns the final registry class.
 
 Model names are resolved from the point of view of the addon that contains the
 file. Files outside any addon (scripts, and Odoo's own ``odoo/*.py`` modules,
@@ -26,34 +30,60 @@ registry on each cold run, and could still pick an arbitrary extension class.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from functools import partial
 
 from mypy.errorcodes import ErrorCode
-from mypy.mro import MroError, calculate_mro
+from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import (
     AssignmentStmt,
+    CallExpr,
     ClassDef,
     Expression,
     MypyFile,
     NameExpr,
+    RefExpr,
     StrExpr,
     TypeInfo,
     Var,
 )
 from mypy.options import Options
 from mypy.plugin import (
+    AttributeContext,
+    CheckerPluginInterface,
     ClassDefContext,
     FunctionContext,
     MethodContext,
     MethodSigContext,
     Plugin,
 )
-from mypy.types import AnyType, FunctionLike, Instance, Type, TypeOfAny, get_proper_type
+from mypy.types import (
+    AnyType,
+    CallableType,
+    FunctionLike,
+    Instance,
+    NoneType,
+    ProperType,
+    Type,
+    TypeOfAny,
+    get_proper_type,
+)
 
 # isort: split
-from mypy.maptype import map_instance_to_supertype  # after mypy.types: import cycle
+# After mypy.types: these modules import each other at import time.
+from mypy.checker import TypeChecker
+from mypy.maptype import map_instance_to_supertype
 
+from odoo_typing.classes import (
+    Lookup,
+    create_view_class,
+    install_mro,
+    instance_of,
+    merge_mro,
+    record_python_mro,
+    view_class_origin,
+)
 from odoo_typing.config import load_settings
 from odoo_typing.registry import MissingParent, Registry
 from odoo_typing.scanner import Contribution
@@ -67,6 +97,7 @@ RELATIONAL_CLASSES = frozenset(
     {"odoo.fields.Many2one", "odoo.fields.One2many", "odoo.fields.Many2many"}
 )
 RELATIONAL_BASE = "odoo.fields._Relational"
+FIELDS_MODULE = "odoo.fields."
 BASE_MODEL = "odoo.models.BaseModel"
 DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
 
@@ -85,18 +116,10 @@ class OdooPlugin(Plugin):
         """Make mypy load the modules that define the models a file relies on.
 
         Without these edges mypy may type-check a file before the model classes it
-        refers to (``_inherit``, ``env[...]``, comodels) are analyzed. Files outside
-        any addon get none, since nothing is resolved in them.
+        refers to (``_inherit``, ``env[...]``, comodels) are analyzed, or not load them
+        at all. Files outside any addon get none, since nothing is resolved in them.
         """
-        addon_name = self.registry.addon_name_for_path(file.path)
-        if addon_name is None:
-            return []
-        modules: set[str] = set()
-        scan = self.registry.module_scan(file.fullname)
-        for contribution in scan.contributions if scan else ():
-            modules.update(base.module for base in self.registry.bases(contribution))
-        for model in self.registry.referenced_models(file.path):
-            modules.update(tip.module for tip in self.registry.model_tips(model, addon_name))
+        modules = set(self.registry.dependency_modules(file.fullname, file.path))
         modules.discard(file.fullname)
         return [(DEPENDENCY_PRIORITY, module, -1) for module in sorted(modules)]
 
@@ -105,36 +128,37 @@ class OdooPlugin(Plugin):
     def get_customize_class_mro_hook(
         self, fullname: str
     ) -> Callable[[ClassDefContext], None] | None:
-        """Add the bases implied by ``_inherit`` to Odoo model classes."""
+        """Give Odoo model classes the MRO of their registry class."""
         contribution = self.registry.contribution(fullname)
         if contribution is None:
             return None
         return partial(self._merge_bases, contribution)
 
     def _merge_bases(self, contribution: Contribution, ctx: ClassDefContext) -> None:
+        """Replace a model class's MRO with the one Odoo's registry gives it.
+
+        The MRO is built from the registry, never copied from a base class whose own
+        merge may not have run yet. A class of the chain that is not analyzed yet (a
+        later module of the same import cycle) makes mypy analyze this class again;
+        on the final iteration, or for modules outside this run, it is left out.
+        """
         self._report_inherit_problems(contribution, ctx)
         info = ctx.cls.info
-        original = list(info.bases)
-        written = {base.type.fullname: base for base in original}
-        merged: dict[str, Instance] = {}
-        for base in self.registry.bases(contribution):
-            node = ctx.api.lookup_fully_qualified_or_none(base.fullname)
-            if node is not None and isinstance(node.node, TypeInfo):
-                fullname = node.node.fullname
-                merged[fullname] = written.get(fullname) or Instance(node.node, [])
-        if merged.keys() <= written.keys():
+        if info.bad_mro:
+            return  # mypy already reported the Python bases
+        lookup = _semanal_lookup(ctx)
+        python_mro = record_python_mro(info, lookup)
+        chain = _class_infos(self.registry.linearization(contribution)[1:], ctx.api.modules)
+        if chain.pending and not ctx.api.final_iteration:
+            ctx.api.defer()
             return
-        # A Python base that is also an _inherit base keeps its registry position
-        # (class X(Mixin): _inherit = ["mixin", "other"]); putting it after all the
-        # _inherit bases would contradict its own MRO.
-        rest = [base for name, base in written.items() if name not in merged]
-        original_mro = info.mro
-        info.bases = [*merged.values(), *rest]
-        info.mro = []  # calculate_mro() returns a cached MRO when one is set
-        try:
-            calculate_mro(info)
-        except MroError:
-            info.bases, info.mro = original, original_mro
+        merge = merge_mro(info, python_mro, chain.infos, lookup)
+        bases = _class_infos(self.registry.bases(contribution), ctx.api.modules).infos
+        own = [instance_of(base) for base in bases]
+        written = [base for base in info.bases if base.type not in bases]
+        install_mro(info, merge.order, [*own, *written], partial=chain.missing)
+        if merge.conflict or self.registry.mro_conflict(contribution):
+            ctx.api.msg.note(_conflict_message(ctx.cls.name), ctx.cls, code=ODOO_MODEL)
 
     def _report_inherit_problems(self, contribution: Contribution, ctx: ClassDefContext) -> None:
         """Report what Odoo's ``_build_model`` would reject when it loads the class.
@@ -147,7 +171,8 @@ class OdooPlugin(Plugin):
             message = _missing_parent_message(problem, contribution.addon)
             ctx.api.fail(message, anchor, code=ODOO_MODEL)
         cycle = self.registry.inherit_cycle(contribution)
-        if cycle and cycle[0] == contribution:  # once per cycle, at its first class
+        own = [item for item in cycle if item.addon == contribution.addon]
+        if own and own[0] == contribution:  # once per cycle and addon, at its first class
             names = ", ".join(f'"{item.class_name}"' for item in cycle)
             message = f"_inherit cycle: classes {names} inherit from each other"
             ctx.api.fail(message, ctx.cls, code=ODOO_MODEL)
@@ -174,19 +199,51 @@ class OdooPlugin(Plugin):
         # a custom subclass...), so match every ``__get__`` and check the MRO in the hook.
         return self._relational_get if fullname.endswith(".__get__") else None
 
-    def _model_type(self, model: str, addon_name: str) -> Instance | AnyType | None:
-        """Resolve a model name as seen from an addon.
+    def get_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
+        """Resolve record-typed attributes of model classes from the reading addon."""
+        owner = fullname.rpartition(".")[0]
+        return self._record_attribute if self.registry.contribution(owner) else None
+
+    def _record_attribute(self, ctx: AttributeContext) -> Type:
+        """Re-resolve an attribute whose type is a model class from the reading addon.
+
+        For instance base's annotated ``parent_id: Partner = fields.Many2one(...)``: the
+        declaring addon's class has fewer extensions than the reading addon sees.
+        Assignments keep the declared type.
+        """
+        declared = get_proper_type(ctx.default_attr_type)
+        if ctx.is_lvalue or not isinstance(declared, Instance):
+            return ctx.default_attr_type
+        owner = get_proper_type(ctx.type)
+        owner_info = owner.type if isinstance(owner, Instance) else None
+        return self._comodel_at_use_site(declared, owner_info, ctx.api) or ctx.default_attr_type
+
+    def _view_type(self, model: str, addon_name: str, api: CheckerPluginInterface) -> ViewType:
+        """The type of ``env[model]`` as seen from an addon.
 
         Returns:
-            The model class; ``Any`` if the model exists but its class is not
-            loaded in this mypy run; ``None`` if no visible addon defines it.
+            The model's last class if its MRO is the whole registry class; otherwise a
+            merged class (created in the module being checked); ``Any`` if none of its
+            classes is loaded in this mypy run; ``None`` if no visible addon defines it.
         """
-        tips = self.registry.model_tips(model, addon_name)
-        for tip in tips:
-            node = self.lookup_fully_qualified(tip.fullname)
-            if node is not None and isinstance(node.node, TypeInfo):
-                return Instance(node.node, [])
-        return AnyType(TypeOfAny.special_form) if tips else None
+        view = self.registry.view_class(model, addon_name)
+        if view is None:
+            return None
+        checker = _checker(api)
+        if view.tip is not None:
+            tip = _class_infos([view.tip], checker.modules)
+            if tip.infos:
+                return instance_of(tip.infos[0])
+        chain = _class_infos(view.chain, checker.modules)
+        own = [item for item in view.chain if item.model == model]
+        if not _class_infos(own, checker.modules).infos:
+            return AnyType(TypeOfAny.special_form)  # e.g. --follow-imports=skip
+        bases = _class_infos(view.bases, checker.modules).infos
+        lookup = partial(_lookup, checker.modules)
+        merged = create_view_class(
+            checker.tree, model, addon_name, chain.infos, bases, lookup, chain.missing
+        )
+        return instance_of(merged)
 
     def _env_getitem(self, ctx: MethodContext) -> Type:
         if not ctx.args or len(ctx.args[0]) != 1 or not isinstance(ctx.args[0][0], StrExpr):
@@ -195,13 +252,23 @@ class OdooPlugin(Plugin):
         if addon_name is None:
             return ctx.default_return_type  # outside any addon: see the module docstring
         model = ctx.args[0][0].value
-        model_type = self._model_type(model, addon_name)
-        if model_type is None:
+        if self.registry.view_class(model, addon_name) is None:
             ctx.api.fail(f'Unknown Odoo model "{model}"', ctx.context, code=ODOO_MODEL)
             return ctx.default_return_type
-        return model_type if isinstance(model_type, Instance) else ctx.default_return_type
+        module = _checker(ctx.api).tree.fullname
+        if not self.registry.loaded_with(model, addon_name, module, ctx.api.path):
+            # ``env2 = self.env; env2["x"]``: the scan saw no model name, so no edge
+            # makes mypy load the model's classes with this module.
+            return AnyType(TypeOfAny.special_form)
+        return self._view_type(model, addon_name, ctx.api) or ctx.default_return_type
 
     def _relational_field(self, ctx: FunctionContext) -> Type:
+        """Bind ``fields.Many2one("x")`` to the class that defines model ``x``.
+
+        The declared type is the same for every declaration of a field with that
+        comodel, whichever addon declares it; reading the field resolves the comodel
+        again from the reading addon (:meth:`_relational_get`).
+        """
         default = get_proper_type(ctx.default_return_type)
         if not isinstance(default, Instance):
             return ctx.default_return_type
@@ -209,65 +276,215 @@ class OdooPlugin(Plugin):
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
         if comodel is None or addon_name is None:
             return ctx.default_return_type
-        model_type = self._model_type(comodel.value, addon_name)
-        if model_type is None:
+        definition = self.registry.definition(comodel.value, addon_name)
+        if definition is None:
             ctx.api.fail(f'Unknown Odoo model "{comodel.value}"', comodel, code=ODOO_MODEL)
-            model_type = AnyType(TypeOfAny.from_error)
+            return default.copy_modified(args=[AnyType(TypeOfAny.from_error)])
+        found = _class_infos([definition], _checker(ctx.api).modules).infos
+        model_type = instance_of(found[0]) if found else AnyType(TypeOfAny.special_form)
         return default.copy_modified(args=[model_type])
 
     def _relational_get(self, ctx: MethodSigContext) -> FunctionLike:
         descriptor = get_proper_type(ctx.type)
         signature = ctx.default_signature
-        if not isinstance(descriptor, Instance):
+        if not isinstance(descriptor, Instance) or not isinstance(signature, CallableType):
             return signature
-        for base in descriptor.type.mro:
-            if base.fullname == RELATIONAL_BASE:
-                break
-        else:
+        mro = descriptor.type.mro
+        base = next((item for item in mro if item.fullname == RELATIONAL_BASE), None)
+        if base is None:
             return signature
+        records = _record_type(ctx)
+        if isinstance(records, NoneType):
+            return signature.copy_modified(ret_type=descriptor)  # Model.field: the field
         comodel = get_proper_type(map_instance_to_supertype(descriptor, base).args[0])
         if not isinstance(comodel, Instance):
             return signature
-        return signature.copy_modified(ret_type=comodel)
+        owner = records.type if isinstance(records, Instance) else None
+        resolved = self._comodel_at_use_site(comodel, owner, ctx.api)
+        return signature.copy_modified(ret_type=resolved or comodel)
+
+    def _comodel_at_use_site(
+        self, comodel: Instance, owner: TypeInfo | None, api: CheckerPluginInterface
+    ) -> Instance | None:
+        """Resolve a field's comodel from the addon that reads the field.
+
+        The reading addon's view is used if mypy loads all the comodel's classes in it
+        with the reading module (:meth:`Registry.loaded_with`); otherwise the view of
+        the record's own class, if they are loaded with that class's module.
+        """
+        model = self._model_of(comodel.type)
+        if model is None:
+            return None
+        module = _checker(api).tree.fullname
+        views: list[tuple[str | None, str, str | None]] = [
+            (self.registry.addon_name_for_path(api.path), module, api.path)
+        ]
+        if owner is not None:
+            views.append((self._addon_of_class(owner), owner.module_name, None))
+        for addon_name, host, path in views:
+            if addon_name is not None and self.registry.loaded_with(model, addon_name, host, path):
+                resolved = self._view_type(model, addon_name, api)
+                return resolved if isinstance(resolved, Instance) else None
+        return None
+
+    def _addon_of_class(self, info: TypeInfo) -> str | None:
+        """The addon whose view a model class has (its own, or a merged class's)."""
+        origin = view_class_origin(info)
+        if origin is not None:
+            return origin[1]
+        contribution = self.registry.contribution(info.fullname)
+        return contribution.addon if contribution else None
+
+    def _model_of(self, info: TypeInfo) -> str | None:
+        origin = view_class_origin(info)
+        if origin is not None:
+            return origin[0]
+        contribution = self.registry.contribution(info.fullname)
+        return contribution.model if contribution else None
+
+
+ViewType = Instance | AnyType | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Found:
+    """Classes looked up in mypy's modules.
+
+    Attributes:
+        infos: The classes found, in the order asked.
+        pending: Some class's module is part of this run but the class is not
+            analyzed yet.
+        missing: Some class was not found (pending, or its module is not loaded).
+    """
+
+    infos: list[TypeInfo]
+    pending: bool
+    missing: bool
+
+
+def _class_infos(contributions: Iterable[Contribution], modules: dict[str, MypyFile]) -> _Found:
+    """Find the mypy classes of contributions (top-level classes of their modules)."""
+    infos: list[TypeInfo] = []
+    pending = missing = False
+    for item in contributions:
+        tree = modules.get(item.module)
+        node = tree.names.get(item.class_name) if tree is not None else None
+        if node is not None and isinstance(node.node, TypeInfo):
+            infos.append(node.node)
+        else:
+            missing = True
+            pending = pending or tree is not None
+    return _Found(infos=infos, pending=pending, missing=missing)
+
+
+def _lookup(modules: dict[str, MypyFile], fullname: str) -> TypeInfo | None:
+    node = lookup_fully_qualified(fullname, modules)
+    return node.node if node is not None and isinstance(node.node, TypeInfo) else None
+
+
+def _semanal_lookup(ctx: ClassDefContext) -> Lookup:
+    return partial(_lookup, ctx.api.modules)
+
+
+def _checker(api: CheckerPluginInterface) -> TypeChecker:
+    """Return mypy's checker behind the plugin interface.
+
+    The interface does not expose the module being checked, which merged view
+    classes must be stored in (see :mod:`odoo_typing.classes`); mypy's checker does.
+    """
+    if not isinstance(api, TypeChecker):
+        raise TypeError(f"unexpected checker plugin interface: {type(api).__name__}")
+    return api
+
+
+def _record_type(ctx: MethodSigContext) -> ProperType | None:
+    """Type of the records a descriptor is read on (``NoneType`` for ``Model.field``)."""
+    if not ctx.args or not ctx.args[0]:
+        return None
+    return get_proper_type(ctx.api.get_expression_type(ctx.args[0][0]))
+
+
+def _conflict_message(class_name: str) -> str:
+    return (
+        f'Odoo model class "{class_name}" has no consistent method resolution order '
+        "(Odoo cannot load it either); its bases are kept, some out of order"
+    )
 
 
 def _normalize_meta_attributes(ctx: ClassDefContext) -> None:
-    """Give ``_inherit``, ``_name``, ``_order``... the type declared on ``BaseModel``.
+    """Relax the private class attributes of model classes (``_inherit``, ``_order``...).
 
-    Without this, ``_inherit = "res.partner"`` clashes with a base class that
-    happens to use a list, which is legal in Odoo. Attributes ``BaseModel``
-    declares without an annotation become ``Any``.
+    Odoo classes override such configuration attributes freely: ``_inherit = "x"``
+    where a base used a list, ``_sequence_index = "journal_id"`` where
+    ``sequence.mixin`` has ``False``, or a property where a mixin has a plain string.
+    Once ``_inherit`` parents are real bases, mypy would report each of these. So a
+    private attribute assigned without annotation gets the type a model base class
+    declares for it explicitly (``BaseModel._inherit: str | list[str] | ...``), and
+    ``Any`` otherwise. ``_name`` is a ``str`` in every model class. Private fields
+    (``_x = fields.Char()``) keep their type unless ``BaseModel`` declares the name.
     """
     info = ctx.cls.info
     if info.fullname == BASE_MODEL or not info.has_base(BASE_MODEL):
         return
-    base_model = next(item for item in info.mro if item.fullname == BASE_MODEL)
     for statement in ctx.cls.defs.body:
-        if not isinstance(statement, AssignmentStmt) or statement.type is not None:
+        target = _private_attribute(statement)
+        if target is None or not isinstance(statement, AssignmentStmt):
             continue
-        if len(statement.lvalues) != 1 or not isinstance(statement.lvalues[0], NameExpr):
-            continue
-        target = statement.lvalues[0]
-        if not target.name.startswith("_") or target.name.startswith("__"):
-            continue
-        declared = base_model.names.get(target.name)
-        if declared is None or not isinstance(declared.node, Var):
-            continue
-        base_var = declared.node
-        explicit = base_var.type is not None and not base_var.is_inferred
-        declared_type = base_var.type if explicit else AnyType(TypeOfAny.special_form)
+        declared = _meta_attribute_type(info, target.name, statement.rvalue)
         if target.name == "_name":
             # Only BaseModel itself has ``_name = None``; in a model class the name is
             # a str, and ``str | None`` would reject ``_inherit = _name``. Every class
             # gets the same narrowed type, so the classes stay compatible.
-            declared_type = ctx.api.named_type("builtins.str")
+            declared = ctx.api.named_type("builtins.str")
+        if declared is None:
+            continue
         # Pretend the user wrote ``_inherit: <declared type> = ...``; otherwise the
         # checker re-infers the type from the right-hand side.
-        statement.type = declared_type
+        statement.type = declared
         target.is_inferred_def = False
         if isinstance(target.node, Var):
-            target.node.type = declared_type
+            target.node.type = declared
             target.node.is_inferred = False
+
+
+def _private_attribute(statement: object) -> NameExpr | None:
+    """The target of ``_x = value`` (single name, no annotation, not a dunder)."""
+    # ``unanalyzed_type``, not ``type``: semantic analysis already sets ``type`` for
+    # literals (``_x = False`` is ``bool``) where no base class defines the name.
+    if not isinstance(statement, AssignmentStmt) or statement.unanalyzed_type is not None:
+        return None
+    if len(statement.lvalues) != 1 or not isinstance(statement.lvalues[0], NameExpr):
+        return None
+    target = statement.lvalues[0]
+    private = target.name.startswith("_") and not target.name.startswith("__")
+    return target if private else None
+
+
+def _meta_attribute_type(info: TypeInfo, name: str, value: Expression) -> Type | None:
+    """The type a private class attribute gets (see _normalize_meta_attributes).
+
+    Returns:
+        ``None`` to leave the attribute alone: a base defines it as a method or
+        property, or the value is a field that no ``BaseModel`` declaration covers.
+    """
+    for base in info.mro[1:]:
+        node = base.names.get(name)
+        if node is None:
+            continue
+        if not isinstance(node.node, Var):
+            return None
+        if node.node.type is not None and not node.node.is_inferred:
+            return node.node.type  # annotated (or normalized) on a base class
+        if base.fullname == BASE_MODEL:
+            return AnyType(TypeOfAny.special_form)
+        break
+    return None if _is_field_definition(value) else AnyType(TypeOfAny.special_form)
+
+
+def _is_field_definition(value: Expression) -> bool:
+    """``fields.Char(...)`` and the like (f-strings are calls too, in mypy's tree)."""
+    callee = value.callee if isinstance(value, CallExpr) else None
+    return isinstance(callee, RefExpr) and callee.fullname.startswith(FIELDS_MODULE)
 
 
 def _inherit_value(cls: ClassDef) -> Expression | None:

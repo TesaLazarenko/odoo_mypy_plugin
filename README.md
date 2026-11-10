@@ -8,11 +8,11 @@ plugin:
 
 | Code | Plain mypy | With the plugin |
 |---|---|---|
-| `self.env["res.partner"]` | `BaseModel` | `Partner`, including the `_inherit` extensions visible from the addon |
+| `self.env["res.partner"]` | `BaseModel` | `Partner`, including the `_inherit` extensions visible from the addon (merged when unrelated addons extend it) |
 | `self.env["res.partnr"]` | — | `error: Unknown Odoo model "res.partnr"  [odoo-model]` |
 | `self.name` inside `_inherit = "res.partner"` | `has no attribute "name"` | `str \| Literal[False]` |
 | `fields.Many2one("res.partner")` | `Need type annotation` | `Many2one[Partner]` |
-| `self.partner_id` / `self.line_ids` | `Any` | the comodel recordset |
+| `self.partner_id` / `self.line_ids` | `Any` | the comodel recordset, with the extensions the reading addon sees |
 | `self.x_score + self.name` | silent (`Any`) | `Unsupported operand types for + ("int" and "str")` |
 | `_inherit = "sale.order"` without `sale` in `depends` | silent | `Odoo model "sale.order" in _inherit is defined in addon "sale", which is not in the dependencies of "my_addon"` |
 | `self._phone_format(...)` (added by `phone_validation` to `base`) | `has no attribute` | resolved on every model of an addon that depends on `phone_validation` |
@@ -76,26 +76,53 @@ mypy addons/my_addon
     `_inherit` entries without `_name` define a new model named after the class; a
     `_name` that cannot be computed statically (for example in a loop) is skipped;
   - every model inherits `base` last, like `_build_model` does, so methods that addons add
-    with `_inherit = "base"` exist on `self` and on extensions of other models. Everything is lazy: manifests are read on the first question (a
+    with `_inherit = "base"` exist on `self` and on extensions of other models;
+  - a model's class chain is built like Odoo's registry class (`_build_model`'s
+    `LastOrderedSet` of bases, linearized with C3): the model's earlier classes, then the
+    registry classes of its `_inherit` parents, `base` last. A parent's registry class
+    holds *all* its classes that the addon sees, also later ones: Odoo extends it in
+    place, so a method that `sms` adds to `mail.thread` is on `project.task` in every
+    addon that depends on both `project` and `sms`.
+
+  Everything is lazy: manifests are read on the first question (a
   fully cached mypy run reads none), and an addon is scanned only when a file whose
   `depends` closure contains it needs a model. Sources are parsed as bytes, so a UTF-8 BOM
   or a `# -*- coding: ... -*-` cookie works; a file that cannot be parsed is reported once
   on stderr (`odoo-typing: warning: cannot parse ...`), since its models are then missing.
-- **`get_additional_deps`**: makes mypy load the modules that define the models a file
-  uses, so they are analyzed first.
-- **`get_customize_class_mro_hook`**: gives each model class the previous classes of the
-  same model (and of its `_inherit` mixins) as extra bases. This mirrors Odoo's runtime
-  class chain, so `self.<field>` and `super()` resolve across modules. It also reports, with
+- **`get_additional_deps`**: makes mypy load (and analyze first) the modules of every
+  class a file's models are made of: the class chains of its own classes, the models
+  named in `env["..."]` and comodel literals, and the comodels of the relational fields
+  its classes inherit (so `self.partner_id.<field added by a dependency>` resolves).
+- **`get_customize_class_mro_hook`**: gives each model class the MRO of its registry
+  class, computed by the registry; it is never copied from a base class, so it does not
+  depend on the order in which mypy analyzes the classes of an import cycle. When a class
+  of the chain is not analyzed yet, mypy is asked to analyze the class again (classes
+  outside the run, or still missing on mypy's final pass, are left out, and unknown
+  attributes then give `Any`). Python's own MRO of the written bases is respected; when
+  it contradicts the `_inherit` order (Odoo cannot load such a class either), all bases
+  are kept and a note says so. It also reports, with
   code `odoo-model`, what Odoo would refuse to load: an `_inherit` entry that no addon in
   the `depends` closure defines (naming the addon that does, if any: the fix is usually a
-  missing `depends`), one that is only defined after the class, and `_inherit` cycles.
-  Finding the defining addon outside the closure is a text search over all addons
-  (about 0.25 s, only when such an error exists).
-- **`get_base_class_hook`**: gives `_inherit`, `_name`, `_order`, ... the type that
-  `BaseModel` declares, so `_inherit = "x"` does not clash with `_inherit = ["x", "y"]`
-  in a base class.
-- **`Environment.__getitem__`**, **`Many2one/One2many/Many2many(...)`** and
-  **`__get__`** hooks resolve model names and bind comodels.
+  missing `depends`), one that is only defined after the class, and `_inherit` cycles
+  (whose edges are then ignored). Finding the defining addon outside the closure is a
+  text search over all addons (about 0.25 s, only when such an error exists).
+- **`get_base_class_hook`**: private class attributes of model classes (`_inherit`,
+  `_order`, `_rec_name`, `_sequence_index`...) get the type a model base class declares
+  with an annotation (`BaseModel._inherit: str | list[str] | ...`), `Any` otherwise. So
+  `_inherit = "x"` does not clash with `_inherit = ["x", "y"]` in a base class, nor
+  `_sequence_index = "journal_id"` with `sequence.mixin`'s `False`, nor a property with a
+  mixin's string. `_name` is a `str`; private fields (`_x = fields.Char()`) keep their type.
+- **`Environment.__getitem__`**: `env["x"]` is the last class of `x` when its MRO is the
+  whole registry class as the addon sees it. Otherwise (unrelated addons extend `x`, or
+  its mixins are extended outside that class's view) it is a merged class named
+  `<subclass of "x" seen from "my_addon">` (shown as `"x"` in messages), stored in the
+  checked module like mypy's own ad hoc intersections, so the incremental cache keeps it.
+- **`Many2one/One2many/Many2many(...)`** declare the field with the class that defines
+  the comodel (the same class in every addon, so redeclaring a field elsewhere is
+  compatible); **`__get__`** and an attribute hook resolve the comodel again when the
+  field is read, from the reading addon (or the record's own class, if the reading
+  module does not load all the comodel's classes), so the result has every extension the
+  reader sees. `Model.field` (read on the class) is the field itself.
 
 ## Development
 
@@ -139,9 +166,9 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
 ## Not yet supported
 
 - `vals` dicts in `create()`/`write()`: typed keys and values (next milestone)
-- `env["res.partner"]` is the class as seen from the addon that defined it: extensions
-  of `base` or of mixins from addons it does not depend on are not part of it (they are on
-  `self` in your own `_inherit` classes)
 - relational fields declared only with `related=` (no comodel argument)
 - `_inherits` delegation, domains, `@api.depends` paths
-- when unrelated addons both extend a model, `env[...]` picks one of the classes instead of merging them
+- `self` is the class being written, so inside a class `self` sees the earlier classes of
+  its model, not later ones of the same addon (`env[...]` does see them). The classes of
+  one model are distinct types: a variable that first holds `env["x"]` cannot later be
+  assigned `self` of an earlier class of `x` (an `assignment` error)

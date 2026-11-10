@@ -55,6 +55,8 @@ class Contribution:
         parents: Models listed in ``_inherit``.
         position: Registration order: the addon's load key, then the class's
             creation index within the addon.
+        comodels: Comodels of the relational fields the class body declares
+            (``x = fields.Many2one("res.partner")``), in source order.
     """
 
     addon: str
@@ -63,6 +65,7 @@ class Contribution:
     model: str
     parents: tuple[str, ...]
     position: tuple[int, str, int]
+    comodels: tuple[str, ...] = ()
 
     @property
     def fullname(self) -> str:
@@ -270,8 +273,21 @@ class _ImportWalker:
                 model=model,
                 parents=_as_names(attrs.get("_inherit")),
                 position=(*self.load_key, len(self._classes)),
+                comodels=_declared_comodels(node),
             )
         )
+
+
+def _declared_comodels(node: ast.ClassDef) -> tuple[str, ...]:
+    """Comodel literals of the relational fields assigned in a class body."""
+    comodels: dict[str, None] = {}
+    for statement in node.body:
+        value = statement.value if isinstance(statement, ast.Assign | ast.AnnAssign) else None
+        if isinstance(value, ast.Call) and _callee_name(value.func) in RELATIONAL_FIELDS:
+            comodel = _comodel_argument(value)
+            if comodel:
+                comodels[comodel] = None
+    return tuple(comodels)
 
 
 def _executed_blocks(node: ast.stmt) -> list[list[ast.stmt]]:
