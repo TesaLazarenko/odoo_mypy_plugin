@@ -32,10 +32,12 @@ SEEDED = re.compile(r"#\s*seeded:\s*(.+)$")
 
 
 def uri_to_path(uri: str) -> Path:
+    """Convert a ``file://`` URI to a path."""
     return Path(unquote(urlparse(uri).path))
 
 
 def load_diagnostics(output: Path, tracked: list[Path]) -> dict[Path, list[dict]]:
+    """Collect the diagnostics of the files under ``tracked`` (all files if empty)."""
     events = json.loads(output.read_text())["events"]
     result: dict[Path, list[dict]] = defaultdict(list)
     for event in events:
@@ -60,6 +62,7 @@ def seeded_lines(path: Path) -> dict[int, str]:
 
 
 def main(argv: list[str]) -> int:
+    """Print the report; return 1 if any error-severity diagnostic was found."""
     if len(argv) < 2:
         print(__doc__, file=sys.stderr)
         return 2

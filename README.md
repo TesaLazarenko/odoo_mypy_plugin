@@ -69,10 +69,37 @@ mypy addons/my_addon
 ```bash
 uv sync
 uv run pytest            # needs Odoo installed; set ODOO_PATH=/path/to/odoo if not auto-found
-uv run ruff check src tests && uv run mypy
+uv run ruff check src tests tools && uv run ruff format --check src tests tools && uv run mypy
 ```
 
 The end-to-end tests run the real mypy on throw-away addons against the installed Odoo.
+They fail when mypy crashes (`INTERNAL ERROR`, exit status 2), not only on wrong messages.
+
+### Regression benchmark
+
+[tools/bench/bench.py](tools/bench/bench.py) runs mypy on real Odoo core addons (default:
+`crm sale account website_sale project_sms sale_stock`, each as its own target), with and
+without the plugin. For every addon it records the cold and warm wall time (fresh cache,
+then the same cache again), the peak RSS, the exit status and the normalized errors. The
+*plugin-only* errors are those that appear only with the plugin.
+
+```bash
+uv run python tools/bench/bench.py --label baseline              # measure and save
+uv run python tools/bench/bench.py --label wp1 --compare baseline
+uv run python tools/bench/bench.py --compare-only wp1 --compare baseline   # no mypy run
+```
+
+- `--odoo-root DIR`: a directory that holds only an `odoo` symlink (see the note above).
+- `--bench-dir DIR`: where `<label>.json`, the generated configs (`config/`) and the caches
+  (`cache/<label>/<addon>`) go.
+- `--addons a b ...`, `--jobs N` (addons at once; 1 gives the most stable timings).
+- The run without the plugin is saved once as `noplugin.json` and reused. Pass
+  `--refresh-baseline` after upgrading mypy or Odoo.
+
+`--compare` prints per-addon counts and times, then the plugin-only errors that are NEW or
+GONE compared with the earlier label. They are grouped by error code and message pattern
+(quoted names replaced by `"_"`), with 3 examples per group. The script exits with status 1
+if any mypy run crashed.
 See [docs/odoo-ls-cli.md](docs/odoo-ls-cli.md) for how this project compares with odoo-ls
 and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
 

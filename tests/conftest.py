@@ -54,6 +54,7 @@ def mypy_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
 class MypyResult:
     lines: list[str]
     exit_status: int
+    stderr: str
 
     def messages(self, filename: str) -> list[str]:
         """``"<line>: <severity>: <message>"`` entries reported for one file."""
@@ -69,7 +70,8 @@ plugins = ["odoo_typing.plugin"]
 mypy_path = ["{odoo_root}", "{addons}"]
 check_untyped_defs = true
 show_error_codes = true
-hide_error_context = true
+show_error_context = false
+show_traceback = true
 
 [[tool.mypy.overrides]]
 module = ["odoo", "odoo.*"]
@@ -81,13 +83,28 @@ addons_path = ["{addons}"]
 """
 
 
+# mypy.api.run() returns only the regular output; on a crash mypy prints the
+# "INTERNAL ERROR" banner (and the traceback) straight to the real stderr and exits 2.
+CRASH_MARKERS = ("INTERNAL ERROR", "Traceback")
+
+
+def _assert_no_crash(status: int, *outputs: str) -> None:
+    text = "\n".join(outputs)
+    for marker in CRASH_MARKERS:
+        assert marker not in text, text
+    assert status in (0, 1), f"mypy exited with status {status}:\n{text}"
+
+
 @pytest.fixture
-def run_mypy(tmp_path: Path, odoo_root: Path, mypy_cache: Path) -> RunMypy:
+def run_mypy(
+    tmp_path: Path, odoo_root: Path, mypy_cache: Path, capfd: pytest.CaptureFixture[str]
+) -> RunMypy:
     """Write addons to a temp dir and type-check them.
 
     Usage: ``run_mypy({"my_mod": {"models.py": "...", "depends": ["sale"]}})``.
     Each addon gets a manifest and an ``__init__.py`` importing its modules.
     Pass ``check=["my_mod"]`` to limit which addons are given to mypy.
+    The call fails the test if mypy crashes (internal error, exit status 2).
     """
 
     def run(addons: dict[str, dict[str, object]], check: list[str] | None = None) -> MypyResult:
@@ -100,8 +117,9 @@ def run_mypy(tmp_path: Path, odoo_root: Path, mypy_cache: Path) -> RunMypy:
         stdout, stderr, status = mypy_api.run(
             ["--config-file", str(config), "--cache-dir", str(mypy_cache), *targets]
         )
-        assert "Traceback" not in stderr, stderr
-        return MypyResult(lines=stdout.splitlines(), exit_status=status)
+        captured = capfd.readouterr()
+        _assert_no_crash(status, stdout, stderr, captured.out, captured.err)
+        return MypyResult(lines=stdout.splitlines(), exit_status=status, stderr=stderr)
 
     return run
 
