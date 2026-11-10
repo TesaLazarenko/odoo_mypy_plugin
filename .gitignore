@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+.env
+
+# Tool caches and reports
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Downloaded tools (odoo-ls binary, typeshed): tools/odoo-ls/install.sh recreates them
+.tools/
+
+# Local Odoo symlink root for mypy_path (see README)
+.odoo-root/
+
+# IDE
+.idea/
+.vscode/
