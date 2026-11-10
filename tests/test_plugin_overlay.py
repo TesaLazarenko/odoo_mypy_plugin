@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from conftest import _assert_no_crash, _write_addon
+from conftest import _assert_no_crash, write_addon
 from mypy import api as mypy_api
 from mypy import build
 from mypy.main import process_options
@@ -108,8 +108,8 @@ class Project:
 @pytest.fixture(scope="module")
 def project(odoo_path: Path, tmp_path_factory: pytest.TempPathFactory) -> Project:
     root = tmp_path_factory.mktemp("overlay_project")
-    _write_addon(root / "addons" / "ov_base", OV_BASE)
-    _write_addon(root / "addons" / "ov_ext", OV_EXT)
+    write_addon(root / "addons" / "ov_base", OV_BASE)
+    write_addon(root / "addons" / "ov_ext", OV_EXT)
     config = root / "pyproject.toml"
     config.write_text(PYPROJECT.format(root=root / ".odoo-root", odoo_path=odoo_path))
     build_overlay(load_settings(str(config), require_overlay=False), root / ".odoo-root")
