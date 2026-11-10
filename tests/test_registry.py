@@ -268,3 +268,10 @@ def test_addon_for_path_file_outside_addons_returns_none(tmp_path: Path) -> None
 
     assert registry.addon_name_for_path(tmp_path / "scripts" / "tool.py") is None
     assert registry.addon_name_for_path(tmp_path / "odoo" / "http.py") is None
+
+
+def test_loaded_with_module_outside_any_addon_returns_false(tmp_path: Path) -> None:
+    model = 'from odoo import models\n\nclass A(models.Model):\n    _name = "x.a"\n'
+    registry = _registry(tmp_path, {"my_mod": {"__init__.py": "from . import m\n", "m.py": model}})
+
+    assert registry.loaded_with("x.a", "my_mod", "tools.script") is False

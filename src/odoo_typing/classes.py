@@ -1,8 +1,10 @@
 """mypy class objects for Odoo registry classes: MROs and merged view classes.
 
 The registry (:mod:`odoo_typing.registry`) says which Odoo classes make up a model, in
-which order. This module turns that into mypy ``TypeInfo`` state, and is the one place
-that writes mypy internals:
+which order. This module turns that into mypy ``TypeInfo`` state; it is the one place
+that writes class state (MROs, bases, symbol-table entries, metadata). The only other
+mypy nodes the plugin changes are the assignments of private class attributes, whose
+declared type ``plugin._normalize_meta_attributes`` rewrites during semantic analysis.
 
 * ``TypeInfo.mro`` is assigned directly. mypy derives an MRO from the direct bases with
   C3, but the bases of Odoo classes are computed per addon view, so their own MROs may
@@ -13,8 +15,10 @@ that writes mypy internals:
 * A merged "view class" is a ``TypeInfo`` created in the symbol table of the module
   being checked, the way mypy itself stores ad hoc intersections
   (``checker.intersect_instances``): that keeps it in the module's cache entry, so a
-  type that refers to it is reloaded correctly. Its name starts with ``<subclass ``,
-  which ``mypy.lookup.lookup_fully_qualified`` resolves even with dots in it.
+  type that refers to it is reloaded correctly. A module reuses the class of a module
+  it imports from, so that values passed between them keep one type. Its name starts
+  with ``<subclass ``, which ``mypy.lookup.lookup_fully_qualified`` resolves even with
+  dots in it.
 
 Each Odoo class records its Python-only MRO (``metadata["odoo_typing"]``), so later
 merges respect what Python itself guarantees about it.

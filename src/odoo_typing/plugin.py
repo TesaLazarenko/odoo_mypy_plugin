@@ -92,6 +92,7 @@ from mypy.types import (
 # After mypy.types: these modules import each other at import time.
 from mypy.checker import TypeChecker
 from mypy.maptype import map_instance_to_supertype
+from mypy.semanal import SemanticAnalyzer
 
 from odoo_typing.classes import (
     Lookup,
@@ -101,6 +102,7 @@ from odoo_typing.classes import (
     instance_of,
     merge_mro,
     record_python_mro,
+    view_class_name,
     view_class_origin,
 )
 from odoo_typing.config import ConfigError, Settings, load_settings
@@ -236,15 +238,19 @@ class OdooPlugin(Plugin):
             return  # mypy already reported the Python bases
         lookup = _semanal_lookup(ctx)
         python_mro = record_python_mro(info, lookup)
-        chain = _class_infos(self.registry.linearization(contribution)[1:], ctx.api.modules)
+        incomplete = _incomplete(ctx)
+        chain = _class_infos(
+            self.registry.linearization(contribution)[1:], ctx.api.modules, incomplete
+        )
         if chain.pending and not ctx.api.final_iteration:
             ctx.api.defer()
             return
         merge = merge_mro(info, python_mro, chain.infos, lookup)
-        bases = _class_infos(self.registry.bases(contribution), ctx.api.modules).infos
-        own = [instance_of(base) for base in bases]
-        written = [base for base in info.bases if base.type not in bases]
-        install_mro(info, merge.order, [*own, *written], partial=chain.missing)
+        bases = _class_infos(self.registry.bases(contribution), ctx.api.modules, incomplete).infos
+        # A registry base written in the source keeps its type arguments (``Mix[int]``).
+        written = {base.type: base for base in info.bases}
+        own = [written.pop(base) if base in written else instance_of(base) for base in bases]
+        install_mro(info, merge.order, [*own, *written.values()], partial=chain.missing)
         if merge.conflict or self.registry.mro_conflict(contribution):
             ctx.api.msg.note(_conflict_message(ctx.cls.name), ctx.cls, code=ODOO_MODEL)
 
@@ -290,7 +296,7 @@ class OdooPlugin(Plugin):
         sources: list[tuple[TypeInfo, tuple[str, ...]]] = []
         for delegate in self.registry.delegated_models(chain, contribution.model):
             classes = self.registry.delegate_chain(delegate, contribution.addon)
-            found = _field_sources(classes, ctx.api.modules)
+            found = _field_sources(classes, ctx.api.modules, _incomplete(ctx))
             if found is None and not ctx.api.final_iteration:
                 ctx.api.defer()
                 return
@@ -372,6 +378,11 @@ class OdooPlugin(Plugin):
         own = [item for item in view.chain if item.model == model]
         if not _class_infos(own, checker.modules).infos:
             return AnyType(TypeOfAny.special_form)  # e.g. --follow-imports=skip
+        imported = _imported_view_class(
+            view_class_name(model, addon_name), checker, self.registry.addons.addon_for_module
+        )
+        if imported is not None:
+            return instance_of(imported)
         bases = _class_infos(view.bases, checker.modules).infos
         lookup = partial(_lookup, checker.modules)
         merged = create_view_class(
@@ -515,6 +526,9 @@ def _settings_or_exit(options: Options) -> Settings:
         raise SystemExit(2) from None
 
 
+Incomplete = Callable[[str], bool]
+
+
 @dataclass(frozen=True, slots=True)
 class _Found:
     """Classes looked up in mypy's modules.
@@ -531,8 +545,18 @@ class _Found:
     missing: bool
 
 
-def _class_infos(contributions: Iterable[Contribution], modules: dict[str, MypyFile]) -> _Found:
-    """Find the mypy classes of contributions (top-level classes of their modules)."""
+def _class_infos(
+    contributions: Iterable[Contribution],
+    modules: dict[str, MypyFile],
+    incomplete: Incomplete = lambda module: False,
+) -> _Found:
+    """Find the mypy classes of contributions (top-level classes of their modules).
+
+    A class absent from a module that is completely analyzed does not exist for mypy
+    (an unreachable ``if sys.version_info < ...`` branch): it is neither pending nor
+    missing. ``incomplete`` tells which modules are still being analyzed (none, once
+    type checking runs).
+    """
     infos: list[TypeInfo] = []
     pending = missing = False
     for item in contributions:
@@ -540,10 +564,55 @@ def _class_infos(contributions: Iterable[Contribution], modules: dict[str, MypyF
         node = tree.names.get(item.class_name) if tree is not None else None
         if node is not None and isinstance(node.node, TypeInfo):
             infos.append(node.node)
-        else:
+        elif tree is None:
             missing = True
-            pending = pending or tree is not None
+        elif incomplete(item.module):
+            pending = missing = True
     return _Found(infos=infos, pending=pending, missing=missing)
+
+
+def _incomplete(ctx: ClassDefContext) -> Incomplete:
+    """Which modules semantic analysis has not finished yet (all, if unknown)."""
+    if isinstance(ctx.api, SemanticAnalyzer):
+        return ctx.api.is_incomplete_namespace
+    return lambda module: True
+
+
+def _imported_view_class(
+    name: str, checker: TypeChecker, in_addon: Callable[[str], object]
+) -> TypeInfo | None:
+    """A merged view class of the module being checked or of an addon module it imports.
+
+    One class per model and addon would be best, but a class stored in a module that is
+    not loaded with the user could not be read back from the cache. A module that the
+    user imports from is always loaded with it, and values (``RECS = env["x"]``) can
+    only reach the user through such imports; so the class of such a module is reused.
+    """
+    seen = {checker.tree.fullname}
+    stack = [checker.tree]
+    while stack:
+        tree = stack.pop()
+        node = tree.names.get(name)
+        if node is not None and isinstance(node.node, TypeInfo):
+            return node.node
+        for module in _referenced_modules(tree, checker.modules) - seen:
+            seen.add(module)
+            if in_addon(module):
+                stack.append(checker.modules[module])
+    return None
+
+
+def _referenced_modules(tree: MypyFile, modules: dict[str, MypyFile]) -> set[str]:
+    """Modules whose symbols a module's symbol table refers to (its imports, also cached)."""
+    found: set[str] = set()
+    for entry in tree.names.values():
+        node = entry.node
+        if isinstance(node, MypyFile):
+            found.add(node.fullname)
+        elif node is not None:
+            found.add(node.fullname.rpartition(".")[0])
+    found.discard(tree.fullname)
+    return {module for module in found if module in modules}
 
 
 def _lookup(modules: dict[str, MypyFile], fullname: str) -> TypeInfo | None:
@@ -705,7 +774,9 @@ def _model_name_argument(ctx: MethodContext) -> str | None:
 
 
 def _field_sources(
-    classes: Iterable[Contribution], modules: dict[str, MypyFile]
+    classes: Iterable[Contribution],
+    modules: dict[str, MypyFile],
+    incomplete: Incomplete = lambda module: False,
 ) -> list[tuple[TypeInfo, tuple[str, ...]]] | None:
     """The mypy classes of contributions, each with the fields it declares.
 
@@ -715,7 +786,7 @@ def _field_sources(
     """
     sources: list[tuple[TypeInfo, tuple[str, ...]]] = []
     for item in classes:
-        found = _class_infos([item], modules)
+        found = _class_infos([item], modules, incomplete)
         if found.pending:
             return None
         sources += [(info, item.fields) for info in found.infos]
