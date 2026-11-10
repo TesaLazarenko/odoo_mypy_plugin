@@ -15,8 +15,17 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
-__all__ = ["MANIFEST_NAMES", "Addon", "AddonIndex", "LoadKey", "find_manifest", "read_depends"]
+__all__ = [
+    "CORE_PREFIX",
+    "MANIFEST_NAMES",
+    "Addon",
+    "AddonIndex",
+    "LoadKey",
+    "find_manifest",
+    "read_depends",
+]
 
+CORE_PREFIX = "odoo.addons.{}"  # how Odoo itself names every addon package
 # Same names and preference as odoo.modules.module.MANIFEST_NAMES.
 MANIFEST_NAMES = ("__manifest__.py", "__openerp__.py")
 BASE = "base"
@@ -32,8 +41,9 @@ class Addon:
         name: Technical name, e.g. ``sale``.
         path: Directory of the addon.
         module_prefix: Python module name mypy uses for the addon package:
-            ``odoo.addons.<name>`` for addons inside the odoo package, otherwise
-            ``<name>`` (the addons directory is expected to be on ``mypy_path``).
+            ``odoo.addons.<name>`` for addons inside the odoo package and, with an
+            overlay root (``odoo-typing-root``), for all addons; otherwise ``<name>``
+            (the addons directory is expected to be on ``mypy_path``).
         depends: Direct dependencies, as listed in the manifest.
     """
 
@@ -78,25 +88,33 @@ def read_depends(manifest: Path) -> tuple[str, ...]:
 class AddonIndex:
     """All addons of the configured addons paths, with dependency helpers."""
 
-    def __init__(self, odoo_path: Path, addons_paths: Iterable[Path]) -> None:
+    def __init__(
+        self, odoo_path: Path, addons_paths: Iterable[Path], custom_prefix: str = "{}"
+    ) -> None:
         """Scan addons directories.
 
         Args:
             odoo_path: Directory of the ``odoo`` package.
             addons_paths: Extra addons directories. Earlier entries win on name clashes.
+            custom_prefix: Module name template of the addons in ``addons_paths``:
+                ``"{}"`` (top-level packages) or ``"odoo.addons.{}"`` (overlay root).
         """
         self.addons: dict[str, Addon] = {}
+        # Every module spelling of an addon package. An addon of addons_paths has two
+        # (Odoo's ``odoo.addons.<name>`` and the top-level ``<name>``), whichever one
+        # mypy is configured to use; a core addon only has Odoo's.
+        self._prefixes: dict[str, Addon] = {}
         self._by_path: dict[Path, Addon] = {}
         self._closures: dict[str, frozenset[str]] = {}
         # Both keyed by a source file's directory as mypy spells it: the plugin asks
         # about every file mypy loads, often several times, and resolve() costs syscalls.
         self._real_dirs: dict[str, Path] = {}
         self._dir_addons: dict[str, Addon | None] = {}
-        self._add_root(odoo_path / "addons", prefix_template="odoo.addons.{}")
+        self._add_root(odoo_path / "addons", prefix_template=CORE_PREFIX, aliases=False)
         for root in addons_paths:
-            self._add_root(root, prefix_template="{}")
+            self._add_root(root, prefix_template=custom_prefix, aliases=True)
 
-    def _add_root(self, root: Path, prefix_template: str) -> None:
+    def _add_root(self, root: Path, prefix_template: str, aliases: bool) -> None:
         if not root.is_dir():
             return
         real_root = root.resolve()
@@ -112,6 +130,9 @@ class AddonIndex:
             )
             self.addons[addon.name] = addon
             self._by_path.setdefault(addon.path, addon)
+            spellings = (CORE_PREFIX, "{}") if aliases else (prefix_template,)
+            for template in spellings:
+                self._prefixes[template.format(addon.name)] = addon
 
     def closure(self, name: str) -> frozenset[str]:
         """Return the addon and all its (transitive) dependencies that exist on disk.
@@ -172,17 +193,36 @@ class AddonIndex:
         return depths
 
     def addon_for_module(self, fullname: str) -> Addon | None:
-        """Find the addon a Python module (as named by mypy) belongs to."""
-        parts = fullname.split(".")
-        if parts[:2] == ["odoo", "addons"] and len(parts) > 2:
-            addon = self.addons.get(parts[2])
-            if addon is not None and addon.module_prefix == ".".join(parts[:3]):
-                return addon
+        """Find the addon a Python module (as named by mypy) belongs to.
+
+        A module of an ``addons_path`` addon is recognized under both spellings,
+        ``<name>.x`` and ``odoo.addons.<name>.x``; a core addon only under the second.
+        """
+        return self._prefixes.get(_package_spelling(fullname))
+
+    def resolve_module(self, fullname: str) -> tuple[Addon, str] | None:
+        """Find a module's addon, and the module's name in the configured spelling.
+
+        Args:
+            fullname: A module name, or the full name of something in a module.
+
+        Returns:
+            The addon and ``fullname`` with the addon package spelled as its
+            ``module_prefix`` (the name the scan indexes it under); ``None`` outside
+            addons.
+        """
+        spelling = _package_spelling(fullname)
+        addon = self._prefixes.get(spelling)
+        if addon is None:
             return None
-        addon = self.addons.get(parts[0])
-        if addon is not None and addon.module_prefix == parts[0]:
-            return addon
-        return None
+        if spelling == addon.module_prefix:
+            return addon, fullname
+        return addon, addon.module_prefix + fullname[len(spelling) :]
+
+    def canonical_module(self, fullname: str) -> str:
+        """Return a module name with its addon package spelled as configured."""
+        found = self.resolve_module(fullname)
+        return found[1] if found is not None else fullname
 
     def real_path(self, path: str | Path) -> Path:
         """Return a source file's path with its directory resolved (cached per directory).
@@ -213,3 +253,11 @@ class AddonIndex:
             if addon is not None:
                 return addon
         return None
+
+
+def _package_spelling(fullname: str) -> str:
+    """The part of a module name that names an addon package, if it is one."""
+    parts = fullname.split(".", 3)
+    if parts[:2] == ["odoo", "addons"]:
+        return ".".join(parts[:3])
+    return parts[0]

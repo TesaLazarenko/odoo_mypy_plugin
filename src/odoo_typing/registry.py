@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from functools import cached_property, partial
 from pathlib import Path
 
-from odoo_typing.addons import BASE, AddonIndex
+from odoo_typing.addons import BASE, CORE_PREFIX, Addon, AddonIndex
 from odoo_typing.config import Settings
 from odoo_typing.graphs import c3_merge, components_from
 from odoo_typing.scanner import (
@@ -120,11 +120,13 @@ class Registry:
         self._explored: dict[str, set[str]] = {}  # per addon: models classified for cycles
         self._cycles: dict[str, dict[str, frozenset[str]]] = {}
         self._definers: dict[str, tuple[str, ...]] = {}
+        self._misnamed: set[str] = set()  # addons warned about by misnamed()
 
     @cached_property
     def addons(self) -> AddonIndex:
         """Index of all addons, built (manifests read) on first use."""
-        return AddonIndex(self._settings.odoo_path, self._settings.addons_paths)
+        custom_prefix = CORE_PREFIX if self._settings.overlay_root is not None else "{}"
+        return AddonIndex(self._settings.odoo_path, self._settings.addons_paths, custom_prefix)
 
     def _models_of(self, addon_name: str) -> dict[str, list[Contribution]]:
         """Scan an addon once; return its contributions by model name."""
@@ -146,19 +148,40 @@ class Registry:
             models.setdefault(contribution.model, []).append(contribution)
 
     def module_scan(self, module: str) -> ModuleScan | None:
-        """Return the scan of a Python module, if it belongs to a known addon."""
-        addon = self.addons.addon_for_module(module)
-        if addon is None:
+        """Return the scan of a Python module, if it belongs to a known addon.
+
+        Either spelling of an ``addons_path`` addon's package is accepted (see
+        :meth:`AddonIndex.resolve_module`); the scan is named in the configured one.
+        """
+        found = self.addons.resolve_module(module)
+        if found is None:
             return None
-        self._models_of(addon.name)
-        return self._by_module.get(module)
+        self._models_of(found[0].name)
+        return self._by_module.get(found[1])
 
     def contribution(self, class_fullname: str) -> Contribution | None:
-        """Return the model contribution defined by a class, if any."""
-        module = class_fullname.rpartition(".")[0]
-        if self.module_scan(module) is None:
+        """Return the model contribution defined by a class, if any (either spelling)."""
+        found = self.addons.resolve_module(class_fullname)
+        if found is None:
             return None
-        return self._by_class.get(class_fullname)
+        self._models_of(found[0].name)
+        return self._by_class.get(found[1])
+
+    def misnamed(self, module: str) -> bool:
+        """Whether mypy names an addon's module in the spelling this configuration does not use.
+
+        That happens when mypy is given an addon's real directory although the overlay
+        root names it ``odoo.addons.<name>`` (or the reverse): the file is then likely
+        analyzed under both names. Warns once per addon.
+        """
+        found = self.addons.resolve_module(module)
+        if found is None or found[1] == module:
+            return False
+        addon = found[0]
+        if addon.name not in self._misnamed:
+            self._misnamed.add(addon.name)
+            _warn_misnamed(module, addon)
+        return True
 
     def referenced_models(self, path: str | Path) -> frozenset[str]:
         """Model names a source file refers to, also for files the addon does not import.
@@ -632,5 +655,20 @@ def _warn_unparsable(error: SourceError) -> None:
     print(
         f"odoo-typing: warning: cannot parse {error.path}: {error.reason}; "
         "the Odoo models it defines are ignored",
+        file=sys.stderr,
+    )
+
+
+def _warn_misnamed(module: str, addon: Addon) -> None:
+    """Tell the user that mypy uses another module name than the plugin for an addon."""
+    prefix = addon.module_prefix
+    if prefix.startswith("odoo.addons."):
+        hint = f'check the addon as "{prefix}" (mypy -p {prefix}, or its path under overlay_root)'
+    else:
+        hint = 'set overlay_root (see odoo-typing-root) to use "odoo.addons.<name>" names'
+    print(
+        f'odoo-typing: warning: mypy names module "{module}" of addon "{addon.name}", '
+        f'but this configuration names the addon "{prefix}"; its files are probably '
+        f"analyzed twice, and the plugin adds no dependencies for them: {hint}",
         file=sys.stderr,
     )
