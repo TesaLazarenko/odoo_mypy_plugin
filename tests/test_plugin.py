@@ -255,9 +255,12 @@ def test_inherit_sees_fields_from_dependency_addon(run_mypy: RunMypy) -> None:
 def test_probe_fixture_reports_type_errors(run_mypy: RunMypy) -> None:
     source = Path(__file__).parent / "fixtures/addons/probe_mod/models/partner.py"
     result = run_mypy({"probe_mod": {"partner.py": source.read_text()}})
-    lines = {int(message.split(":", 1)[0]) for message in result.messages("partner.py")}
-    # comodel typo, int + str|False, unknown env model
-    assert {8, 15, 18} <= lines
+    assert result.messages("partner.py") == [
+        '8: error: Unknown Odoo model "res.partnr"  [odoo-model]',
+        '15: error: Unsupported operand types for + ("int" and "str")  [operator]',
+        '15: note: Right operand is of type "str | Literal[False]"',
+        '18: error: Unknown Odoo model "res.partnr"  [odoo-model]',
+    ]
 
 
 SCRIPT = """

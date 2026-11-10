@@ -1,0 +1,177 @@
+"""JSON records the plugin keeps next to mypy's cache, and the stored addon index.
+
+Records live in ``<cache_dir>/odoo_typing``. Each one says which version of the plugin
+wrote it and carries the ``stat`` stamps (:mod:`odoo_typing.stamps`) of the files it was
+computed from; it is used only while both still match.
+
+This is a boundary module: records are untrusted JSON, validated when read.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from functools import cache
+from pathlib import Path
+from typing import TypeGuard
+
+from odoo_typing.addons import Addon, AddonIndex
+from odoo_typing.config import Settings
+from odoo_typing.stamps import Stamps, index_roots, read_index, unchanged
+
+__all__ = [
+    "Record",
+    "RecordStore",
+    "addon_data",
+    "digest",
+    "index_key",
+    "is_str_list",
+    "load_index",
+    "parse_stamps",
+    "source_digest",
+]
+
+STORE_DIR = "odoo_typing"
+FORMAT = 1
+Record = dict[str, object]
+
+
+class RecordStore:
+    """JSON records in a directory (``<cache_dir>/odoo_typing``), or nowhere.
+
+    Writes are atomic (a temporary file renamed over the record), so concurrent mypy
+    runs on one cache never read half a record. Unreadable records count as missing.
+    """
+
+    def __init__(self, directory: Path | None) -> None:
+        """Use ``directory`` for records; ``None`` keeps nothing between runs."""
+        self._directory = directory
+
+    @classmethod
+    def for_cache_dir(cls, cache_dir: str) -> RecordStore:
+        """The store next to mypy's cache, or none if mypy writes no cache."""
+        if not cache_dir or cache_dir == os.devnull:
+            return cls(None)
+        return cls(Path(cache_dir) / STORE_DIR)
+
+    def load(self, key: str) -> Record | None:
+        """Return a record written by this plugin version, or ``None``."""
+        if self._directory is None:
+            return None
+        try:
+            data = json.loads((self._directory / key).read_bytes())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or data.get("version") != source_digest():
+            return None
+        return data
+
+    def save(self, key: str, record: Record) -> None:
+        """Write a record; a cache directory that cannot be written is ignored."""
+        if self._directory is None:
+            return
+        data = {**record, "version": source_digest()}
+        try:
+            self._directory.mkdir(parents=True, exist_ok=True)
+            temporary = self._directory / f".{key}.{os.getpid()}.tmp"
+            temporary.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+            os.replace(temporary, self._directory / key)
+        except OSError:
+            return
+
+
+@cache
+def source_digest() -> str:
+    """Digest of the plugin's own source: a new plugin version invalidates everything."""
+    package = Path(__file__).parent
+    data = b"".join(path.read_bytes() for path in sorted(package.glob("*.py")))
+    return digest([FORMAT, hashlib.sha256(data).hexdigest()])
+
+
+def digest(value: object) -> str:
+    """SHA-256 of a JSON value."""
+    text = json.dumps(value, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def index_key(settings: Settings) -> str:
+    """A key that differs for each list of addons roots."""
+    roots = [str(root) for root in index_roots(settings.odoo_path, settings.addons_paths)]
+    return digest(roots)[:16]
+
+
+def load_index(settings: Settings, store: RecordStore) -> tuple[AddonIndex, Stamps]:
+    """Build the addon index, from the stored one if no root, entry or manifest changed.
+
+    Args:
+        settings: Plugin settings (the addons roots).
+        store: Where the index of the previous run is kept.
+
+    Returns:
+        The index and the stamps of the files it describes.
+    """
+    key = f"index-{index_key(settings)}.json"
+    record = store.load(key)
+    known = _stored_index(record) if record is not None else None
+    if known is not None:
+        addons, stamps = known
+        index = AddonIndex(settings.odoo_path, settings.addons_paths, known=addons)
+        return index, stamps
+    index, stamps = read_index(settings.odoo_path, settings.addons_paths)
+    addons_data = [addon_data(addon) for addon in index.addons.values()]
+    store.save(key, {"stamps": stamps, "addons": addons_data})
+    return index, stamps
+
+
+def addon_data(addon: Addon) -> list[object]:
+    """An addon as JSON: name, path, module prefix, depends."""
+    return [addon.name, str(addon.path), addon.module_prefix, list(addon.depends)]
+
+
+def _stored_index(record: Record) -> tuple[list[Addon], Stamps] | None:
+    """The addons of an index record that still describes the roots on disk."""
+    stamps = parse_stamps(record.get("stamps"))
+    addons = _parse_addons(record.get("addons"))
+    if stamps is None or addons is None or not unchanged(stamps):
+        return None
+    return addons, stamps
+
+
+def _parse_addons(value: object) -> list[Addon] | None:
+    if not isinstance(value, list):
+        return None
+    addons = []
+    for item in value:
+        if not (isinstance(item, list) and len(item) == 4):
+            return None
+        name, path, prefix, depends = item
+        texts = isinstance(name, str) and isinstance(path, str) and isinstance(prefix, str)
+        if not texts or not is_str_list(depends):
+            return None
+        addons.append(
+            Addon(name=name, path=Path(path), module_prefix=prefix, depends=tuple(depends))
+        )
+    return addons
+
+
+def is_str_list(value: object) -> TypeGuard[list[str]]:
+    """Whether a JSON value is a list of strings."""
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def parse_stamps(value: object) -> Stamps | None:
+    """Stamps from JSON (``{path: [mtime_ns, size] | null}``), or ``None`` if malformed."""
+    if not isinstance(value, dict):
+        return None
+    stamps: Stamps = {}
+    for path, item in value.items():
+        if not isinstance(path, str):
+            return None
+        if item is None:
+            stamps[path] = None
+        elif isinstance(item, list) and len(item) == 2 and all(type(n) is int for n in item):
+            stamps[path] = (item[0], item[1])
+        else:
+            return None
+    return stamps

@@ -46,6 +46,32 @@ odoo_path = ".odoo-root/odoo"        # dir with release.py; auto-detected if omi
 addons_path = ["addons"]             # relative to pyproject.toml
 ```
 
+With `mypy.ini`, `.mypy.ini` or `setup.cfg`, use an `[odoo_typing]` section; separate
+`addons_path` entries with commas or newlines:
+
+```ini
+[mypy]
+plugins = odoo_typing.plugin
+mypy_path = .odoo-root:addons
+
+[mypy-odoo.*]
+follow_imports = silent
+
+[odoo_typing]
+odoo_path = .odoo-root/odoo
+addons_path = addons, ../enterprise
+```
+
+An INI config without that section uses the `[tool.odoo_typing]` table of a
+`pyproject.toml` next to it, if there is one. Relative paths are relative to the file
+that contains them. Without `odoo_path`, the plugin looks for an `odoo` package (a
+directory with `release.py`) on `mypy_path`, then tries to import `odoo` in mypy's own
+interpreter, which usually fails in a virtualenv.
+
+A configuration error (Odoo not found, a missing directory, a malformed table) stops mypy
+with exit status 2 and one line on stderr, e.g.
+`odoo-typing: error: addons_path entries are not directories: /src/missing`.
+
 Each `addons_path` entry must be a directory that *contains* addons (subdirectories with
 a `__manifest__.py`), like Odoo's `--addons-path`. Listing an addon directory itself, or a
 directory without any addon, is a configuration error.
@@ -85,7 +111,8 @@ mypy addons/my_addon
     addon that depends on both `project` and `sms`.
 
   Everything is lazy: manifests are read on the first question (a
-  fully cached mypy run reads none), and an addon is scanned only when a file whose
+  fully cached mypy run reads the stored index instead, see
+  [Incremental mode](#incremental-mode-and-the-daemon)), and an addon is scanned only when a file whose
   `depends` closure contains it needs a model. Sources are parsed as bytes, so a UTF-8 BOM
   or a `# -*- coding: ... -*-` cookie works; a file that cannot be parsed is reported once
   on stderr (`odoo-typing: warning: cannot parse ...`), since its models are then missing.
@@ -123,6 +150,36 @@ mypy addons/my_addon
   field is read, from the reading addon (or the record's own class, if the reading
   module does not load all the comodel's classes), so the result has every extension the
   reader sees. `Model.field` (read on the class) is the field itself.
+
+## Incremental mode and the daemon
+
+mypy's cache only knows a module's own source and imports, but the plugin's result for a
+file also depends on its addon's `depends` closure. So the plugin gives mypy, for every
+module in an addon (`report_config_data`), a digest of that closure: each addon's name,
+path, manifest `depends` and what its scan found (model classes, `_name`/`_inherit`,
+registration order, comodels, model names used in `env[...]`), plus the plugin's version.
+When a dependency gains an `_inherit` extension, a manifest changes `depends`, an
+extension module is deleted or moved, or `addons_path` changes, mypy checks the affected
+modules again instead of replaying stale errors. Editing a method body changes no
+digest: mypy's own dependency tracking handles it.
+
+The digests are kept in `<cache_dir>/odoo_typing/`, together with `stat` stamps (mtime
+and size) of the manifests, addons directories and scanned files they come from. A run
+in which nothing changed reads these small files and calls `stat` on the files they
+list, but parses nothing.
+
+Limits: a structural change (a new class, `_inherit`, comodel or `env["..."]` literal) in
+an addon makes mypy recheck every module of the addons that depend on it, not only the
+ones that use the changed model. The text of the "defined in addon ..., which is not in
+the dependencies" message can stay outdated when an addon *outside* the closure is
+added, until the file is checked again (the error itself is right).
+
+**dmypy:** the daemon keeps one plugin instance. Before the files of each update are
+processed, the plugin compares the stamps of everything its registry has read (addons
+roots, manifests, scanned files) with the disk and starts over with a fresh registry if
+any changed. The daemon only rechecks files whose source changed (and their
+dependents), and the plugin reads its settings once: after editing only a manifest, or
+the `[tool.odoo_typing]`/`[odoo_typing]` settings, run `dmypy restart`.
 
 ## Development
 

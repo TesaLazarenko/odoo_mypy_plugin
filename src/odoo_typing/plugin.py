@@ -20,6 +20,10 @@ What it does:
   that defines the comodel; reading the field gives the comodel as the *reading* addon
   sees it, like Odoo returns the final registry class.
 
+* Incremental mode: each module's cache entry carries a digest of its addon closure
+  (``report_config_data``, see :mod:`odoo_typing.fingerprint`); in the daemon, the
+  registry starts over when a file it read changed.
+
 Model names are resolved from the point of view of the addon that contains the
 file. Files outside any addon (scripts, and Odoo's own ``odoo/*.py`` modules,
 which mypy always analyzes) have no such view: the plugin leaves them alone, so
@@ -30,6 +34,7 @@ registry on each cold run, and could still pick an arbitrary extension class.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import partial
@@ -57,6 +62,7 @@ from mypy.plugin import (
     MethodContext,
     MethodSigContext,
     Plugin,
+    ReportConfigContext,
 )
 from mypy.types import (
     AnyType,
@@ -84,7 +90,9 @@ from odoo_typing.classes import (
     record_python_mro,
     view_class_origin,
 )
-from odoo_typing.config import load_settings
+from odoo_typing.config import ConfigError, Settings, load_settings
+from odoo_typing.fingerprint import Fingerprints
+from odoo_typing.records import RecordStore, load_index
 from odoo_typing.registry import MissingParent, Registry
 from odoo_typing.scanner import Contribution
 
@@ -106,9 +114,49 @@ class OdooPlugin(Plugin):
     """Teach mypy how the Odoo registry assembles models."""
 
     def __init__(self, options: Options) -> None:
-        """Load settings and prepare the (lazy) model registry."""
+        """Load settings and prepare the (lazy) model registry.
+
+        A configuration problem ends mypy with the message and exit status 2, like
+        mypy's own configuration errors (not as a crash of the plugin).
+        """
         super().__init__(options)
-        self.registry = Registry(load_settings(options.config_file))
+        self._settings = _settings_or_exit(options)
+        self._store = RecordStore.for_cache_dir(options.cache_dir)
+        self._inputs_checked = False
+        self._new_registry()
+
+    def _new_registry(self) -> None:
+        index = partial(load_index, self._settings, self._store)
+        self.registry = Registry(self._settings, index)
+        self._fingerprints = Fingerprints(self.registry, self._store, self._settings)
+
+    # -- incremental mode and the daemon ---------------------------------------------------
+
+    def report_config_data(self, ctx: ReportConfigContext) -> str | None:
+        """Make mypy's cache entry of a module depend on the registry facts it used.
+
+        See :mod:`odoo_typing.fingerprint`: a digest of the module's addon closure
+        (manifests and scanned classes), so an edit in another addon, a manifest or
+        the addons paths makes mypy check the module again.
+        """
+        return self._fingerprints.module_data(ctx.id, ctx.path)
+
+    def set_modules(self, modules: dict[str, MypyFile]) -> None:
+        """Called by mypy when a set of modules is loaded (each daemon update too)."""
+        super().set_modules(modules)
+        self._inputs_checked = False
+
+    def _refresh_registry(self) -> None:
+        """Start over with a new registry if a file it read changed (daemon updates).
+
+        Checked once per batch of modules mypy loads: the first parsed file of a
+        daemon update triggers it, a normal run pays it once.
+        """
+        if self._inputs_checked:
+            return
+        self._inputs_checked = True
+        if self.registry.inputs_changed():
+            self._new_registry()
 
     # -- dependencies ----------------------------------------------------------------------
 
@@ -119,6 +167,7 @@ class OdooPlugin(Plugin):
         refers to (``_inherit``, ``env[...]``, comodels) are analyzed, or not load them
         at all. Files outside any addon get none, since nothing is resolved in them.
         """
+        self._refresh_registry()
         modules = set(self.registry.dependency_modules(file.fullname, file.path))
         modules.discard(file.fullname)
         return [(DEPENDENCY_PRIORITY, module, -1) for module in sorted(modules)]
@@ -344,6 +393,19 @@ class OdooPlugin(Plugin):
 
 
 ViewType = Instance | AnyType | None
+
+
+def _settings_or_exit(options: Options) -> Settings:
+    """Read the settings; on a configuration error print it and exit with status 2.
+
+    mypy reports any exception raised while it creates a plugin as an internal error
+    of its own and hides the message; ``SystemExit`` passes through.
+    """
+    try:
+        return load_settings(options.config_file, options.mypy_path)
+    except ConfigError as exc:
+        print(f"odoo-typing: error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
 
 
 @dataclass(frozen=True, slots=True)

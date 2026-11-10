@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import textwrap
@@ -67,7 +68,7 @@ RunMypy = Callable[..., MypyResult]
 PYPROJECT = """\
 [tool.mypy]
 plugins = ["odoo_typing.plugin"]
-mypy_path = ["{odoo_root}", "{addons}"]
+mypy_path = {mypy_path}
 check_untyped_defs = true
 show_error_codes = true
 show_error_context = false
@@ -79,7 +80,7 @@ follow_imports = "silent"
 
 [tool.odoo_typing]
 odoo_path = "{odoo_root}/odoo"
-addons_path = ["{addons}"]
+addons_path = {addons_path}
 """
 
 
@@ -111,7 +112,10 @@ def run_mypy(
     ``fresh_cache=True`` to use a cache of the test's own, empty on the first call
     (so that Odoo's own modules are analyzed again in this run; a second call in the
     same test reuses it, for warm-cache checks), and ``flags=[...]`` for extra mypy
-    command-line options.
+    command-line options. ``workdir="x"`` puts the addons and the config in a
+    subdirectory ``x`` of the test's directory (two working copies sharing a cache);
+    ``addons_path=[...]`` replaces the configured addons directories (default: the
+    one the addons are written to) and ``mypy_path=[...]`` adds directories to mypy's.
     The call fails the test if mypy crashes (internal error, exit status 2).
     """
 
@@ -122,19 +126,30 @@ def run_mypy(
         scripts: dict[str, str] | None = None,
         fresh_cache: bool = False,
         flags: list[str] | None = None,
+        workdir: str = "",
+        addons_path: list[Path] | None = None,
+        mypy_path: list[Path] | None = None,
     ) -> MypyResult:
-        root = tmp_path / "addons"
-        root.mkdir(exist_ok=True)
+        base = tmp_path / workdir
+        root = base / "addons"
+        root.mkdir(parents=True, exist_ok=True)
         for name, spec in addons.items():
-            _write_addon(root / name, spec)
+            write_addon(root / name, spec)
         targets = [str(root / name) for name in (check or list(addons))]
         for name, source in (scripts or {}).items():
             script = tmp_path / "scripts" / name
             script.parent.mkdir(parents=True, exist_ok=True)
             script.write_text(textwrap.dedent(source))
             targets.append(str(script))
-        config = tmp_path / "pyproject.toml"
-        config.write_text(PYPROJECT.format(odoo_root=odoo_root, addons=root))
+        config = base / "pyproject.toml"
+        search_path = [odoo_root, root, *(mypy_path or [])]
+        config.write_text(
+            PYPROJECT.format(
+                odoo_root=odoo_root,
+                mypy_path=_toml_paths(search_path),
+                addons_path=_toml_paths(addons_path or [root]),
+            )
+        )
         cache = tmp_path / "mypy_cache" if fresh_cache else mypy_cache
         stdout, stderr, status = mypy_api.run(
             ["--config-file", str(config), "--cache-dir", str(cache), *(flags or []), *targets]
@@ -146,7 +161,11 @@ def run_mypy(
     return run
 
 
-def _write_addon(path: Path, spec: dict[str, object]) -> None:
+def _toml_paths(paths: list[Path]) -> str:
+    return json.dumps([str(path) for path in paths])  # a JSON string list is valid TOML
+
+
+def write_addon(path: Path, spec: dict[str, object]) -> None:
     path.mkdir(parents=True, exist_ok=True)
     depends = spec.get("depends", ["base"])
     manifest = spec.get("manifest", "__manifest__.py")
