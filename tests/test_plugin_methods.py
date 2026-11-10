@@ -283,3 +283,48 @@ def test_env_getitem_accepts_final_model_names(run_mypy: RunMypy) -> None:
         '18: error: Unknown Odoo model "t.thng"  [odoo-model]',
         '20: note: Revealed type is "odoo.models.BaseModel"',
     ]
+
+
+# -- roadmap 4.3: untyped decorator factories ---------------------------------------------------
+
+
+def test_untyped_decorator_factories_keep_method_signature(run_mypy: RunMypy) -> None:
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import api, fields, models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    size = fields.Integer()
+
+                    @api.onchange("size")
+                    def _onchange_size(self) -> int:
+                        return self.size
+
+                    @api.ondelete(at_uninstall=False)
+                    def _unlink_check(self) -> str:
+                        return ""
+
+                    @api.depends_context("company")
+                    def _company_size(self) -> bool:
+                        return True
+
+                    def action(self) -> None:
+                        reveal_type(self._onchange_size())
+                        reveal_type(self._unlink_check())
+                        reveal_type(self._company_size())
+                        self._onchange_size(1)
+                """
+            }
+        }
+    )
+
+    assert result.messages("models.py") == [
+        '22: note: Revealed type is "int"',
+        '23: note: Revealed type is "str"',
+        '24: note: Revealed type is "bool"',
+        '25: error: Too many arguments for "_onchange_size" of "Thing"  [call-arg]',
+    ]

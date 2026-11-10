@@ -54,8 +54,16 @@ IDENTITY_DECORATORS: Final = frozenset(
         "odoo.api.autovacuum",
     }
 )
-# Decorator factories: ``returns("self")`` returns a decorator that returns the method.
-IDENTITY_FACTORIES: Final = frozenset({"odoo.api.returns"})
+# Untyped decorator factories: ``returns("self")``, ``onchange("x")``... return a
+# decorator that returns the method (``api.depends``/``constrains`` are typed already).
+IDENTITY_FACTORIES: Final = frozenset(
+    {
+        "odoo.api.returns",
+        "odoo.api.onchange",
+        "odoo.api.ondelete",
+        "odoo.api.depends_context",
+    }
+)
 # A typed ``def [T] (T) -> T`` that the factories' decorators are given.
 IDENTITY_TEMPLATE = "odoo.api.model"
 # BaseModel methods declared ``-> Self``: an unannotated override returns the receiver.
