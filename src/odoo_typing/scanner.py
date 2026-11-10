@@ -34,6 +34,8 @@ UNKNOWN: Final = object()  # value of an expression the scan cannot evaluate
 RELATIONAL_FIELDS = frozenset({"Many2one", "One2many", "Many2many"})
 # Environment attributes that are records of a model (``self.env.user``).
 ENV_RECORDS: Final = {"user": "res.users", "company": "res.company", "companies": "res.company"}
+# Log-access fields that are res.users records (``record.create_uid``).
+LOG_ACCESS_USERS: Final = frozenset({"create_uid", "write_uid"})
 # Concrete node classes that have no child nodes worth visiting (``ast.Load`` etc.).
 LEAF_NODES: frozenset[type] = frozenset(
     {ast.Name, ast.Constant, ast.alias}
@@ -62,6 +64,9 @@ class Contribution:
         fields: Names of the fields the class body declares (``x = fields.Char()``).
         delegates: Models the class delegates fields to: the keys of ``_inherits``,
             then the comodels of ``fields.Many2one(..., delegate=True)``.
+        log_access: ``_log_access`` as the class body sets it, ``False`` if it only
+            sets ``_auto = False`` (Odoo's default follows ``_auto``), ``None`` if
+            neither is set.
     """
 
     addon: str
@@ -73,6 +78,7 @@ class Contribution:
     comodels: tuple[str, ...] = ()
     fields: tuple[str, ...] = ()
     delegates: tuple[str, ...] = ()
+    log_access: bool | None = None
 
     @property
     def fullname(self) -> str:
@@ -283,8 +289,15 @@ class _ImportWalker:
                 comodels=_declared_comodels(node),
                 fields=_declared_fields(node),
                 delegates=_delegated_models(node, attrs.get("_inherits")),
+                log_access=_log_access(attrs),
             )
         )
+
+
+def _log_access(attrs: dict[str, object]) -> bool | None:
+    """``_log_access`` of a class body; MetaModel defaults it to ``_auto``."""
+    value = attrs.get("_log_access", attrs.get("_auto"))
+    return value if isinstance(value, bool) else None
 
 
 def _declared_comodels(node: ast.ClassDef) -> tuple[str, ...]:
@@ -490,7 +503,7 @@ def referenced_models(tree: ast.Module) -> set[str]:
 
     ``env[NAME]`` counts when ``NAME`` is a module-level string constant, and
     ``env.user`` / ``env.company`` / ``env.companies`` name ``res.users`` and
-    ``res.company``.
+    ``res.company``, and so do ``.create_uid`` / ``.write_uid`` (``res.users``).
     """
     constants = _string_constants(tree)
     models: set[str] = set()
@@ -502,6 +515,8 @@ def referenced_models(tree: ast.Module) -> set[str]:
             name = _comodel_argument(node)
         elif isinstance(node, ast.Attribute) and node.attr in ENV_RECORDS and _is_env(node.value):
             name = ENV_RECORDS[node.attr]
+        elif isinstance(node, ast.Attribute) and node.attr in LOG_ACCESS_USERS:
+            name = "res.users"  # ``record.create_uid``: a res.users record
         else:
             continue
         if name:

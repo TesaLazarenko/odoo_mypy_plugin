@@ -51,6 +51,7 @@ __all__ = [
     "Lookup",
     "Merge",
     "add_delegated_fields",
+    "add_log_access_fields",
     "create_view_class",
     "install_mro",
     "instance_of",
@@ -210,3 +211,23 @@ def add_delegated_fields(info: TypeInfo, sources: Sequence[tuple[TypeInfo, Seque
             if node is None or not isinstance(node.node, Var) or info.get(name) is not None:
                 continue
             info.names[name] = SymbolTableNode(MDEF, node.node, plugin_generated=True)
+
+
+def add_log_access_fields(info: TypeInfo, field_types: dict[str, Instance]) -> None:
+    """Declare the log-access fields Odoo adds at run time (``create_uid``...).
+
+    A field the class or its MRO already has wins (a model may declare
+    ``create_date`` itself). Calling it again changes nothing.
+
+    Args:
+        info: The model class.
+        field_types: Field name to the field's descriptor type (``fields.Datetime``).
+    """
+    for name, field_type in field_types.items():
+        if info.get(name) is not None:
+            continue
+        var = Var(name, field_type)
+        var.info = info
+        var._fullname = f"{info.fullname}.{name}"
+        var.is_initialized_in_class = True
+        info.names[name] = SymbolTableNode(MDEF, var, plugin_generated=True)

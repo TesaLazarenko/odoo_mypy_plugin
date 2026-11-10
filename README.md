@@ -22,6 +22,7 @@ plugin:
 | `self.env.user` / `self.env.company` | `Any` | `res.users` / `res.company` as the addon sees them |
 | `from odoo.addons.my_base.models.x import Y` (a custom addon) | `import-not-found`, `Any` | the real class, with the overlay root ([Setup](#setup)) |
 | `line.product_id.uom_id` (`_inherits` of `product.template`) | silent (`Any`) | the `uom.uom` record: fields of `_inherits` (and `delegate=True`) parents are delegated, methods are not |
+| `self.create_date`, `self.create_uid.name` | `has no attribute` | `datetime \| Literal[False]`, the `res.users` record: Odoo's log-access fields, unless `_log_access` / `_auto` is `False` |
 
 Models are resolved **per addon**: a module sees only the models of the addons in its
 `depends` closure, just as Odoo loads them.
@@ -345,9 +346,6 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
 - domains, `@api.depends` paths; assignments to fields (`record.partner_id = "x"`) are
   not checked (`Field.__set__` is untyped)
 - fields a delegated parent itself delegates (`_inherits` of an `_inherits` parent)
-- the log-access fields Odoo adds at runtime (`create_uid`, `create_date`, `write_uid`,
-  `write_date`) are not declared, so reading them is an `attr-defined` error, as in plain
-  mypy
 - `@api.onchange`, `@api.ondelete`, `@api.depends_context` methods stay `Any`
   (untyped decorators); `super().create(...)` in an unannotated override is `Any`
 - `self` is the class being written, so inside a class `self` sees the earlier classes of

@@ -504,6 +504,22 @@ class Registry:
             chain, contribution.model, contribution.addon
         )
 
+    def log_access(self, contribution: Contribution) -> bool:
+        """Whether Odoo adds ``create_uid``/``create_date``/... to the model's class.
+
+        The most derived class of the same model that sets ``_log_access`` (or
+        ``_auto``) decides; ``_inherit`` parents are not followed, so a mixin itself
+        (an ``AbstractModel``, whose ``_auto`` is ``False``) gets the fields that every
+        model using it has. Default: on. Never for ``base``: its class is in the MRO of
+        every model, which would give the fields to models without them too.
+        """
+        if contribution.model == "base":
+            return False
+        for item in self.linearization(contribution):
+            if item.model == contribution.model and item.log_access is not None:
+                return item.log_access
+        return True
+
     # -- _inherits delegation ----------------------------------------------------------------
 
     def delegated_models(self, chain: Iterable[Contribution], model: str) -> tuple[str, ...]:

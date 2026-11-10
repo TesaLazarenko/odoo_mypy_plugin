@@ -97,6 +97,7 @@ from mypy.semanal import SemanticAnalyzer
 from odoo_typing.classes import (
     Lookup,
     add_delegated_fields,
+    add_log_access_fields,
     create_view_class,
     install_mro,
     instance_of,
@@ -120,7 +121,7 @@ from odoo_typing.methods import (
 from odoo_typing.odoo_version import unsupported_version_warning
 from odoo_typing.records import RecordStore, load_index
 from odoo_typing.registry import MissingParent, Registry
-from odoo_typing.scanner import Contribution
+from odoo_typing.scanner import LOG_ACCESS_USERS, Contribution
 
 __all__ = ["ODOO_MODEL", "ODOO_MODEL_DEPENDS", "OdooPlugin", "plugin"]
 
@@ -287,6 +288,8 @@ class OdooPlugin(Plugin):
         contribution = self.registry.contribution(ctx.cls.info.fullname)
         if contribution is not None:
             self._delegate_fields(contribution, ctx)
+            if self.registry.log_access(contribution):
+                add_log_access_fields(ctx.cls.info, _log_access_types(ctx))
 
     def _delegate_fields(self, contribution: Contribution, ctx: ClassDefContext) -> None:
         """Add the fields of the models a class delegates to (``_inherits``).
@@ -336,7 +339,10 @@ class OdooPlugin(Plugin):
         """Resolve record-typed attributes of model classes from the reading addon."""
         if fullname in ENV_RECORDS:
             return partial(self._env_record, ENV_RECORDS[fullname])
-        owner = fullname.rpartition(".")[0]
+        owner, _, name = fullname.rpartition(".")
+        if name in LOG_ACCESS_USERS and self.registry.contribution(owner):
+            # Declared as ``Many2one[Any]``: the res.users records the reading addon sees.
+            return partial(self._env_record, "res.users")
         return self._record_attribute if self.registry.contribution(owner) else None
 
     def _env_record(self, model: str, ctx: AttributeContext) -> Type:
@@ -656,6 +662,22 @@ def _conflict_message(class_name: str) -> str:
         f'Odoo model class "{class_name}" has no consistent method resolution order '
         "(Odoo cannot load it either); its bases are kept, some out of order"
     )
+
+
+def _log_access_types(ctx: ClassDefContext) -> dict[str, Instance]:
+    """Descriptor types of the log-access fields (``odoo.fields`` is analyzed first)."""
+    many2one = ctx.api.lookup_fully_qualified_or_none(FIELDS_MODULE + "Many2one")
+    datetime = ctx.api.lookup_fully_qualified_or_none(FIELDS_MODULE + "Datetime")
+    if not (
+        many2one
+        and isinstance(many2one.node, TypeInfo)
+        and datetime
+        and isinstance(datetime.node, TypeInfo)
+    ):
+        return {}
+    user = Instance(many2one.node, [AnyType(TypeOfAny.special_form)])
+    date = Instance(datetime.node, [])
+    return {"create_uid": user, "create_date": date, "write_uid": user, "write_date": date}
 
 
 def _normalize_meta_attributes(ctx: ClassDefContext) -> None:

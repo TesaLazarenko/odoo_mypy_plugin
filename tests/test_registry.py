@@ -275,3 +275,53 @@ def test_loaded_with_module_outside_any_addon_returns_false(tmp_path: Path) -> N
     registry = _registry(tmp_path, {"my_mod": {"__init__.py": "from . import m\n", "m.py": model}})
 
     assert registry.loaded_with("x.a", "my_mod", "tools.script") is False
+
+
+# -- log-access fields (roadmap 4.1) -----------------------------------------------------------
+
+
+def _log_registry(tmp_path: Path, body: str) -> Registry:
+    odoo = tmp_path / "odoo"
+    (odoo / "addons").mkdir(parents=True)
+    (odoo / "release.py").write_text("")
+    _addon(odoo / "addons", "base", [], {"__init__.py": "from . import m\n", "m.py": body})
+    return Registry(Settings(odoo_path=odoo, addons_paths=()))
+
+
+@pytest.mark.parametrize(
+    ("attrs", "expected"),
+    [
+        ("", True),
+        ("    _auto = False\n", False),
+        ("    _log_access = False\n", False),
+        ("    _auto = False\n    _log_access = True\n", True),
+    ],
+)
+def test_log_access_follows_log_access_then_auto(
+    tmp_path: Path, attrs: str, expected: bool
+) -> None:
+    registry = _log_registry(tmp_path, f'class A(models.Model):\n    _name = "x.a"\n{attrs}')
+    contribution = registry.contribution("odoo.addons.base.m.A")
+    assert contribution is not None
+
+    assert registry.log_access(contribution) is expected
+
+
+def test_log_access_extension_inherits_setting_of_earlier_class(tmp_path: Path) -> None:
+    body = (
+        'class A(models.Model):\n    _name = "x.a"\n    _log_access = False\n'
+        'class B(models.Model):\n    _inherit = "x.a"\n'
+    )
+    registry = _log_registry(tmp_path, body)
+    extension = registry.contribution("odoo.addons.base.m.B")
+    assert extension is not None
+
+    assert registry.log_access(extension) is False
+
+
+def test_log_access_base_model_is_off(tmp_path: Path) -> None:
+    registry = _log_registry(tmp_path, 'class Base(models.AbstractModel):\n    _name = "base"\n')
+    base = registry.contribution("odoo.addons.base.m.Base")
+    assert base is not None
+
+    assert registry.log_access(base) is False
