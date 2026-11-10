@@ -171,3 +171,40 @@ def test_registry_inputs_changed_manifest_edited_returns_true(tmp_path: Path) ->
     _touch(settings.odoo_path / "addons/my_mod/__manifest__.py", "{'depends': []}")
 
     assert registry.inputs_changed() is True
+
+
+def _custom(tmp_path: Path) -> Settings:
+    """``_odoo`` plus an addons_path root with ``cust`` (depending on my_mod)."""
+    settings = _odoo(tmp_path)
+    addon = tmp_path / "custom" / "cust"
+    addon.mkdir(parents=True)
+    (addon / "__manifest__.py").write_text("{'depends': ['my_mod']}")
+    (addon / "__init__.py").write_text("")
+    return Settings(odoo_path=settings.odoo_path, addons_paths=(tmp_path / "custom",))
+
+
+def test_addon_digest_overlay_root_set_changes(tmp_path: Path) -> None:
+    simple = _custom(tmp_path)
+    overlay = Settings(simple.odoo_path, simple.addons_paths, overlay_root=tmp_path / "root")
+    store = RecordStore(tmp_path / "cache")
+    before = _fingerprints(simple, store).addon_digest("cust")
+
+    after = _fingerprints(overlay, store).addon_digest("cust")
+
+    assert after != before
+
+
+def test_load_index_stored_overlay_index_keeps_both_spellings(tmp_path: Path) -> None:
+    simple = _custom(tmp_path)
+    overlay = Settings(simple.odoo_path, simple.addons_paths, overlay_root=tmp_path / "root")
+    store = RecordStore(tmp_path / "cache")
+    load_index(simple, store)
+    load_index(overlay, store)
+
+    index, _ = load_index(overlay, store)
+
+    assert (
+        index.addons["cust"].module_prefix,
+        index.canonical_module("cust.models"),
+        index.addon_for_module("base.models"),
+    ) == ("odoo.addons.cust", "odoo.addons.cust.models", None)

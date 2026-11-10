@@ -174,3 +174,65 @@ def test_cache_method_body_edited_in_dependency_keeps_user_fresh(run_mypy: RunMy
     result = run_mypy({"dep_mod": edited}, flags=["-v"])
 
     assert set(_abandoned(result)) == {"dep_mod.models.thing"}
+
+
+DELEGATING = """
+from odoo import fields, models
+
+class Child(models.Model):
+    _name = "x.child"
+    _inherits = {"x.thing": "thing_id"}
+
+    thing_id = fields.Many2one("x.thing", required=True)
+"""
+
+DELEGATED_USER = """
+from odoo import models
+
+class User(models.Model):
+    _name = "x.user"
+
+    def action(self) -> None:
+        reveal_type(self.env["x.child"].extra)
+"""
+
+USERS_EXTRA = """
+from odoo import fields, models
+
+class Users(models.Model):
+    _inherit = "res.users"
+
+    x_level = fields.Integer()
+"""
+
+ENV_USER_FIELD = """
+from odoo import models
+
+class User(models.Model):
+    _name = "x.user"
+
+    def action(self) -> None:
+        reveal_type(self.env.user.x_level)
+"""
+
+
+def test_cache_extension_of_delegated_parent_added_sees_new_field(run_mypy: RunMypy) -> None:
+    dep = {**_dep(), "models/child.py": DELEGATING}
+    dep["models/__init__.py"] = "from . import thing, child\n"
+    run_mypy({"dep_mod": dep, "my_mod": {"depends": ["dep_mod"], "user.py": DELEGATED_USER}})
+    dep["models/extra.py"] = EXTRA
+    dep["models/__init__.py"] = "from . import thing, child, extra\n"
+
+    result = run_mypy({"dep_mod": dep}, check=["my_mod"])
+
+    assert result.messages("my_mod/user.py") == ['8: note: Revealed type is "int"']
+
+
+def test_cache_res_users_extension_added_types_env_user_field(run_mypy: RunMypy) -> None:
+    dep = {"__init__.py": "from . import models\n", "models/__init__.py": ""}
+    run_mypy({"dep_mod": dep, "my_mod": {"depends": ["dep_mod"], "user.py": ENV_USER_FIELD}})
+    dep = {**dep, "models/__init__.py": "from . import users\n", "models/users.py": USERS_EXTRA}
+
+    result = run_mypy({"dep_mod": dep}, check=["my_mod"])
+
+    assert result.messages("my_mod/user.py") == ['8: note: Revealed type is "int"']
