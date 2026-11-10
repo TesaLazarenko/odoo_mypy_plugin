@@ -1,6 +1,7 @@
 # odoo-typing
 
-mypy plugin that understands the Odoo ORM (developed and tested against Odoo 18).
+mypy plugin that understands the Odoo ORM (developed and tested against Odoo 18 and
+mypy 2.1-2.4; on another Odoo version it prints a warning at startup).
 
 Plain mypy treats `env["res.partner"]` as `BaseModel`. It cannot see fields that other
 modules add through `_inherit`, and it reads every relational field as `Any`. With this

@@ -117,6 +117,7 @@ from odoo_typing.methods import (
     is_self_method,
     keep_receiver,
 )
+from odoo_typing.odoo_version import unsupported_version_warning
 from odoo_typing.records import RecordStore, load_index
 from odoo_typing.registry import MissingParent, Registry
 from odoo_typing.scanner import Contribution
@@ -157,6 +158,8 @@ class OdooPlugin(Plugin):
         """
         super().__init__(options)
         self._settings = _settings_or_exit(options)
+        if warning := unsupported_version_warning(self._settings.odoo_path):
+            print(warning, file=sys.stderr)
         self._store = RecordStore.for_cache_dir(options.cache_dir)
         self._inputs_checked = False
         self._new_registry()

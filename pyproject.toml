@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "mypy plugin that understands the Odoo ORM: models, _inherit, fields and recordsets"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["mypy>=2.1"]
+dependencies = ["mypy>=2.1,<2.5"]  # internal mypy APIs: tested on 2.1 and 2.4
 
 [project.scripts]
 odoo-typing-root = "odoo_typing.overlay:main"
