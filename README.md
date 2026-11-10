@@ -346,8 +346,10 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
 - domains, `@api.depends` paths; assignments to fields (`record.partner_id = "x"`) are
   not checked (`Field.__set__` is untyped)
 - fields a delegated parent itself delegates (`_inherits` of an `_inherits` parent)
-- `@api.onchange`, `@api.ondelete`, `@api.depends_context` methods stay `Any`
-  (untyped decorators); `super().create(...)` in an unannotated override is `Any`
+- an unannotated override of a `-> Self` method (`create`, `copy`, `search`, `sudo`...)
+  is typed `(self: Self, ...) -> Self`, so `super().create(...)` keeps the model type; in
+  its body, returning a concrete class (`return self.env["account.account"].union(...)`)
+  is a `return-value` error ("expected Self")
 - `self` is the class being written, so inside a class `self` sees the earlier classes of
   its model, not later ones of the same addon (`env[...]` does see them). The classes of
   one model are distinct types: a variable that first holds `env["x"]` (or a relational

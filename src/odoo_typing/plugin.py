@@ -111,6 +111,7 @@ from odoo_typing.fingerprint import Fingerprints
 from odoo_typing.methods import (
     IDENTITY_DECORATORS,
     IDENTITY_FACTORIES,
+    annotate_self_overrides,
     create_signature,
     identity_decorator,
     identity_factory,
@@ -285,6 +286,7 @@ class OdooPlugin(Plugin):
         _normalize_meta_attributes(ctx)
         if not ctx.cls.info.has_base(BASE_MODEL):
             return  # the hook runs for every class, also outside Odoo
+        annotate_self_overrides(ctx)
         contribution = self.registry.contribution(ctx.cls.info.fullname)
         if contribution is not None:
             self._delegate_fields(contribution, ctx)

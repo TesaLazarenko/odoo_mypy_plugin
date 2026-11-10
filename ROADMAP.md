@@ -316,9 +316,14 @@
   `returns`.
 - **Критерій готовності.** На кожен із них є тест на `reveal_type(self)` усередині методу.
 
-### 4.4 `super().create(...)` у неанотованому override
-- **Як вирішити.** Розширити method hook WP4 (див. наскрізну вимогу 4): якщо receiver є
-  `super()` у класі моделі, повертати тип `self`.
+### 4.4 `super().create(...)` у неанотованому override — ✅ зроблено (крок 5)
+- **Висновок кроку 5.** План через method hook не працює: mypy не викликає хуків для
+  `super().x(...)`, бо `SuperExpr` не є `RefExpr` (`checkexpr.py`, пошук fullname
+  callee). Тому неанотовані override методів `-> Self` отримують сигнатуру
+  `(self: Self, *Any) -> Self` після тіла класу (`methods.annotate_self_overrides`).
+- **Залишок.** `return self.env["own.model"]...` у такому override дає `return-value`
+  ("expected Self"), 1 випадок на account. Можливе рішення: перевіряти тіло з типом
+  повернення `Self | <tip моделі>`, а для викликів залишати `Self`.
 
 ### 4.5 `request.env` у контролерах
 - **Перевірено:** `request = _request_stack()`, тобто werkzeug `LocalProxy`. Werkzeug

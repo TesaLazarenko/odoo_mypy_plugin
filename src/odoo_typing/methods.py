@@ -12,8 +12,8 @@ from __future__ import annotations
 from typing import Final
 
 from mypy.lookup import lookup_fully_qualified
-from mypy.nodes import FuncDef
-from mypy.plugin import FunctionContext, MethodContext, MethodSigContext
+from mypy.nodes import Decorator, FuncDef, TypeInfo
+from mypy.plugin import ClassDefContext, FunctionContext, MethodContext, MethodSigContext
 from mypy.types import (
     AnyType,
     CallableType,
@@ -21,9 +21,12 @@ from mypy.types import (
     Instance,
     Type,
     TypeOfAny,
+    TypeVarId,
+    TypeVarType,
     UnionType,
     get_proper_type,
 )
+from mypy.typevars import fill_typevars
 
 # isort: split
 # After mypy.types: mypy.checker and mypy.types import each other at import time.
@@ -33,6 +36,7 @@ __all__ = [
     "IDENTITY_DECORATORS",
     "IDENTITY_FACTORIES",
     "SELF_METHODS",
+    "annotate_self_overrides",
     "create_signature",
     "identity_decorator",
     "identity_factory",
@@ -154,3 +158,49 @@ def keep_receiver(ctx: MethodContext) -> Type:
     ):
         return receiver
     return ctx.default_return_type
+
+
+def annotate_self_overrides(ctx: ClassDefContext) -> None:
+    """Type unannotated overrides of ``-> Self`` methods as ``(self: Self, ...) -> Self``.
+
+    ``super().create(vals_list)`` in an override returns what the next class's
+    ``create`` returns; when that is another unannotated override, mypy says ``Any``.
+    mypy calls no plugin hook for ``super()`` calls (the callee has no full name), so
+    the overrides themselves get the type the ``BaseModel`` method declares: their
+    arguments stay ``Any`` as in any unannotated def. Runs after the class body.
+    """
+    info = ctx.cls.info
+    for statement in ctx.cls.defs.body:
+        func = statement.func if isinstance(statement, Decorator) else statement
+        if not isinstance(func, FuncDef) or func.type is not None or func.name not in SELF_METHODS:
+            continue
+        if func.is_static or func.is_class or not func.arg_names:
+            continue
+        func.type = _self_signature(func, info, ctx.api.named_type("builtins.function"))
+
+
+def _self_signature(func: FuncDef, info: TypeInfo, fallback: Instance) -> CallableType:
+    if info.self_type is None:
+        # As mypy's own ``SemanticAnalyzer.setup_self_type`` (id 0 marks a self type).
+        info.self_type = TypeVarType(
+            "Self",
+            f"{info.fullname}.Self",
+            id=TypeVarId(0),
+            values=[],
+            upper_bound=fill_typevars(info),
+            default=AnyType(TypeOfAny.from_omitted_generics),
+        )
+    self_type = info.self_type
+    others = [AnyType(TypeOfAny.unannotated)] * (len(func.arg_names) - 1)
+    return CallableType(
+        [self_type, *others],
+        func.arg_kinds,
+        func.arg_names,
+        self_type,
+        fallback,
+        name=func.name,
+        variables=[self_type],
+        line=func.line,
+        column=func.column,
+        definition=func,
+    )

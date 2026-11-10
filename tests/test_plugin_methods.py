@@ -366,3 +366,57 @@ def test_env_dynamic_name_option_change_invalidates_cache(run_mypy: RunMypy) -> 
     result = run_mypy({"my_mod": {"models.py": DYNAMIC_ENV}}, options='dynamic_env = "base"\n')
 
     assert '9: note: Revealed type is "odoo.models.BaseModel"' in result.messages("models.py")
+
+
+# -- roadmap 4.4: super() in unannotated overrides -------------------------------------------
+
+
+def test_super_call_to_unannotated_override_keeps_self_type(run_mypy: RunMypy) -> None:
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import api, fields, models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    size = fields.Integer()
+
+                    @api.model_create_multi
+                    def create(self, vals_list):
+                        return super().create(vals_list)
+
+                    def copy(self, default=None):
+                        return super().copy(default)
+
+                class ThingMore(models.Model):
+                    _inherit = "t.thing"
+
+                    @api.model_create_multi
+                    def create(self, vals_list):
+                        records = super().create(vals_list)
+                        reveal_type(records)
+                        records.sizee + records.size
+                        return records
+
+                    def copy(self, default=None):
+                        reveal_type(super().copy(default))
+                        return super().copy(default)
+
+                    def search_count(self, domain, limit=None):
+                        reveal_type(super().search_count(domain, limit))
+                        return 0
+                """
+            }
+        }
+    )
+
+    # Inside the override ``self`` is ``Self`` (bound to ThingMore), so is super()'s result.
+    messages = result.messages("models.py")
+    assert messages == [
+        '22: note: Revealed type is "Self"',
+        '23: error: "Self" has no attribute "sizee"  [attr-defined]',
+        '27: note: Revealed type is "Self"',
+        '31: note: Revealed type is "Any"',  # not a -> Self method: unchanged
+    ]
