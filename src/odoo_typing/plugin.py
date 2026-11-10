@@ -199,9 +199,14 @@ class OdooPlugin(Plugin):
 
         Without these edges mypy may type-check a file before the model classes it
         refers to (``_inherit``, ``env[...]``, comodels) are analyzed, or not load them
-        at all. Files outside any addon get none, since nothing is resolved in them.
+        at all. Files outside any addon get none, since nothing is resolved in them,
+        nor do addon files that mypy names in the other spelling (``my_addon.x``
+        while the overlay root makes it ``odoo.addons.my_addon.x``): their edges would
+        make mypy analyze the addon a second time (:meth:`Registry.misnamed` warns).
         """
         self._refresh_registry()
+        if self.registry.misnamed(file.fullname):
+            return []  # never make mypy load the addon again under its configured name
         modules = set(self.registry.dependency_modules(file.fullname, file.path))
         modules.discard(file.fullname)
         return [(DEPENDENCY_PRIORITY, module, -1) for module in sorted(modules)]

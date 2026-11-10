@@ -96,9 +96,9 @@ def digest(value: object) -> str:
 
 
 def index_key(settings: Settings) -> str:
-    """A key that differs for each list of addons roots."""
+    """A key that differs for each list of addons roots and module spelling."""
     roots = [str(root) for root in index_roots(settings.odoo_path, settings.addons_paths)]
-    return digest(roots)[:16]
+    return digest([roots, settings.custom_prefix])[:16]
 
 
 def load_index(settings: Settings, store: RecordStore) -> tuple[AddonIndex, Stamps]:
@@ -116,9 +116,11 @@ def load_index(settings: Settings, store: RecordStore) -> tuple[AddonIndex, Stam
     known = _stored_index(record) if record is not None else None
     if known is not None:
         addons, stamps = known
-        index = AddonIndex(settings.odoo_path, settings.addons_paths, known=addons)
+        index = AddonIndex(
+            settings.odoo_path, settings.addons_paths, settings.custom_prefix, known=addons
+        )
         return index, stamps
-    index, stamps = read_index(settings.odoo_path, settings.addons_paths)
+    index, stamps = read_index(settings.odoo_path, settings.addons_paths, settings.custom_prefix)
     addons_data = [addon_data(addon) for addon in index.addons.values()]
     store.save(key, {"stamps": stamps, "addons": addons_data})
     return index, stamps

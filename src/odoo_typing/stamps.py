@@ -79,14 +79,16 @@ def _subdirectories(root: Path) -> list[Path]:
         return []
 
 
-def read_index(odoo_path: Path, addons_paths: tuple[Path, ...]) -> tuple[AddonIndex, Stamps]:
+def read_index(
+    odoo_path: Path, addons_paths: tuple[Path, ...], custom_prefix: str = "{}"
+) -> tuple[AddonIndex, Stamps]:
     """Build the addon index from disk, with the stamps of what it read.
 
     The stamps are taken first, so a file changed while the index is built makes the
     stamps outdated rather than the index silently stale.
     """
     stamps = index_stamps(index_roots(odoo_path, addons_paths))
-    return AddonIndex(odoo_path, addons_paths), stamps
+    return AddonIndex(odoo_path, addons_paths, custom_prefix), stamps
 
 
 def scan_stamps(addon: Addon, scan: AddonScan) -> Stamps:

@@ -121,6 +121,20 @@ def test_load_settings_odoo_on_mypy_path_is_found(tmp_path: Path) -> None:
     assert settings.odoo_path == odoo.resolve()
 
 
+def test_load_settings_odoo_in_overlay_on_mypy_path_returns_real_package(
+    tmp_path: Path,
+) -> None:
+    odoo = _odoo(tmp_path / "real")
+    overlay = tmp_path / "root" / "odoo"
+    (overlay / "addons").mkdir(parents=True)
+    (overlay / "release.py").symlink_to(odoo / "release.py")
+    config = _ini(tmp_path, "mypy.ini", "[mypy]\n")
+
+    settings = load_settings(config, [str(tmp_path / "root")])
+
+    assert settings.odoo_path == odoo.resolve()
+
+
 def test_load_settings_odoo_not_found_names_both_config_formats(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
@@ -159,4 +173,53 @@ def test_load_settings_broken_ini_raises(tmp_path: Path) -> None:
     config = _ini(tmp_path, "setup.cfg", "no section header\n")
 
     with pytest.raises(ConfigError, match="cannot read"):
+        load_settings(config)
+
+
+def _overlay_config(tmp_path: Path, overlay_root: object) -> str:
+    _addon(tmp_path / "addons" / "my_mod")
+    config = _config(tmp_path, ["addons"])
+    with open(config, "a") as handle:
+        handle.write(f"overlay_root = {overlay_root!r}\n".replace("'", '"'))
+    return config
+
+
+def test_load_settings_without_overlay_root_returns_none(tmp_path: Path) -> None:
+    _addon(tmp_path / "addons" / "my_mod")
+    config = _config(tmp_path, ["addons"])
+
+    assert load_settings(config).overlay_root is None
+
+
+def test_load_settings_generated_overlay_root_returns_resolved_path(tmp_path: Path) -> None:
+    config = _overlay_config(tmp_path, ".odoo-root")
+    (tmp_path / ".odoo-root" / "odoo" / "addons").mkdir(parents=True)
+    (tmp_path / ".odoo-root" / "odoo" / "addons" / "__init__.py").write_text("")
+
+    settings = load_settings(config)
+
+    assert settings.overlay_root == (tmp_path / ".odoo-root").resolve()
+
+
+def test_load_settings_overlay_root_not_generated_raises_with_command_hint(
+    tmp_path: Path,
+) -> None:
+    config = _overlay_config(tmp_path, ".odoo-root")
+
+    with pytest.raises(ConfigError, match=r"overlay_root .*odoo-typing-root"):
+        load_settings(config)
+
+
+def test_load_settings_overlay_root_not_generated_unchecked_returns_path(tmp_path: Path) -> None:
+    config = _overlay_config(tmp_path, ".odoo-root")
+
+    settings = load_settings(config, require_overlay=False)
+
+    assert settings.overlay_root == (tmp_path / ".odoo-root").resolve()
+
+
+def test_load_settings_overlay_root_not_a_string_raises(tmp_path: Path) -> None:
+    config = _overlay_config(tmp_path, 3)
+
+    with pytest.raises(ConfigError, match="overlay_root must be a string"):
         load_settings(config)

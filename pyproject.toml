@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["mypy>=2.1"]
 
+[project.scripts]
+odoo-typing-root = "odoo_typing.overlay:main"
+
 [dependency-groups]
 dev = ["pytest>=8", "pytest-mock>=3.14", "ruff>=0.15"]
 
