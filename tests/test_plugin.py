@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 
 from conftest import RunMypy
+from pytest_mock import MockerFixture
+from test_harness import ENV_LOOKUP
+
+from odoo_typing import registry as registry_module
 
 PARTNER = "odoo.addons.base.models.res_partner.Partner"
 
@@ -253,3 +258,66 @@ def test_probe_fixture_reports_type_errors(run_mypy: RunMypy) -> None:
     lines = {int(message.split(":", 1)[0]) for message in result.messages("partner.py")}
     # comodel typo, int + str|False, unknown env model
     assert {8, 15, 18} <= lines
+
+
+SCRIPT = """
+from odoo.api import Environment
+
+def run(env: Environment) -> None:
+    reveal_type(env["res.partner"])
+    reveal_type(env["no.such.model"])
+"""
+
+
+def test_env_getitem_outside_addon_keeps_declared_type_unchecked(run_mypy: RunMypy) -> None:
+    # Files outside any addon have no dependency view: nothing is resolved or checked there.
+    result = run_mypy({"my_mod": {"models.py": ""}}, scripts={"tool.py": SCRIPT})
+
+    assert result.messages("tool.py") == [
+        '5: note: Revealed type is "odoo.models.BaseModel"',
+        '6: note: Revealed type is "odoo.models.BaseModel"',
+    ]
+
+
+def test_cold_run_scans_only_addons_of_loaded_files(
+    run_mypy: RunMypy, mocker: MockerFixture
+) -> None:
+    # Odoo core files (odoo/http.py, odoo/tests/common.py...) use env[...] too; they
+    # must not make the plugin scan every installed addon.
+    scan = mocker.spy(registry_module, "scan_addon")
+
+    run_mypy(ENV_LOOKUP, scripts={"tool.py": SCRIPT}, fresh_cache=True)
+
+    assert {call.args[0].name for call in scan.call_args_list} == {"base", "my_mod"}
+
+
+def test_inherit_from_utf8_bom_file_exposes_fields(run_mypy: RunMypy) -> None:
+    thing = textwrap.dedent(
+        """
+        from odoo import fields, models
+
+        class Thing(models.Model):
+            _name = "x.thing"
+            score = fields.Integer()
+        """
+    )
+    result = run_mypy(
+        {
+            "dep_mod": {"thing.py": b"\xef\xbb\xbf" + thing.encode()},
+            "my_mod": {
+                "depends": ["dep_mod"],
+                "user.py": """
+                from odoo import models
+
+                class ThingExt(models.Model):
+                    _inherit = "x.thing"
+
+                    def action(self) -> None:
+                        reveal_type(self.score)
+                """,
+            },
+        },
+        check=["my_mod"],
+    )
+
+    assert result.messages("user.py") == ['8: note: Revealed type is "int"']

@@ -18,6 +18,12 @@ plugin:
 Models are resolved **per addon**: a module sees only the models of the addons in its
 `depends` closure, just as Odoo loads them.
 
+**Code outside any addon** (scripts, and Odoo's own `odoo/*.py` modules, which mypy always
+analyzes) has no `depends` closure, so the plugin leaves it alone: `env["..."]` keeps
+Odoo's declared type `BaseModel`, and model names are not checked there. This keeps such
+files free (resolving them would mean scanning every installed addon). Put the code in
+an addon to get real model types.
+
 ## Setup
 
 ```toml
@@ -38,6 +44,10 @@ odoo_path = ".odoo-root/odoo"        # dir with release.py; auto-detected if omi
 addons_path = ["addons"]             # relative to pyproject.toml
 ```
 
+Each `addons_path` entry must be a directory that *contains* addons (subdirectories with
+a `__manifest__.py`), like Odoo's `--addons-path`. Listing an addon directory itself, or a
+directory without any addon, is a configuration error.
+
 **Note on `mypy_path`:** if Odoo is installed as a deb/pip package, don't put the whole
 `site-packages`/`dist-packages` directory on `mypy_path`. Create a directory that holds
 only a symlink instead: `mkdir .odoo-root && ln -s /usr/lib/python3/dist-packages/odoo .odoo-root/odoo`.
@@ -52,7 +62,11 @@ mypy addons/my_addon
 - **Registry** ([registry.py](src/odoo_typing/registry.py), [scanner.py](src/odoo_typing/scanner.py)):
   a static AST scan. It reads manifests and follows each addon's `__init__.py` imports, then
   collects the classes with `_name`/`_inherit` in registration order. It never imports Odoo
-  or touches a database.
+  or touches a database. Everything is lazy: manifests are read on the first question (a
+  fully cached mypy run reads none), and an addon is scanned only when a file whose
+  `depends` closure contains it needs a model. Sources are parsed as bytes, so a UTF-8 BOM
+  or a `# -*- coding: ... -*-` cookie works; a file that cannot be parsed is reported once
+  on stderr (`odoo-typing: warning: cannot parse ...`), since its models are then missing.
 - **`get_additional_deps`**: makes mypy load the modules that define the models a file
   uses, so they are analyzed first.
 - **`get_customize_class_mro_hook`**: gives each model class the previous classes of the

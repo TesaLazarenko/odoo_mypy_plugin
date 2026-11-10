@@ -19,6 +19,7 @@ from pathlib import Path
 __all__ = ["ConfigError", "Settings", "load_settings"]
 
 SECTION = "odoo_typing"
+MANIFEST = "__manifest__.py"
 
 
 class ConfigError(Exception):
@@ -90,4 +91,29 @@ def _addons_paths(value: object, base_dir: Path) -> tuple[Path, ...]:
     missing = [str(path) for path in paths if not path.is_dir()]
     if missing:
         raise ConfigError(f"addons_path entries are not directories: {', '.join(missing)}")
+    for path in paths:
+        _check_addons_dir(path)
     return paths
+
+
+def _check_addons_dir(path: Path) -> None:
+    """Reject an ``addons_path`` entry that holds no addon.
+
+    Odoo 18 itself accepts such entries and then just finds no module there. For a
+    type checker that is a silent failure: the files of the user's addons would
+    belong to no addon, and their models would be reported as unknown.
+    """
+    try:
+        if any((child / MANIFEST).is_file() for child in path.iterdir()):
+            return
+    except OSError as exc:
+        raise ConfigError(f"cannot list addons_path entry {path}: {exc.strerror}") from exc
+    if (path / MANIFEST).is_file():
+        raise ConfigError(
+            f"addons_path entry {path} is itself an addon; "
+            f"list its parent directory {path.parent} instead"
+        )
+    raise ConfigError(
+        f"addons_path entry {path} contains no addon "
+        f"(no subdirectory with {MANIFEST}); list the directory that contains your addons"
+    )

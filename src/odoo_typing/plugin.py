@@ -13,6 +13,13 @@ What it does:
 * ``env["model.name"]`` evaluates to that model's class; unknown names are errors.
 * ``fields.Many2one("x")`` / ``One2many`` / ``Many2many`` are bound to the
   comodel class, so reading the field gives a typed recordset.
+
+Model names are resolved from the point of view of the addon that contains the
+file. Files outside any addon (scripts, and Odoo's own ``odoo/*.py`` modules,
+which mypy always analyzes) have no such view: the plugin leaves them alone, so
+``env[...]`` keeps the declared ``BaseModel`` type and names are not checked
+there. Resolving them against every installed addon would scan the whole
+registry on each cold run, and could still pick an arbitrary extension class.
 """
 
 from __future__ import annotations
@@ -67,7 +74,8 @@ class OdooPlugin(Plugin):
         """Make mypy load the modules that define the models a file relies on.
 
         Without these edges mypy may type-check a file before the model classes it
-        refers to (``_inherit``, ``env[...]``, comodels) are analyzed.
+        refers to (``_inherit``, ``env[...]``, comodels) are analyzed. Files outside
+        any addon get none, since nothing is resolved in them.
         """
         addon_name = self.registry.addon_name_for_path(file.path)
         if addon_name is None:
@@ -137,14 +145,14 @@ class OdooPlugin(Plugin):
         # a custom subclass...), so match every ``__get__`` and check the MRO in the hook.
         return self._relational_get if fullname.endswith(".__get__") else None
 
-    def _model_type(self, model: str, path: str) -> Instance | AnyType | None:
-        """Resolve a model name as seen from a source file.
+    def _model_type(self, model: str, addon_name: str) -> Instance | AnyType | None:
+        """Resolve a model name as seen from an addon.
 
         Returns:
             The model class; ``Any`` if the model exists but its class is not
             loaded in this mypy run; ``None`` if no visible addon defines it.
         """
-        tips = self.registry.model_tips(model, self.registry.addon_name_for_path(path))
+        tips = self.registry.model_tips(model, addon_name)
         for tip in tips:
             node = self.lookup_fully_qualified(tip.fullname)
             if node is not None and isinstance(node.node, TypeInfo):
@@ -154,8 +162,11 @@ class OdooPlugin(Plugin):
     def _env_getitem(self, ctx: MethodContext) -> Type:
         if not ctx.args or len(ctx.args[0]) != 1 or not isinstance(ctx.args[0][0], StrExpr):
             return ctx.default_return_type
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if addon_name is None:
+            return ctx.default_return_type  # outside any addon: see the module docstring
         model = ctx.args[0][0].value
-        model_type = self._model_type(model, ctx.api.path)
+        model_type = self._model_type(model, addon_name)
         if model_type is None:
             ctx.api.fail(f'Unknown Odoo model "{model}"', ctx.context, code=ODOO_MODEL)
             return ctx.default_return_type
@@ -166,9 +177,10 @@ class OdooPlugin(Plugin):
         if not isinstance(default, Instance):
             return ctx.default_return_type
         comodel = _comodel_expression(ctx)
-        if comodel is None:
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if comodel is None or addon_name is None:
             return ctx.default_return_type
-        model_type = self._model_type(comodel.value, ctx.api.path)
+        model_type = self._model_type(comodel.value, addon_name)
         if model_type is None:
             ctx.api.fail(f'Unknown Odoo model "{comodel.value}"', comodel, code=ODOO_MODEL)
             model_type = AnyType(TypeOfAny.from_error)

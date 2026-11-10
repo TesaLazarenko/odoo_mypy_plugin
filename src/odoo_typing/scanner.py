@@ -2,6 +2,9 @@
 
 Only files reachable through the addon's ``__init__.py`` imports are scanned, in
 import order, which is the order in which Odoo registers the classes.
+
+Sources are parsed from bytes, like Python and mypy do, so a UTF-8 BOM or a PEP 263
+coding cookie is honoured.
 """
 
 from __future__ import annotations
@@ -12,9 +15,26 @@ from pathlib import Path
 
 from odoo_typing.addons import Addon
 
-__all__ = ["Contribution", "ModuleScan", "referenced_models", "scan_addon"]
+__all__ = [
+    "AddonScan",
+    "Contribution",
+    "ModuleScan",
+    "SourceError",
+    "parse_source",
+    "referenced_models",
+    "scan_addon",
+]
 
 RELATIONAL_FIELDS = frozenset({"Many2one", "One2many", "Many2many"})
+# Concrete node classes that have no child nodes worth visiting (``ast.Load`` etc.).
+LEAF_NODES: frozenset[type] = frozenset(
+    {ast.Name, ast.Constant, ast.alias}
+    | {
+        cls
+        for base in (ast.expr_context, ast.operator, ast.boolop, ast.unaryop, ast.cmpop)
+        for cls in base.__subclasses__()
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +81,59 @@ class ModuleScan:
     referenced_models: frozenset[str]
 
 
-def scan_addon(addon: Addon, addon_order: int) -> list[ModuleScan]:
+class SourceError(Exception):
+    """A Python source file that cannot be read or parsed.
+
+    Attributes:
+        path: The file.
+        reason: Short description, e.g. ``invalid syntax (line 3)``.
+    """
+
+    def __init__(self, path: Path, reason: str) -> None:
+        super().__init__(f"{path}: {reason}")
+        self.path = path
+        self.reason = reason
+
+
+@dataclass(frozen=True, slots=True)
+class AddonScan:
+    """Result of scanning one addon.
+
+    Attributes:
+        modules: One entry per imported file, in import order.
+        errors: Imported files that could not be parsed (their classes are missing).
+    """
+
+    modules: tuple[ModuleScan, ...]
+    errors: tuple[SourceError, ...]
+
+
+def parse_source(path: Path) -> ast.Module:
+    """Parse a Python file the way the interpreter reads it.
+
+    The file is passed to the parser as bytes, so a UTF-8 BOM and coding cookies
+    (``# -*- coding: latin-1 -*-``) are honoured.
+
+    Args:
+        path: Source file.
+
+    Returns:
+        The module's syntax tree.
+
+    Raises:
+        SourceError: If the file cannot be read or is not valid Python.
+    """
+    try:
+        return ast.parse(path.read_bytes(), filename=str(path))
+    except OSError as exc:
+        raise SourceError(path, exc.strerror or str(exc)) from exc
+    except SyntaxError as exc:
+        raise SourceError(path, f"{exc.msg} (line {exc.lineno})") from exc
+    except ValueError as exc:  # e.g. null bytes on older Python versions
+        raise SourceError(path, str(exc)) from exc
+
+
+def scan_addon(addon: Addon, addon_order: int) -> AddonScan:
     """Scan all Python files of an addon that its ``__init__.py`` imports.
 
     Args:
@@ -69,11 +141,11 @@ def scan_addon(addon: Addon, addon_order: int) -> list[ModuleScan]:
         addon_order: Position of the addon in the global load order.
 
     Returns:
-        One entry per imported file, in import order.
+        The scanned files in import order, and the files that could not be parsed.
     """
     walker = _ImportWalker(addon, addon_order)
     walker.visit(addon.path / "__init__.py", addon.module_prefix, is_package=True)
-    return walker.scans
+    return AddonScan(modules=tuple(walker.scans), errors=tuple(walker.errors))
 
 
 class _ImportWalker:
@@ -81,6 +153,7 @@ class _ImportWalker:
         self.addon = addon
         self.addon_order = addon_order
         self.scans: list[ModuleScan] = []
+        self.errors: list[SourceError] = []
         self._seen: set[Path] = set()
 
     def visit(self, path: Path, module: str, *, is_package: bool) -> None:
@@ -88,8 +161,9 @@ class _ImportWalker:
             return
         self._seen.add(path)
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        except (OSError, SyntaxError, UnicodeDecodeError):
+            tree = parse_source(path)
+        except SourceError as error:
+            self.errors.append(error)
             return
         file_order = len(self.scans)
         self.scans.append(
@@ -176,7 +250,7 @@ def _as_names(value: object) -> tuple[str, ...]:
 def referenced_models(tree: ast.Module) -> set[str]:
     """Model names used as literals in ``env[...]`` and relational field comodels."""
     models: set[str] = set()
-    for node in ast.walk(tree):
+    for node in _inner_nodes(tree):
         if isinstance(node, ast.Subscript) and _is_env(node.value):
             name = _string(node.slice)
         elif isinstance(node, ast.Call) and _callee_name(node.func) in RELATIONAL_FIELDS:
@@ -186,6 +260,29 @@ def referenced_models(tree: ast.Module) -> set[str]:
         if name:
             models.add(name)
     return models
+
+
+def _inner_nodes(tree: ast.AST) -> list[ast.AST]:
+    """Return every node except the leaves (names, constants, contexts, operators).
+
+    This runs on every file mypy loads. ``ast.walk`` also visits the leaves, about
+    half of all nodes (each ``Name`` has its own ``Load()`` child), and its nested
+    generators cost more than the work itself; no leaf can be or contain a
+    subscript or a call. The checks are inlined on purpose (hot loop).
+    """
+    nodes: list[ast.AST] = []
+    stack: list[ast.AST] = [tree]
+    node_type, leaves = ast.AST, LEAF_NODES
+    while stack:
+        node = stack.pop()
+        nodes.append(node)
+        for field in node._fields:
+            value = getattr(node, field, None)
+            if isinstance(value, list):
+                stack += [x for x in value if isinstance(x, node_type) and type(x) not in leaves]
+            elif isinstance(value, node_type) and type(value) not in leaves:
+                stack.append(value)
+    return nodes
 
 
 def _is_env(node: ast.expr) -> bool:

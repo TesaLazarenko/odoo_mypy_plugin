@@ -102,20 +102,37 @@ def run_mypy(
     """Write addons to a temp dir and type-check them.
 
     Usage: ``run_mypy({"my_mod": {"models.py": "...", "depends": ["sale"]}})``.
-    Each addon gets a manifest and an ``__init__.py`` importing its modules.
-    Pass ``check=["my_mod"]`` to limit which addons are given to mypy.
+    Each addon gets a manifest and an ``__init__.py`` importing its modules; a
+    source given as ``bytes`` is written unchanged (BOM, other encodings).
+    Pass ``check=["my_mod"]`` to limit which addons are given to mypy,
+    ``scripts={"tool.py": "..."}`` to also check files outside any addon, and
+    ``fresh_cache=True`` to start from an empty mypy cache (so that Odoo's own
+    modules are analyzed again in this run).
     The call fails the test if mypy crashes (internal error, exit status 2).
     """
 
-    def run(addons: dict[str, dict[str, object]], check: list[str] | None = None) -> MypyResult:
+    def run(
+        addons: dict[str, dict[str, object]],
+        check: list[str] | None = None,
+        *,
+        scripts: dict[str, str] | None = None,
+        fresh_cache: bool = False,
+    ) -> MypyResult:
         root = tmp_path / "addons"
+        root.mkdir(exist_ok=True)
         for name, spec in addons.items():
             _write_addon(root / name, spec)
+        targets = [str(root / name) for name in (check or list(addons))]
+        for name, source in (scripts or {}).items():
+            script = tmp_path / "scripts" / name
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text(textwrap.dedent(source))
+            targets.append(str(script))
         config = tmp_path / "pyproject.toml"
         config.write_text(PYPROJECT.format(odoo_root=odoo_root, addons=root))
-        targets = [str(root / name) for name in (check or list(addons))]
+        cache = tmp_path / "mypy_cache" if fresh_cache else mypy_cache
         stdout, stderr, status = mypy_api.run(
-            ["--config-file", str(config), "--cache-dir", str(mypy_cache), *targets]
+            ["--config-file", str(config), "--cache-dir", str(cache), *targets]
         )
         captured = capfd.readouterr()
         _assert_no_crash(status, stdout, stderr, captured.out, captured.err)
@@ -132,6 +149,10 @@ def _write_addon(path: Path, spec: dict[str, object]) -> None:
     imports = "".join(f"from . import {name.removesuffix('.py')}\n" for name in modules)
     (path / "__init__.py").write_text(imports)
     for name in modules:
+        target = path / name
         source = spec[name]
-        assert isinstance(source, str)
-        (path / name).write_text(textwrap.dedent(source))
+        if isinstance(source, bytes):
+            target.write_bytes(source)
+        else:
+            assert isinstance(source, str)
+            target.write_text(textwrap.dedent(source))
