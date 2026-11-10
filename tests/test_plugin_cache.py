@@ -92,14 +92,15 @@ def test_cache_depends_added_sees_field_of_new_dependency(run_mypy: RunMypy) -> 
     assert result.messages("my_mod/user.py") == ['8: note: Revealed type is "int"']
 
 
-def test_cache_depends_removed_reports_unknown_model(run_mypy: RunMypy) -> None:
+def test_cache_depends_removed_reports_model_outside_dependencies(run_mypy: RunMypy) -> None:
     run_mypy({"dep_mod": _dep(), "my_mod": {"depends": ["dep_mod"], "user.py": ENV_USER}})
 
     result = run_mypy({"my_mod": {"depends": ["base"], "user.py": ENV_USER}}, check=["my_mod"])
 
     assert result.messages("my_mod/user.py") == [
-        '8: error: Unknown Odoo model "x.thing"  [odoo-model]',
-        '8: note: Revealed type is "odoo.models.BaseModel"',
+        '8: error: Odoo model "x.thing" is defined in addon "dep_mod", which is not in'
+        ' the dependencies of "my_mod"  [odoo-model-depends]',
+        '8: note: Revealed type is "Any"',
     ]
 
 
