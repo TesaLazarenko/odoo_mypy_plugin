@@ -1,18 +1,34 @@
-"""Plugin settings, read from the ``[tool.odoo_typing]`` table of ``pyproject.toml``.
+"""Plugin settings, read from the config file mypy uses.
 
-Example::
+In ``pyproject.toml`` (or another TOML config), the ``[tool.odoo_typing]`` table::
 
     [tool.odoo_typing]
     odoo_path = "/usr/lib/python3/dist-packages/odoo"   # dir that holds release.py
     addons_path = ["addons", "../enterprise"]           # relative to pyproject.toml
 
-This is a boundary module: raw TOML is validated and turned into :class:`Settings`.
+In ``mypy.ini``, ``.mypy.ini`` or ``setup.cfg``, the ``[odoo_typing]`` section, with
+``addons_path`` entries separated by commas or newlines::
+
+    [odoo_typing]
+    odoo_path = /usr/lib/python3/dist-packages/odoo
+    addons_path = addons, ../enterprise
+
+An INI config without that section falls back to the ``[tool.odoo_typing]`` table of a
+``pyproject.toml`` next to it. Relative paths are relative to the file they are in.
+Without ``odoo_path``, the ``odoo`` package is looked for on ``mypy_path``, then in
+mypy's own interpreter.
+
+This is a boundary module: raw TOML/INI values are validated and turned into
+:class:`Settings`.
 """
 
 from __future__ import annotations
 
+import configparser
 import importlib.util
+import re
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +37,8 @@ from odoo_typing.addons import MANIFEST_NAMES, find_manifest
 __all__ = ["ConfigError", "Settings", "load_settings"]
 
 SECTION = "odoo_typing"
+WHERE = f"[tool.{SECTION}] (pyproject.toml) or [{SECTION}] (mypy.ini, setup.cfg)"
+LIST_SEPARATOR = re.compile(r"[,\n]")
 
 
 class ConfigError(Exception):
@@ -40,42 +58,75 @@ class Settings:
     addons_paths: tuple[Path, ...]
 
 
-def load_settings(config_file: str | None) -> Settings:
+def load_settings(config_file: str | None, mypy_path: Sequence[str] = ()) -> Settings:
     """Load settings from mypy's config file, falling back to auto-detection.
 
     Args:
         config_file: Path of the config file mypy was started with, if any.
+        mypy_path: mypy's ``mypy_path``, searched for the ``odoo`` package if
+            ``odoo_path`` is not set.
 
     Returns:
         Validated settings.
 
     Raises:
-        ConfigError: If the values have the wrong shape or Odoo cannot be found.
+        ConfigError: If the config cannot be read, the values have the wrong shape
+            or Odoo cannot be found.
     """
-    table: dict[str, object] = {}
-    base_dir = Path.cwd()
-    if config_file and config_file.endswith(".toml"):
-        config_path = Path(config_file).resolve()
-        base_dir = config_path.parent
-        with config_path.open("rb") as handle:
-            raw = tomllib.load(handle)
-        tool = raw.get("tool", {})
-        section = tool.get(SECTION, {}) if isinstance(tool, dict) else {}
-        if not isinstance(section, dict):
-            raise ConfigError(f"[tool.{SECTION}] must be a table")
-        table = section
+    table, base_dir = _read_table(config_file)
     return Settings(
-        odoo_path=_odoo_path(table.get("odoo_path"), base_dir),
+        odoo_path=_odoo_path(table.get("odoo_path"), base_dir, mypy_path),
         addons_paths=_addons_paths(table.get("addons_path", []), base_dir),
     )
 
 
-def _odoo_path(value: object, base_dir: Path) -> Path:
+def _read_table(config_file: str | None) -> tuple[dict[str, object], Path]:
+    """The plugin's settings in a config file, and the directory they are relative to."""
+    if not config_file:
+        return {}, Path.cwd()
+    path = Path(config_file).resolve()
+    if path.suffix == ".toml":
+        return _toml_table(path), path.parent
+    table = _ini_table(path)
+    pyproject = path.parent / "pyproject.toml"
+    if table is None and pyproject.is_file():
+        return _toml_table(pyproject), path.parent
+    return table or {}, path.parent
+
+
+def _toml_table(path: Path) -> dict[str, object]:
+    try:
+        with path.open("rb") as handle:
+            raw = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigError(f"cannot read {path}: {exc}") from exc
+    tool = raw.get("tool", {})
+    section = tool.get(SECTION, {}) if isinstance(tool, dict) else {}
+    if not isinstance(section, dict):
+        raise ConfigError(f"[tool.{SECTION}] in {path} must be a table")
+    return section
+
+
+def _ini_table(path: Path) -> dict[str, object] | None:
+    """The ``[odoo_typing]`` section of an INI file, ``addons_path`` as a list."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        with path.open(encoding="utf-8") as handle:
+            parser.read_file(handle)
+    except (OSError, UnicodeDecodeError, configparser.Error) as exc:
+        raise ConfigError(f"cannot read {path}: {exc}") from exc
+    if not parser.has_section(SECTION):
+        return None
+    table: dict[str, object] = dict(parser.items(SECTION))
+    if "addons_path" in table:
+        entries = LIST_SEPARATOR.split(parser.get(SECTION, "addons_path"))
+        table["addons_path"] = [entry.strip() for entry in entries if entry.strip()]
+    return table
+
+
+def _odoo_path(value: object, base_dir: Path, mypy_path: Sequence[str]) -> Path:
     if value is None:
-        spec = importlib.util.find_spec("odoo")
-        if spec is None or not spec.submodule_search_locations:
-            raise ConfigError(f"Odoo not found: set odoo_path in [tool.{SECTION}]")
-        path = Path(next(iter(spec.submodule_search_locations)))
+        path = _find_odoo(mypy_path)
     elif isinstance(value, str):
         path = (base_dir / value).resolve()
     else:
@@ -83,6 +134,21 @@ def _odoo_path(value: object, base_dir: Path) -> Path:
     if not (path / "release.py").is_file():
         raise ConfigError(f"odoo_path {path} does not contain release.py")
     return path
+
+
+def _find_odoo(mypy_path: Sequence[str]) -> Path:
+    """The ``odoo`` package on ``mypy_path``, else the one mypy's interpreter imports."""
+    for entry in mypy_path:
+        candidate = Path(entry) / "odoo"
+        if (candidate / "release.py").is_file():
+            return candidate.resolve()
+    spec = importlib.util.find_spec("odoo")
+    if spec is None or not spec.submodule_search_locations:
+        raise ConfigError(
+            f"Odoo not found: set odoo_path in {WHERE}, or add the directory that "
+            "contains the odoo package to mypy_path"
+        )
+    return Path(next(iter(spec.submodule_search_locations)))
 
 
 def _addons_paths(value: object, base_dir: Path) -> tuple[Path, ...]:

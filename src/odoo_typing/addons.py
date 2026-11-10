@@ -78,12 +78,16 @@ def read_depends(manifest: Path) -> tuple[str, ...]:
 class AddonIndex:
     """All addons of the configured addons paths, with dependency helpers."""
 
-    def __init__(self, odoo_path: Path, addons_paths: Iterable[Path]) -> None:
+    def __init__(
+        self, odoo_path: Path, addons_paths: Iterable[Path], *, known: Iterable[Addon] = ()
+    ) -> None:
         """Scan addons directories.
 
         Args:
             odoo_path: Directory of the ``odoo`` package.
             addons_paths: Extra addons directories. Earlier entries win on name clashes.
+            known: The addons a previous scan of the same directories found, in its
+                order (:attr:`addons`). If given, the directories are not read again.
         """
         self.addons: dict[str, Addon] = {}
         self._by_path: dict[Path, Addon] = {}
@@ -92,6 +96,10 @@ class AddonIndex:
         # about every file mypy loads, often several times, and resolve() costs syscalls.
         self._real_dirs: dict[str, Path] = {}
         self._dir_addons: dict[str, Addon | None] = {}
+        for addon in known:
+            self._register(addon)
+        if self.addons:
+            return
         self._add_root(odoo_path / "addons", prefix_template="odoo.addons.{}")
         for root in addons_paths:
             self._add_root(root, prefix_template="{}")
@@ -110,8 +118,11 @@ class AddonIndex:
                 module_prefix=prefix_template.format(child.name),
                 depends=read_depends(manifest),
             )
-            self.addons[addon.name] = addon
-            self._by_path.setdefault(addon.path, addon)
+            self._register(addon)
+
+    def _register(self, addon: Addon) -> None:
+        self.addons[addon.name] = addon
+        self._by_path.setdefault(addon.path, addon)
 
     def closure(self, name: str) -> frozenset[str]:
         """Return the addon and all its (transitive) dependencies that exist on disk.

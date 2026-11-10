@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cached_property, partial
 from pathlib import Path
@@ -33,6 +34,7 @@ from odoo_typing.addons import BASE, AddonIndex
 from odoo_typing.config import Settings
 from odoo_typing.graphs import c3_merge, components_from
 from odoo_typing.scanner import (
+    AddonScan,
     Contribution,
     ModuleScan,
     SourceError,
@@ -40,10 +42,12 @@ from odoo_typing.scanner import (
     referenced_models,
     scan_addon,
 )
+from odoo_typing.stamps import Stamps, read_index, scan_stamps, unchanged
 
 __all__ = ["MissingParent", "ModelView", "Registry"]
 
 TipsKey = tuple[str, str, str | None]
+IndexLoader = Callable[[], tuple[AddonIndex, Stamps]]
 # A registry MRO: classes, and model names standing for a parent's registry class.
 Nodes = tuple["Contribution | str", ...]
 # `_name = "x"`, also chained (`_name = _description = "x"`); %s is the escaped name.
@@ -94,15 +98,20 @@ class ModelView:
 class Registry:
     """Lazily scanned index of Odoo model classes."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, index: IndexLoader | None = None) -> None:
         """Create a registry for the configured Odoo installation.
 
         Nothing is read from disk yet: a fully cached mypy run never asks a question.
 
         Args:
             settings: Plugin settings.
+            index: Returns the addon index and the stamps of what it was built from
+                (default: :func:`odoo_typing.stamps.read_index`).
         """
         self._settings = settings
+        self._index_loader = index or partial(read_index, settings.odoo_path, settings.addons_paths)
+        self._index_stamps: Stamps = {}
+        self._scan_results: dict[str, tuple[AddonScan, Stamps]] = {}
         self._by_module: dict[str, ModuleScan] = {}
         self._by_path: dict[Path, ModuleScan] = {}
         self._by_class: dict[str, Contribution] = {}
@@ -124,7 +133,30 @@ class Registry:
     @cached_property
     def addons(self) -> AddonIndex:
         """Index of all addons, built (manifests read) on first use."""
-        return AddonIndex(self._settings.odoo_path, self._settings.addons_paths)
+        index, self._index_stamps = self._index_loader()
+        return index
+
+    def index_stamps(self) -> Stamps:
+        """The stamps of the files the addon index describes (roots, entries, manifests)."""
+        self.addons  # noqa: B018 - built on first use
+        return self._index_stamps
+
+    def scan_result(self, addon_name: str) -> tuple[AddonScan, Stamps]:
+        """Scan an addon (once); return the scan and the stamps of the files it read."""
+        self._models_of(addon_name)
+        return self._scan_results[addon_name]
+
+    def inputs_changed(self) -> bool:
+        """Whether a file the registry has read so far changed on disk since.
+
+        A long-lived plugin (the mypy daemon) must then start over with a new registry:
+        any answer may depend on the changed file.
+        """
+        if "addons" not in self.__dict__:
+            return False  # nothing read yet
+        if not unchanged(self._index_stamps):
+            return True
+        return not all(unchanged(stamps) for _, stamps in self._scan_results.values())
 
     def _models_of(self, addon_name: str) -> dict[str, list[Contribution]]:
         """Scan an addon once; return its contributions by model name."""
@@ -132,6 +164,7 @@ class Registry:
             models = self._by_model[addon_name] = {}
             addon = self.addons.addons[addon_name]
             result = scan_addon(addon, self.addons.load_key(addon_name))
+            self._scan_results[addon_name] = (result, scan_stamps(addon, result))
             for error in result.errors:
                 _warn_unparsable(error)
             for scan in result.modules:
