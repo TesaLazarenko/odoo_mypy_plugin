@@ -102,8 +102,10 @@ def run_mypy(
     """Write addons to a temp dir and type-check them.
 
     Usage: ``run_mypy({"my_mod": {"models.py": "...", "depends": ["sale"]}})``.
-    Each addon gets a manifest and an ``__init__.py`` importing its modules; a
-    source given as ``bytes`` is written unchanged (BOM, other encodings).
+    Each addon gets a manifest (``"manifest": "__openerp__.py"`` picks another file
+    name) and, unless the spec has its own ``"__init__.py"``, one that imports its
+    top-level modules. Keys may contain ``/`` (``"models/a.py"``); a source given as
+    ``bytes`` is written unchanged (BOM, other encodings).
     Pass ``check=["my_mod"]`` to limit which addons are given to mypy,
     ``scripts={"tool.py": "..."}`` to also check files outside any addon, and
     ``fresh_cache=True`` to start from an empty mypy cache (so that Odoo's own
@@ -144,13 +146,16 @@ def run_mypy(
 def _write_addon(path: Path, spec: dict[str, object]) -> None:
     path.mkdir(parents=True)
     depends = spec.get("depends", ["base"])
-    (path / "__manifest__.py").write_text(f"{{'name': '{path.name}', 'depends': {depends!r}}}\n")
-    modules = [key for key in spec if key.endswith(".py")]
-    imports = "".join(f"from . import {name.removesuffix('.py')}\n" for name in modules)
-    (path / "__init__.py").write_text(imports)
-    for name in modules:
+    manifest = spec.get("manifest", "__manifest__.py")
+    assert isinstance(manifest, str)
+    (path / manifest).write_text(f"{{'name': '{path.name}', 'depends': {depends!r}}}\n")
+    files = {key: spec[key] for key in spec if key.endswith(".py")}
+    if "__init__.py" not in files:
+        top_level = [name.removesuffix(".py") for name in files if "/" not in name]
+        files["__init__.py"] = "".join(f"from . import {name}\n" for name in top_level)
+    for name, source in files.items():
         target = path / name
-        source = spec[name]
+        target.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(source, bytes):
             target.write_bytes(source)
         else:

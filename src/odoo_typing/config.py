@@ -16,10 +16,11 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from odoo_typing.addons import MANIFEST_NAMES, find_manifest
+
 __all__ = ["ConfigError", "Settings", "load_settings"]
 
 SECTION = "odoo_typing"
-MANIFEST = "__manifest__.py"
 
 
 class ConfigError(Exception):
@@ -104,16 +105,17 @@ def _check_addons_dir(path: Path) -> None:
     belong to no addon, and their models would be reported as unknown.
     """
     try:
-        if any((child / MANIFEST).is_file() for child in path.iterdir()):
+        if any(find_manifest(child) for child in path.iterdir()):
             return
     except OSError as exc:
         raise ConfigError(f"cannot list addons_path entry {path}: {exc.strerror}") from exc
-    if (path / MANIFEST).is_file():
+    if find_manifest(path):
         raise ConfigError(
             f"addons_path entry {path} is itself an addon; "
             f"list its parent directory {path.parent} instead"
         )
     raise ConfigError(
         f"addons_path entry {path} contains no addon "
-        f"(no subdirectory with {MANIFEST}); list the directory that contains your addons"
+        f"(no subdirectory with {' or '.join(MANIFEST_NAMES)}); "
+        "list the directory that contains your addons"
     )

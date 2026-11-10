@@ -8,8 +8,10 @@ Enable it in ``pyproject.toml``::
 What it does:
 
 * ``_inherit``: every model class gets the earlier classes of the same model
-  (and of its ``_inherit`` mixins) as extra bases, so fields and methods
-  defined elsewhere are visible on ``self`` and ``super()`` works.
+  (and of its ``_inherit`` mixins, and of ``base``) as extra bases, so fields and
+  methods defined elsewhere are visible on ``self`` and ``super()`` works. An
+  ``_inherit`` that Odoo would reject at load time (unknown model, model outside
+  the ``depends``, defined later, cycle) is an ``odoo-model`` error.
 * ``env["model.name"]`` evaluates to that model's class; unknown names are errors.
 * ``fields.Many2one("x")`` / ``One2many`` / ``Many2many`` are bound to the
   comodel class, so reading the field gives a typed recordset.
@@ -29,7 +31,16 @@ from functools import partial
 
 from mypy.errorcodes import ErrorCode
 from mypy.mro import MroError, calculate_mro
-from mypy.nodes import AssignmentStmt, MypyFile, NameExpr, StrExpr, TypeInfo, Var
+from mypy.nodes import (
+    AssignmentStmt,
+    ClassDef,
+    Expression,
+    MypyFile,
+    NameExpr,
+    StrExpr,
+    TypeInfo,
+    Var,
+)
 from mypy.options import Options
 from mypy.plugin import (
     ClassDefContext,
@@ -44,7 +55,7 @@ from mypy.types import AnyType, FunctionLike, Instance, Type, TypeOfAny, get_pro
 from mypy.maptype import map_instance_to_supertype  # after mypy.types: import cycle
 
 from odoo_typing.config import load_settings
-from odoo_typing.registry import Registry
+from odoo_typing.registry import MissingParent, Registry
 from odoo_typing.scanner import Contribution
 
 __all__ = ["ODOO_MODEL", "OdooPlugin", "plugin"]
@@ -101,27 +112,45 @@ class OdooPlugin(Plugin):
         return partial(self._merge_bases, contribution)
 
     def _merge_bases(self, contribution: Contribution, ctx: ClassDefContext) -> None:
+        self._report_inherit_problems(contribution, ctx)
         info = ctx.cls.info
         original = list(info.bases)
-        known = {base.type.fullname for base in original}
-        extra = []
+        written = {base.type.fullname: base for base in original}
+        merged: dict[str, Instance] = {}
         for base in self.registry.bases(contribution):
             node = ctx.api.lookup_fully_qualified_or_none(base.fullname)
-            if (
-                node is not None
-                and isinstance(node.node, TypeInfo)
-                and node.node.fullname not in known
-            ):
-                extra.append(Instance(node.node, []))
-        if not extra:
+            if node is not None and isinstance(node.node, TypeInfo):
+                fullname = node.node.fullname
+                merged[fullname] = written.get(fullname) or Instance(node.node, [])
+        if merged.keys() <= written.keys():
             return
+        # A Python base that is also an _inherit base keeps its registry position
+        # (class X(Mixin): _inherit = ["mixin", "other"]); putting it after all the
+        # _inherit bases would contradict its own MRO.
+        rest = [base for name, base in written.items() if name not in merged]
         original_mro = info.mro
-        info.bases = extra + original
+        info.bases = [*merged.values(), *rest]
         info.mro = []  # calculate_mro() returns a cached MRO when one is set
         try:
             calculate_mro(info)
         except MroError:
             info.bases, info.mro = original, original_mro
+
+    def _report_inherit_problems(self, contribution: Contribution, ctx: ClassDefContext) -> None:
+        """Report what Odoo's ``_build_model`` would reject when it loads the class.
+
+        mypy may run this hook more than once for a class (deferred analysis); it
+        drops repeated identical errors, so each problem is shown once.
+        """
+        anchor = _inherit_value(ctx.cls) or ctx.cls
+        for problem in self.registry.missing_parents(contribution):
+            message = _missing_parent_message(problem, contribution.addon)
+            ctx.api.fail(message, anchor, code=ODOO_MODEL)
+        cycle = self.registry.inherit_cycle(contribution)
+        if cycle and cycle[0] == contribution:  # once per cycle, at its first class
+            names = ", ".join(f'"{item.class_name}"' for item in cycle)
+            message = f"_inherit cycle: classes {names} inherit from each other"
+            ctx.api.fail(message, ctx.cls, code=ODOO_MODEL)
 
     def get_base_class_hook(self, fullname: str) -> Callable[[ClassDefContext], None] | None:
         """Relax the types of model meta attributes such as ``_inherit``."""
@@ -227,6 +256,11 @@ def _normalize_meta_attributes(ctx: ClassDefContext) -> None:
         base_var = declared.node
         explicit = base_var.type is not None and not base_var.is_inferred
         declared_type = base_var.type if explicit else AnyType(TypeOfAny.special_form)
+        if target.name == "_name":
+            # Only BaseModel itself has ``_name = None``; in a model class the name is
+            # a str, and ``str | None`` would reject ``_inherit = _name``. Every class
+            # gets the same narrowed type, so the classes stay compatible.
+            declared_type = ctx.api.named_type("builtins.str")
         # Pretend the user wrote ``_inherit: <declared type> = ...``; otherwise the
         # checker re-infers the type from the right-hand side.
         statement.type = declared_type
@@ -234,6 +268,41 @@ def _normalize_meta_attributes(ctx: ClassDefContext) -> None:
         if isinstance(target.node, Var):
             target.node.type = declared_type
             target.node.is_inferred = False
+
+
+def _inherit_value(cls: ClassDef) -> Expression | None:
+    """The right-hand side of ``_inherit = ...`` in a class body, if there is one."""
+    for statement in cls.defs.body:
+        if isinstance(statement, AssignmentStmt) and any(
+            isinstance(target, NameExpr) and target.name == "_inherit"
+            for target in statement.lvalues
+        ):
+            return statement.rvalue
+    return None
+
+
+def _missing_parent_message(problem: MissingParent, addon: str) -> str:
+    model = problem.model
+    if problem.defined_later:
+        return (
+            f'Odoo model "{model}" in _inherit is defined after this class; '
+            "Odoo registers the parent first"
+        )
+    if problem.outside_addons:
+        names = ", ".join(f'"{name}"' for name in problem.outside_addons)
+        where = (
+            f"addon {names}, which is"
+            if len(problem.outside_addons) == 1
+            else (f"addons {names}, which are")
+        )
+        return (
+            f'Odoo model "{model}" in _inherit is defined in {where} '
+            f'not in the dependencies of "{addon}"'
+        )
+    message = f'Unknown Odoo model "{model}" in _inherit'
+    if problem.missing_depends:
+        message += f"; dependencies not found on addons_path: {', '.join(problem.missing_depends)}"
+    return message
 
 
 def _comodel_expression(ctx: FunctionContext) -> StrExpr | None:

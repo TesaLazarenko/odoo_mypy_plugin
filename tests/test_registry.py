@@ -185,11 +185,11 @@ def test_model_tips_repeated_query_answered_from_cache(
     registry: Registry, mocker: MockerFixture
 ) -> None:
     first = registry.model_tips("res.partner", "top")
-    contributions = mocker.spy(registry, "_contributions")
+    compute = mocker.spy(registry, "_compute_tips")
 
     second = registry.model_tips("res.partner", "top")
 
-    assert (second, contributions.call_count) == (first, 0)
+    assert (second, compute.call_count) == (first, 0)
 
 
 # -- manifests are read on first use, not when the registry is created ([23]) ---------------
