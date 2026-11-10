@@ -19,6 +19,7 @@ plugin:
 | `self._phone_format(...)` (added by `phone_validation` to `base`) | `has no attribute` | resolved on every model of an addon that depends on `phone_validation` |
 | `self.sudo()`, `.with_context(...)`, `.filtered(...)`, `.search([])`, `.copy()` | `Any` | the receiver's model (also through unannotated overrides of `create`, `copy`, `search`...) |
 | `self.env.user` / `self.env.company` | `Any` | `res.users` / `res.company` as the addon sees them |
+| `from odoo.addons.my_base.models.x import Y` (a custom addon) | `import-not-found`, `Any` | the real class, with the overlay root ([Setup](#setup)) |
 | `line.product_id.uom_id` (`_inherits` of `product.template`) | silent (`Any`) | the `uom.uom` record: fields of `_inherits` (and `delegate=True`) parents are delegated, methods are not |
 
 Models are resolved **per addon**: a module sees only the models of the addons in its
@@ -185,7 +186,10 @@ For a git checkout, use the checkout root. Then run `mypy addons/my_addon`.
   depend on the order in which mypy analyzes the classes of an import cycle. When a class
   of the chain is not analyzed yet, mypy is asked to analyze the class again (classes
   outside the run, or still missing on mypy's final pass, are left out, and unknown
-  attributes then give `Any`). Python's own MRO of the written bases is respected; when
+  attributes then give `Any`). A class that mypy never analyzes although its module is
+  done (an unreachable `if sys.version_info < ...` branch) does not exist for mypy and
+  is simply left out. Written bases keep their type arguments (`class N(Mix[int])`).
+  Python's own MRO of the written bases is respected; when
   it contradicts the `_inherit` order (Odoo cannot load such a class either), all bases
   are kept and a note says so. It also reports, with
   code `odoo-model`, what Odoo would refuse to load: an `_inherit` entry that no addon in
@@ -222,6 +226,9 @@ For a git checkout, use the checkout root. Then run `mypy addons/my_addon`.
   its mixins are extended outside that class's view) it is a merged class named
   `<subclass of "x" seen from "my_addon">` (shown as `"x"` in messages), stored in the
   checked module like mypy's own ad hoc intersections, so the incremental cache keeps it.
+  A module reuses the merged class of a module it imports from, so records passed
+  between them (`RECS = env["x"]` in one, `from .a import RECS` in the other) keep one
+  type.
 - **`Many2one/One2many/Many2many(...)`** declare the field with the class that defines
   the comodel (the same class in every addon, so redeclaring a field elsewhere is
   compatible); **`__get__`** and an attribute hook resolve the comodel again when the
@@ -248,9 +255,12 @@ list, but parses nothing.
 
 Limits: a structural change (a new class, `_inherit`, comodel or `env["..."]` literal) in
 an addon makes mypy recheck every module of the addons that depend on it, not only the
-ones that use the changed model. The text of the "defined in addon ..., which is not in
-the dependencies" message can stay outdated when an addon *outside* the closure is
-added, until the file is checked again (the error itself is right).
+ones that use the changed model. Whether an unknown name is reported as `odoo-model` or
+as `odoo-model-depends` ("defined in addon ..., which is not in the dependencies"), and
+the addon that message names, can stay outdated when an addon *outside* the closure is
+added or removed, until the file is checked again (that the name is not visible stays
+right). Switching `overlay_root` on or off changes every addon's module names and
+invalidates the whole cache.
 
 **dmypy:** the daemon keeps one plugin instance. Before the files of each update are
 processed, the plugin compares the stamps of everything its registry has read (addons
@@ -258,6 +268,29 @@ roots, manifests, scanned files) with the disk and starts over with a fresh regi
 any changed. The daemon only rechecks files whose source changed (and their
 dependents), and the plugin reads its settings once: after editing only a manifest, or
 the `[tool.odoo_typing]`/`[odoo_typing]` settings, run `dmypy restart`.
+
+## Verification
+
+The test suite (`uv run pytest`, 246 tests, most of them end to end) runs the real mypy against the
+installed Odoo 18 on throw-away addons, also with two runs on one cache and through
+`dmypy`. The regression benchmark below (mypy 2.4.1, Odoo 18 core, each addon checked
+on its own with a fresh cache, then again warm) compares plain mypy with the plugin.
+*Plugin-only* errors are those that only appear with the plugin; most are real under
+Odoo's declared field types (`str | Literal[False]`, `int | NewId` ids) or mypy
+inference complaints that real recordset types expose. Times are wall-clock on a shared
+machine and vary by about 10 %.
+
+| Addon | Errors without plugin | Errors with plugin | Plugin-only | Cold s (without → with) | Warm s (without → with) |
+|---|---:|---:|---:|---:|---:|
+| crm | 1797 | 1155 | 20 | 3.45 → 5.06 | 0.20 → 0.27 |
+| sale | 2743 | 1847 | 30 | 4.33 → 6.73 | 0.25 → 0.33 |
+| account | 10051 | 7267 | 140 | 9.31 → 11.54 | 0.33 → 0.30 |
+| website_sale | 1853 | 1060 | 14 | 4.63 → 7.18 | 0.26 → 0.36 |
+| project_sms | 65 | 51 | 0 | 2.82 → 4.15 | 0.20 → 0.28 |
+| sale_stock | 1708 | 780 | 16 | 4.44 → 7.09 | 0.25 → 0.35 |
+
+Warm runs report exactly the errors of the cold ones, and no run crashed. Peak RSS with
+the plugin is 230-340 MB, 5-9 % more than plain mypy.
 
 ## Development
 
@@ -312,5 +345,17 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
   (untyped decorators); `super().create(...)` in an unannotated override is `Any`
 - `self` is the class being written, so inside a class `self` sees the earlier classes of
   its model, not later ones of the same addon (`env[...]` does see them). The classes of
-  one model are distinct types: a variable that first holds `env["x"]` cannot later be
+  one model are distinct types: a variable that first holds `env["x"]` (or a relational
+  field of model `x`, as in `for line in self.move_id.line_ids:` then
+  `for line in self:` in an earlier `account.move.line` class) cannot later be
   assigned `self` of an earlier class of `x` (an `assignment` error)
+- `request.env` in controllers is `Any` (the `odoo.http.request` proxy is untyped), so
+  model names there are not checked
+- guards are not detected: `if "sale.order" in self.env:` does not silence the
+  `odoo-model-depends` error in its body (disable that code instead), and a guarded name
+  that no addon on disk defines stays an `odoo-model` error
+- `env[name]` with a name only known at run time is `BaseModel`, as in plain mypy, so
+  reading a field on it (also after `.sudo()` or `.with_company(...)`) is an
+  `attr-defined` error
+- the generated overlay root is not checked against the addons: rerun `odoo-typing-root`
+  after adding an addon, or `odoo.addons.<new>` imports are `import-not-found`
