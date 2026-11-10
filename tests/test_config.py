@@ -223,3 +223,54 @@ def test_load_settings_overlay_root_not_a_string_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="overlay_root must be a string"):
         load_settings(config)
+
+
+# -- options (roadmap: cross-cutting rule 6, item 4.10) ------------------------------------------
+
+
+def _options_config(tmp_path: Path, options: str, name: str = "pyproject.toml") -> str:
+    odoo = tmp_path / "odoo"
+    (odoo / "addons").mkdir(parents=True)
+    (odoo / "release.py").write_text("")
+    config = tmp_path / name
+    toml = name.endswith(".toml")
+    header = (
+        '[tool.odoo_typing]\nodoo_path = "odoo"\n' if toml else "[odoo_typing]\nodoo_path = odoo\n"
+    )
+    config.write_text(header + options)
+    return str(config)
+
+
+def test_load_settings_dynamic_env_default_is_any(tmp_path: Path) -> None:
+    settings = load_settings(_options_config(tmp_path, ""))
+
+    assert settings.dynamic_env == "any"
+
+
+def test_load_settings_dynamic_env_base_is_kept(tmp_path: Path) -> None:
+    settings = load_settings(_options_config(tmp_path, 'dynamic_env = "base"\n'))
+
+    assert settings.dynamic_env == "base"
+
+
+def test_load_settings_dynamic_env_from_ini(tmp_path: Path) -> None:
+    settings = load_settings(_options_config(tmp_path, "dynamic_env = base\n", "mypy.ini"))
+
+    assert settings.dynamic_env == "base"
+
+
+def test_load_settings_dynamic_env_invalid_raises_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r'dynamic_env must be one of "any", "base"'):
+        load_settings(_options_config(tmp_path, 'dynamic_env = "strict"\n'))
+
+
+def test_load_settings_unknown_option_raises_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r'unknown option "addon_path".*addons_path'):
+        load_settings(_options_config(tmp_path, 'addon_path = ["x"]\n'))
+
+
+def test_settings_option_data_changes_with_dynamic_env(tmp_path: Path) -> None:
+    default = load_settings(_options_config(tmp_path / "a", ""))
+    base = load_settings(_options_config(tmp_path / "b", 'dynamic_env = "base"\n'))
+
+    assert default.option_data() != base.option_data()

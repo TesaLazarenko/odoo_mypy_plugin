@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from pathlib import Path
 
@@ -144,7 +145,21 @@ def test_module_data_addon_module_returns_addon_digest(tmp_path: Path) -> None:
 
     data = prints.module_data("odoo.addons.my_mod.models", path)
 
-    assert data == prints.addon_digest("my_mod")
+    assert data is not None
+    assert data.startswith(prints.addon_digest("my_mod") + "-")
+
+
+def test_module_data_option_changed_returns_other_data(tmp_path: Path) -> None:
+    settings = _odoo(tmp_path)
+    path = str(settings.odoo_path / "addons/my_mod/models.py")
+    base = dataclasses.replace(settings, dynamic_env="base")
+
+    default = _fingerprints(settings, RecordStore(None)).module_data(
+        "odoo.addons.my_mod.models", path
+    )
+    changed = _fingerprints(base, RecordStore(None)).module_data("odoo.addons.my_mod.models", path)
+
+    assert default != changed
 
 
 def test_registry_inputs_changed_scanned_file_edited_returns_true(tmp_path: Path) -> None:

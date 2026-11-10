@@ -64,6 +64,7 @@ class Fingerprints:
         self._registry = registry
         self._store = store
         self._key = index_key(settings)
+        self._options = digest(settings.option_data())[:16]
         self._roots = index_roots(settings.odoo_path, settings.addons_paths)
         self._names: dict[str, str] | None = None
         self._addon_digests: dict[str, str] = {}
@@ -84,7 +85,9 @@ class Fingerprints:
         if addon_name is None and any(part in names for part in path.split(os.sep)[:-1]):
             addon = self._registry.addons.addon_for_path(path)
             addon_name = addon.name if addon is not None else None
-        return None if addon_name is None else self.addon_digest(addon_name)
+        if addon_name is None:
+            return None
+        return f"{self.addon_digest(addon_name)}-{self._options}"
 
     def addon_digest(self, addon_name: str) -> str:
         """Digest of everything the plugin may use for a file of the addon."""

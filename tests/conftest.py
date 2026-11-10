@@ -129,6 +129,7 @@ def run_mypy(
         workdir: str = "",
         addons_path: list[Path] | None = None,
         mypy_path: list[Path] | None = None,
+        options: str = "",
     ) -> MypyResult:
         base = tmp_path / workdir
         root = base / "addons"
@@ -149,6 +150,7 @@ def run_mypy(
                 mypy_path=_toml_paths(search_path),
                 addons_path=_toml_paths(addons_path or [root]),
             )
+            + options
         )
         cache = tmp_path / "mypy_cache" if fresh_cache else mypy_cache
         stdout, stderr, status = mypy_api.run(

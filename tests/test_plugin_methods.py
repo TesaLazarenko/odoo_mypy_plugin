@@ -281,7 +281,7 @@ def test_env_getitem_accepts_final_model_names(run_mypy: RunMypy) -> None:
     assert result.messages("models.py") == [
         '17: note: Revealed type is "my_mod.models.Thing"',
         '18: error: Unknown Odoo model "t.thng"  [odoo-model]',
-        '20: note: Revealed type is "odoo.models.BaseModel"',
+        '20: note: Revealed type is "Any"',  # a plain variable: dynamic_env = "any"
     ]
 
 
@@ -328,3 +328,41 @@ def test_untyped_decorator_factories_keep_method_signature(run_mypy: RunMypy) ->
         '24: note: Revealed type is "bool"',
         '25: error: Too many arguments for "_onchange_size" of "Thing"  [call-arg]',
     ]
+
+
+# -- roadmap 4.10: env[...] with a name known only at run time ----------------------------------
+
+DYNAMIC_ENV = """
+from odoo import models
+
+class Thing(models.Model):
+    _name = "t.thing"
+
+    def action(self, model_name: str) -> None:
+        records = self.env[model_name]
+        reveal_type(records)
+        records.with_company(1).partner_id
+"""
+
+
+def test_env_dynamic_name_default_is_any(run_mypy: RunMypy) -> None:
+    result = run_mypy({"my_mod": {"models.py": DYNAMIC_ENV}})
+
+    assert result.messages("models.py") == ['9: note: Revealed type is "Any"']
+
+
+def test_env_dynamic_name_option_base_keeps_base_model(run_mypy: RunMypy) -> None:
+    result = run_mypy({"my_mod": {"models.py": DYNAMIC_ENV}}, options='dynamic_env = "base"\n')
+
+    assert result.messages("models.py") == [
+        '9: note: Revealed type is "odoo.models.BaseModel"',
+        '10: error: "BaseModel" has no attribute "partner_id"  [attr-defined]',
+    ]
+
+
+def test_env_dynamic_name_option_change_invalidates_cache(run_mypy: RunMypy) -> None:
+    run_mypy({"my_mod": {"models.py": DYNAMIC_ENV}})
+
+    result = run_mypy({"my_mod": {"models.py": DYNAMIC_ENV}}, options='dynamic_env = "base"\n')
+
+    assert '9: note: Revealed type is "odoo.models.BaseModel"' in result.messages("models.py")

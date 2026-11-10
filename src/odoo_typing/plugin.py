@@ -399,8 +399,14 @@ class OdooPlugin(Plugin):
     def _env_getitem(self, ctx: MethodContext) -> Type:
         model = _model_name_argument(ctx)
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
-        if model is None or addon_name is None:
+        if addon_name is None:
             return ctx.default_return_type  # outside any addon: see the module docstring
+        if model is None:
+            # A name known only at run time: ``BaseModel`` would make every field read
+            # an error, so ``Any`` unless the user asked for ``dynamic_env = "base"``.
+            if self._settings.dynamic_env == "any":
+                return AnyType(TypeOfAny.special_form)
+            return ctx.default_return_type
         if self.registry.view_class(model, addon_name) is None:
             outside = self._unknown_model(model, addon_name, ctx.context, ctx.api)
             return outside or ctx.default_return_type
