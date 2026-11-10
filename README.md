@@ -14,11 +14,24 @@ plugin:
 | `fields.Many2one("res.partner")` | `Need type annotation` | `Many2one[Partner]` |
 | `self.partner_id` / `self.line_ids` | `Any` | the comodel recordset, with the extensions the reading addon sees |
 | `self.x_score + self.name` | silent (`Any`) | `Unsupported operand types for + ("int" and "str")` |
-| `_inherit = "sale.order"` without `sale` in `depends` | silent | `Odoo model "sale.order" in _inherit is defined in addon "sale", which is not in the dependencies of "my_addon"` |
+| `_inherit = "sale.order"` without `sale` in `depends` | silent | `Odoo model "sale.order" in _inherit is defined in addon "sale", which is not in the dependencies of "my_addon"  [odoo-model-depends]` |
+| `self.env["sale.order"]` without `sale` in `depends` | `BaseModel` | `Odoo model "sale.order" is defined in addon "sale", which is not in the dependencies of "my_addon"  [odoo-model-depends]`, then `Any` |
 | `self._phone_format(...)` (added by `phone_validation` to `base`) | `has no attribute` | resolved on every model of an addon that depends on `phone_validation` |
+| `self.sudo()`, `.with_context(...)`, `.filtered(...)`, `.search([])`, `.copy()` | `Any` | the receiver's model (also through unannotated overrides of `create`, `copy`, `search`...) |
+| `self.env.user` / `self.env.company` | `Any` | `res.users` / `res.company` as the addon sees them |
+| `line.product_id.uom_id` (`_inherits` of `product.template`) | silent (`Any`) | the `uom.uom` record: fields of `_inherits` (and `delegate=True`) parents are delegated, methods are not |
 
 Models are resolved **per addon**: a module sees only the models of the addons in its
 `depends` closure, just as Odoo loads them.
+
+**Error codes.** `odoo-model`: a model name that no addon on the addons path defines (a
+typo), an `_inherit` defined only after the class, an `_inherit` cycle.
+`odoo-model-depends` (a sub-code of `odoo-model`): the model exists, but only in addons
+outside the `depends` closure. In an `_inherit` that is a real error (Odoo cannot load
+the class); in `env["..."]` or a comodel it is often optional-dependency code guarded by
+`if "sale.order" in self.env:`, so it can be disabled on its own with
+`disable_error_code = ["odoo-model-depends"]` (typos are still reported); `env[...]`
+is `Any` there. `# type: ignore[odoo-model]` covers both codes.
 
 **Code outside any addon** (scripts, and Odoo's own `odoo/*.py` modules, which mypy always
 analyzes) has no `depends` closure, so the plugin leaves it alone: `env["..."]` keeps
@@ -129,10 +142,28 @@ mypy addons/my_addon
   it contradicts the `_inherit` order (Odoo cannot load such a class either), all bases
   are kept and a note says so. It also reports, with
   code `odoo-model`, what Odoo would refuse to load: an `_inherit` entry that no addon in
-  the `depends` closure defines (naming the addon that does, if any: the fix is usually a
-  missing `depends`), one that is only defined after the class, and `_inherit` cycles
-  (whose edges are then ignored). Finding the defining addon outside the closure is a
-  text search over all addons (about 0.25 s, only when such an error exists).
+  the `depends` closure defines (naming the addon that does, if any, with code
+  `odoo-model-depends`: the fix is usually a missing `depends`), one that is only
+  defined after the class, and `_inherit` cycles (whose edges are then ignored). Finding
+  the defining addon outside the closure is one text search over all addons (about
+  0.3 s, only in a run that reports an unknown model name).
+- **`_inherits`** and **`Many2one(..., delegate=True)`**: once a model class's body is
+  analyzed, the fields (not the methods) of the delegated models' registry classes, as
+  the class's addon sees them, are added to it unless the class already has the name,
+  like Odoo's `_add_inherited_fields`. `_inherits` of mixins count (`mail.alias.mixin`).
+  The field variables are shared with the parent's classes, so their types are inferred
+  once. A model whose delegated parent is extended outside the tip's view gets a merged
+  `env[...]` class.
+- **Decorators and `-> Self` methods**: `@api.private` and `@api.returns(...)` have no
+  annotations, which made `sudo`, `with_context`, `filtered`, `search`, `copy`...
+  `Any`. A function hook keeps the decorated signature (also for `api.model`,
+  `api.readonly`, `api.model_create_multi`). An override of `create`, `copy`, `search`,
+  `browse`, `sudo`, `with_*`, `filtered`, `sorted`, `exists` or `ensure_one` written
+  without annotations returns the receiver's model; `create` also accepts one dict,
+  as `model_create_multi` does at runtime.
+- **`env.user` / `env.company` / `env.companies`**: records of `res.users` /
+  `res.company` as the file's addon sees them; `env[NAME]` accepts a `Final` string
+  constant (a plain variable stays `BaseModel`).
 - **`get_base_class_hook`**: private class attributes of model classes (`_inherit`,
   `_order`, `_rec_name`, `_sequence_index`...) get the type a model base class declares
   with an annotation (`BaseModel._inherit: str | list[str] | ...`), `Any` otherwise. So
@@ -224,7 +255,14 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
 
 - `vals` dicts in `create()`/`write()`: typed keys and values (next milestone)
 - relational fields declared only with `related=` (no comodel argument)
-- `_inherits` delegation, domains, `@api.depends` paths
+- domains, `@api.depends` paths; assignments to fields (`record.partner_id = "x"`) are
+  not checked (`Field.__set__` is untyped)
+- fields a delegated parent itself delegates (`_inherits` of an `_inherits` parent)
+- the log-access fields Odoo adds at runtime (`create_uid`, `create_date`, `write_uid`,
+  `write_date`) are not declared, so reading them is an `attr-defined` error, as in plain
+  mypy
+- `@api.onchange`, `@api.ondelete`, `@api.depends_context` methods stay `Any`
+  (untyped decorators); `super().create(...)` in an unannotated override is `Any`
 - `self` is the class being written, so inside a class `self` sees the earlier classes of
   its model, not later ones of the same addon (`env[...]` does see them). The classes of
   one model are distinct types: a variable that first holds `env["x"]` cannot later be

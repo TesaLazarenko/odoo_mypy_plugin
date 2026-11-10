@@ -32,6 +32,8 @@ __all__ = [
 
 UNKNOWN: Final = object()  # value of an expression the scan cannot evaluate
 RELATIONAL_FIELDS = frozenset({"Many2one", "One2many", "Many2many"})
+# Environment attributes that are records of a model (``self.env.user``).
+ENV_RECORDS: Final = {"user": "res.users", "company": "res.company", "companies": "res.company"}
 # Concrete node classes that have no child nodes worth visiting (``ast.Load`` etc.).
 LEAF_NODES: frozenset[type] = frozenset(
     {ast.Name, ast.Constant, ast.alias}
@@ -57,6 +59,9 @@ class Contribution:
             creation index within the addon.
         comodels: Comodels of the relational fields the class body declares
             (``x = fields.Many2one("res.partner")``), in source order.
+        fields: Names of the fields the class body declares (``x = fields.Char()``).
+        delegates: Models the class delegates fields to: the keys of ``_inherits``,
+            then the comodels of ``fields.Many2one(..., delegate=True)``.
     """
 
     addon: str
@@ -66,6 +71,8 @@ class Contribution:
     parents: tuple[str, ...]
     position: tuple[int, str, int]
     comodels: tuple[str, ...] = ()
+    fields: tuple[str, ...] = ()
+    delegates: tuple[str, ...] = ()
 
     @property
     def fullname(self) -> str:
@@ -274,6 +281,8 @@ class _ImportWalker:
                 parents=_as_names(attrs.get("_inherit")),
                 position=(*self.load_key, len(self._classes)),
                 comodels=_declared_comodels(node),
+                fields=_declared_fields(node),
+                delegates=_delegated_models(node, attrs.get("_inherits")),
             )
         )
 
@@ -288,6 +297,63 @@ def _declared_comodels(node: ast.ClassDef) -> tuple[str, ...]:
             if comodel:
                 comodels[comodel] = None
     return tuple(comodels)
+
+
+def _declared_fields(node: ast.ClassDef) -> tuple[str, ...]:
+    """Names assigned ``fields.<Type>(...)`` in a class body (also annotated)."""
+    names: dict[str, None] = {}
+    for statement in node.body:
+        target = _single_target(statement)
+        value = statement.value if isinstance(statement, ast.Assign | ast.AnnAssign) else None
+        if target is not None and isinstance(value, ast.Call) and _is_fields_call(value):
+            names[target] = None
+    return tuple(names)
+
+
+def _delegated_models(node: ast.ClassDef, inherits: object) -> tuple[str, ...]:
+    """Models a class delegates to: ``_inherits`` keys, then ``delegate=True`` comodels."""
+    models: dict[str, None] = {}
+    if isinstance(inherits, dict):
+        models.update(dict.fromkeys(key for key in inherits if isinstance(key, str)))
+    for statement in node.body:
+        value = statement.value if isinstance(statement, ast.Assign | ast.AnnAssign) else None
+        if isinstance(value, ast.Call) and _is_delegate_field(value):
+            comodel = _comodel_argument(value)
+            if comodel:
+                models[comodel] = None
+    return tuple(models)
+
+
+def _single_target(statement: ast.stmt) -> str | None:
+    """The name assigned by ``x = ...`` or ``x: T = ...`` (one plain name)."""
+    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+        target: ast.expr = statement.targets[0]
+    elif isinstance(statement, ast.AnnAssign):
+        target = statement.target
+    else:
+        return None
+    return target.id if isinstance(target, ast.Name) else None
+
+
+def _is_fields_call(call: ast.Call) -> bool:
+    """``fields.Char(...)`` and the like."""
+    func = call.func
+    return (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "fields"
+        and func.attr[:1].isupper()
+    )
+
+
+def _is_delegate_field(call: ast.Call) -> bool:
+    """``fields.Many2one(..., delegate=True)``."""
+    return _callee_name(call.func) == "Many2one" and any(
+        keyword.arg == "delegate"
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value is True
+        for keyword in call.keywords
+    )
 
 
 def _executed_blocks(node: ast.stmt) -> list[list[ast.stmt]]:
@@ -350,11 +416,14 @@ def _assign(
 def _evaluate(node: ast.expr, scope: Mapping[str, object]) -> object:
     """Value of a constant expression, or :data:`UNKNOWN`.
 
-    Handles literals, lists and tuples, names bound earlier, ``+`` of strings and
-    f-strings of known values: what model names and ``_inherit`` lists are made of.
+    Handles literals, lists, tuples and dicts, names bound earlier, ``+`` of strings
+    and f-strings of known values: what model names, ``_inherit`` lists and
+    ``_inherits`` dicts are made of.
     """
     if isinstance(node, ast.Constant):
         return node.value
+    if isinstance(node, ast.Dict):
+        return _evaluate_dict(node, scope)
     if isinstance(node, ast.Name):
         return scope.get(node.id, UNKNOWN)
     if isinstance(node, ast.List | ast.Tuple):
@@ -368,6 +437,14 @@ def _evaluate(node: ast.expr, scope: Mapping[str, object]) -> object:
         strings = [part for part in parts if isinstance(part, str)]
         return "".join(strings) if len(strings) == len(parts) else UNKNOWN
     return UNKNOWN
+
+
+def _evaluate_dict(node: ast.Dict, scope: Mapping[str, object]) -> object:
+    """Value of a dict display whose keys are all known (``**`` unpacking is not)."""
+    keys = [_evaluate(key, scope) if key is not None else UNKNOWN for key in node.keys]
+    if any(key is UNKNOWN or not isinstance(key, str) for key in keys):
+        return UNKNOWN
+    return {key: _evaluate(value, scope) for key, value in zip(keys, node.values, strict=True)}
 
 
 def _format_part(node: ast.expr, scope: Mapping[str, object]) -> object:
@@ -409,18 +486,47 @@ def _as_names(value: object) -> tuple[str, ...]:
 
 
 def referenced_models(tree: ast.Module) -> set[str]:
-    """Model names used as literals in ``env[...]`` and relational field comodels."""
+    """Model names a file uses: literals in ``env[...]`` and relational field comodels.
+
+    ``env[NAME]`` counts when ``NAME`` is a module-level string constant, and
+    ``env.user`` / ``env.company`` / ``env.companies`` name ``res.users`` and
+    ``res.company``.
+    """
+    constants = _string_constants(tree)
     models: set[str] = set()
     for node in _inner_nodes(tree):
         if isinstance(node, ast.Subscript) and _is_env(node.value):
-            name = _string(node.slice)
+            key = node.slice
+            name = constants.get(key.id) if isinstance(key, ast.Name) else _string(key)
         elif isinstance(node, ast.Call) and _callee_name(node.func) in RELATIONAL_FIELDS:
             name = _comodel_argument(node)
+        elif isinstance(node, ast.Attribute) and node.attr in ENV_RECORDS and _is_env(node.value):
+            name = ENV_RECORDS[node.attr]
         else:
             continue
         if name:
             models.add(name)
     return models
+
+
+def _string_constants(tree: ast.Module) -> dict[str, str]:
+    """Module-level ``NAME: Final = "text"`` constants (mypy knows their value)."""
+    constants: dict[str, str] = {}
+    for statement in tree.body:
+        if not isinstance(statement, ast.AnnAssign) or not _is_final(statement.annotation):
+            continue
+        name = _single_target(statement)
+        text = _string(statement.value) if statement.value is not None else None
+        if name is not None and text is not None:
+            constants[name] = text
+    return constants
+
+
+def _is_final(annotation: ast.expr) -> bool:
+    """``Final``, ``typing.Final`` or ``Final[str]``."""
+    if isinstance(annotation, ast.Subscript):
+        annotation = annotation.value
+    return _callee_name(annotation) == "Final"
 
 
 def _inner_nodes(tree: ast.AST) -> list[ast.AST]:

@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import cached_property, partial
 from pathlib import Path
@@ -50,8 +50,10 @@ TipsKey = tuple[str, str, str | None]
 IndexLoader = Callable[[], tuple[AddonIndex, Stamps]]
 # A registry MRO: classes, and model names standing for a parent's registry class.
 Nodes = tuple["Contribution | str", ...]
-# `_name = "x"`, also chained (`_name = _description = "x"`); %s is the escaped name.
-DEFINITION_TEMPLATE = rb"""_name\s*=\s*(?:\w+\s*=\s*)*[rRuU]?['"]%s['"]"""
+# `_name = "x"`, also chained (`_name = _description = "x"`); group 1 is the name. It
+# also matches `partner_name = "x"`: candidates are checked by a scan, and starting with
+# a literal keeps the search fast (a look-behind would make it 20 times slower).
+DEFINITION_PATTERN = re.compile(rb"""_name\s*=\s*(?:\w+\s*=\s*)*[rRuU]?['"]([^'"\\\n]+)['"]""")
 SKIPPED_DIRS = frozenset({"static", "i18n", "node_modules", "__pycache__"})
 
 
@@ -129,6 +131,7 @@ class Registry:
         self._explored: dict[str, set[str]] = {}  # per addon: models classified for cycles
         self._cycles: dict[str, dict[str, frozenset[str]]] = {}
         self._definers: dict[str, tuple[str, ...]] = {}
+        self._definition_index: dict[str, list[str]] | None = None
 
     @cached_property
     def addons(self) -> AddonIndex:
@@ -411,7 +414,11 @@ class Registry:
         nodes = self._registry_mro(model, addon_name, None)
         chain = tuple(node for node in nodes if isinstance(node, Contribution))
         tips = self.model_tips(model, addon_name)
-        exact = len(tips) == 1 and set(self.linearization(tips[0])) == set(chain)
+        exact = (
+            len(tips) == 1
+            and set(self.linearization(tips[0])) == set(chain)
+            and self._same_delegates(chain, model, (tips[0].addon, addon_name))
+        )
         return ModelView(
             model=model,
             addon=addon_name,
@@ -451,12 +458,13 @@ class Registry:
         key = (model, addon_name)
         if key not in self._view_modules:
             nodes = self._registry_mro(model, addon_name, None)
+            chain = [node for node in nodes if isinstance(node, Contribution)]
             self._view_modules[key] = frozenset(
                 tip.module
                 for node in nodes
                 if isinstance(node, str)
                 for tip in self.model_tips(node, addon_name)
-            )
+            ) | self._delegate_modules(chain, model, addon_name)
         return self._view_modules[key]
 
     def class_modules(self, contribution: Contribution) -> frozenset[str]:
@@ -467,7 +475,55 @@ class Registry:
                 before = contribution if node == contribution.model else None
                 tips = self.model_tips(node, contribution.addon, before=before)
                 modules.update(tip.module for tip in tips)
+        chain = self.linearization(contribution)
+        return frozenset(modules) | self._delegate_modules(
+            chain, contribution.model, contribution.addon
+        )
+
+    # -- _inherits delegation ----------------------------------------------------------------
+
+    def delegated_models(self, chain: Iterable[Contribution], model: str) -> tuple[str, ...]:
+        """Models whose fields a registry class delegates to (merged ``_inherits``).
+
+        ``_build_model`` merges the ``_inherits`` of every class of the registry class
+        (also of its ``_inherit`` parents); ``Many2one(delegate=True)`` adds an entry.
+
+        Args:
+            chain: The classes of the registry class (a linearization or a view chain).
+            model: The model itself, never its own delegate.
+        """
+        found = dict.fromkeys(name for item in chain for name in item.delegates)
+        found.pop(model, None)
+        return tuple(found)
+
+    def delegate_chain(self, model: str, addon_name: str) -> tuple[Contribution, ...]:
+        """The classes of a delegated model's registry class in an addon's view."""
+        view = self.view_class(model, addon_name)
+        return view.chain if view is not None else ()
+
+    def _delegate_modules(
+        self, chain: Iterable[Contribution], model: str, addon_name: str
+    ) -> frozenset[str]:
+        """Modules of the tips that make up the registry classes delegated to.
+
+        Only one level: the fields a delegated model itself delegates are left out.
+        """
+        modules: set[str] = set()
+        for delegate in self.delegated_models(chain, model):
+            for node in self._registry_mro(delegate, addon_name, None):
+                if isinstance(node, str):
+                    modules.update(tip.module for tip in self.model_tips(node, addon_name))
         return frozenset(modules)
+
+    def _same_delegates(
+        self, chain: Iterable[Contribution], model: str, addons: tuple[str, str]
+    ) -> bool:
+        """Whether the registry classes a model delegates to look the same from two addons."""
+        first, second = addons
+        return all(
+            set(self.delegate_chain(delegate, first)) == set(self.delegate_chain(delegate, second))
+            for delegate in self.delegated_models(chain, model)
+        )
 
     def chain_comodels(self, contribution: Contribution) -> frozenset[str]:
         """Comodels of the relational fields that the classes of a linearization declare."""
@@ -608,6 +664,16 @@ class Registry:
             )
         return tuple(problems)
 
+    def addons_outside_defining(self, model: str, addon_name: str) -> tuple[str, ...]:
+        """Addons outside an addon's dependency closure that define a model.
+
+        Asked when no addon in the view defines the model: a non-empty answer means
+        the model exists, but the addon does not depend on it (often guarded code,
+        ``if "x" in self.env``), rather than a misspelled name.
+        """
+        closure = self.addons.closure(addon_name)
+        return tuple(name for name in self._defining_addons(model) if name not in closure)
+
     def _defining_addons(self, model: str) -> tuple[str, ...]:
         """Addons anywhere on the addons paths that define (not extend) a model.
 
@@ -615,14 +681,25 @@ class Registry:
         ``_name = "<model>"`` are skipped without being parsed.
         """
         if model not in self._definers:
-            pattern = re.compile(DEFINITION_TEMPLATE % re.escape(model.encode()))
             self._definers[model] = tuple(
                 name
-                for name in sorted(self.addons.addons, key=self.addons.load_key)
-                if _mentions(self.addons.addons[name].path, pattern)
-                and any(_defines(item) for item in self._models_of(name).get(model, ()))
+                for name in self._text_definers().get(model, ())
+                if any(_defines(item) for item in self._models_of(name).get(model, ()))
             )
         return self._definers[model]
+
+    def _text_definers(self) -> dict[str, list[str]]:
+        """Model name -> addons whose sources contain ``_name = "<model>"``, in load order.
+
+        One text search over every addon, done the first time any model is looked up.
+        """
+        if self._definition_index is None:
+            index: dict[str, list[str]] = {}
+            for name in sorted(self.addons.addons, key=self.addons.load_key):
+                for model in _defined_names(self.addons.addons[name].path):
+                    index.setdefault(model, []).append(name)
+            self._definition_index = index
+        return self._definition_index
 
 
 def _add_last(nodes: dict[Contribution | str, None], added: Nodes) -> None:
@@ -650,14 +727,16 @@ def _defines(contribution: Contribution) -> bool:
     return contribution.model not in contribution.parents
 
 
-def _mentions(directory: Path, pattern: re.Pattern[bytes]) -> bool:
-    """Whether any Python file of an addon matches a pattern (a cheap text search)."""
+def _defined_names(directory: Path) -> set[str]:
+    """Model names in ``_name = "..."`` assignments of an addon's files (a text search)."""
+    names: set[str] = set()
     for root, subdirs, files in os.walk(directory):
         subdirs[:] = [name for name in subdirs if name not in SKIPPED_DIRS]
         for name in files:
-            if name.endswith(".py") and pattern.search(Path(root, name).read_bytes()):
-                return True
-    return False
+            if name.endswith(".py"):
+                found = DEFINITION_PATTERN.findall(Path(root, name).read_bytes())
+                names.update(match.decode(errors="replace") for match in found)
+    return names
 
 
 def _warn_unparsable(error: SourceError) -> None:
