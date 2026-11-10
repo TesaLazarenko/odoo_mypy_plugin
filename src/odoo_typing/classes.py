@@ -7,6 +7,9 @@ that writes mypy internals:
 * ``TypeInfo.mro`` is assigned directly. mypy derives an MRO from the direct bases with
   C3, but the bases of Odoo classes are computed per addon view, so their own MROs may
   order unrelated classes differently and C3 would fail where Odoo does not.
+* Fields delegated with ``_inherits`` are entered in the child class's symbol table,
+  as the parent's own field variables (so their types are inferred once, where they
+  are declared; the cache stores them as cross references).
 * A merged "view class" is a ``TypeInfo`` created in the symbol table of the module
   being checked, the way mypy itself stores ad hoc intersections
   (``checker.intersect_instances``): that keeps it in the module's cache entry, so a
@@ -22,7 +25,17 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from mypy.nodes import GDEF, Block, ClassDef, MypyFile, SymbolTable, SymbolTableNode, TypeInfo
+from mypy.nodes import (
+    GDEF,
+    MDEF,
+    Block,
+    ClassDef,
+    MypyFile,
+    SymbolTable,
+    SymbolTableNode,
+    TypeInfo,
+    Var,
+)
 from mypy.types import Instance
 from mypy.typestate import type_state
 from mypy.typevars import fill_typevars_with_any
@@ -33,6 +46,7 @@ __all__ = [
     "METADATA_KEY",
     "Lookup",
     "Merge",
+    "add_delegated_fields",
     "create_view_class",
     "install_mro",
     "instance_of",
@@ -172,3 +186,23 @@ def create_view_class(
     info.metaclass_type = info.calculate_metaclass_type()
     tree.names[name] = SymbolTableNode(GDEF, info, module_hidden=True, plugin_generated=True)
     return info
+
+
+def add_delegated_fields(info: TypeInfo, sources: Sequence[tuple[TypeInfo, Sequence[str]]]) -> None:
+    """Give a class the fields of the models it delegates to (``_inherits``).
+
+    Like Odoo's ``_add_inherited_fields``, a field the class (or its MRO) already has
+    wins, and so does the first source that has a name. Only field variables are
+    added: Odoo does not delegate methods. Calling it again changes nothing.
+
+    Args:
+        info: The class.
+        sources: The delegated classes, most derived first, each with the names of
+            the fields it declares.
+    """
+    for source, names in sources:
+        for name in names:
+            node = source.names.get(name)
+            if node is None or not isinstance(node.node, Var) or info.get(name) is not None:
+                continue
+            info.names[name] = SymbolTableNode(MDEF, node.node, plugin_generated=True)

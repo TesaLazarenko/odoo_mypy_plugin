@@ -19,6 +19,16 @@ What it does:
 * ``fields.Many2one("x")`` / ``One2many`` / ``Many2many`` are declared with the class
   that defines the comodel; reading the field gives the comodel as the *reading* addon
   sees it, like Odoo returns the final registry class.
+* A model name that only addons outside the ``depends`` closure define is an
+  ``odoo-model-depends`` error (a sub-code of ``odoo-model``, so it can be disabled on
+  its own for code guarded by ``if "x" in self.env``); ``env[...]`` is then ``Any``.
+* ``env.user`` / ``env.company`` / ``env.companies`` are ``res.users`` / ``res.company``
+  records; ``env[NAME]`` accepts ``Final`` string constants.
+* Methods keep their signatures through ``@api.private`` / ``@api.returns(...)``, and
+  unannotated overrides of ``-> Self`` methods (``create``, ``search``, ``sudo``...)
+  return the receiver (:mod:`odoo_typing.methods`).
+* ``_inherits`` (and ``Many2one(delegate=True)``): the delegated models' fields, not
+  their methods, are part of the child model's classes.
 
 Model names are resolved from the point of view of the addon that contains the
 file. Files outside any addon (scripts, and Odoo's own ``odoo/*.py`` modules,
@@ -40,6 +50,7 @@ from mypy.nodes import (
     AssignmentStmt,
     CallExpr,
     ClassDef,
+    Context,
     Expression,
     MypyFile,
     NameExpr,
@@ -63,6 +74,7 @@ from mypy.types import (
     CallableType,
     FunctionLike,
     Instance,
+    LiteralType,
     NoneType,
     ProperType,
     Type,
@@ -77,6 +89,7 @@ from mypy.maptype import map_instance_to_supertype
 
 from odoo_typing.classes import (
     Lookup,
+    add_delegated_fields,
     create_view_class,
     install_mro,
     instance_of,
@@ -85,18 +98,39 @@ from odoo_typing.classes import (
     view_class_origin,
 )
 from odoo_typing.config import load_settings
+from odoo_typing.methods import (
+    IDENTITY_DECORATORS,
+    IDENTITY_FACTORIES,
+    create_signature,
+    identity_decorator,
+    identity_factory,
+    is_create,
+    is_self_method,
+    keep_receiver,
+)
 from odoo_typing.registry import MissingParent, Registry
 from odoo_typing.scanner import Contribution
 
-__all__ = ["ODOO_MODEL", "OdooPlugin", "plugin"]
+__all__ = ["ODOO_MODEL", "ODOO_MODEL_DEPENDS", "OdooPlugin", "plugin"]
 
 ODOO_MODEL = ErrorCode("odoo-model", "Check that Odoo model names exist", "Odoo")
+ODOO_MODEL_DEPENDS = ErrorCode(
+    "odoo-model-depends",
+    "Check that Odoo models are defined in the addon's dependencies",
+    "Odoo",
+    sub_code_of=ODOO_MODEL,
+)
 
 ENV_GETITEM = "odoo.api.Environment.__getitem__"
 RELATIONAL_CLASSES = frozenset(
     {"odoo.fields.Many2one", "odoo.fields.One2many", "odoo.fields.Many2many"}
 )
 RELATIONAL_BASE = "odoo.fields._Relational"
+ENV_RECORDS = {
+    "odoo.api.Environment.user": "res.users",
+    "odoo.api.Environment.company": "res.company",
+    "odoo.api.Environment.companies": "res.company",
+}
 FIELDS_MODULE = "odoo.fields."
 BASE_MODEL = "odoo.models.BaseModel"
 DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
@@ -169,7 +203,8 @@ class OdooPlugin(Plugin):
         anchor = _inherit_value(ctx.cls) or ctx.cls
         for problem in self.registry.missing_parents(contribution):
             message = _missing_parent_message(problem, contribution.addon)
-            ctx.api.fail(message, anchor, code=ODOO_MODEL)
+            code = ODOO_MODEL_DEPENDS if problem.outside_addons else ODOO_MODEL
+            ctx.api.fail(message, anchor, code=code)
         cycle = self.registry.inherit_cycle(contribution)
         own = [item for item in cycle if item.addon == contribution.addon]
         if own and own[0] == contribution:  # once per cycle and addon, at its first class
@@ -178,31 +213,76 @@ class OdooPlugin(Plugin):
             ctx.api.fail(message, ctx.cls, code=ODOO_MODEL)
 
     def get_base_class_hook(self, fullname: str) -> Callable[[ClassDefContext], None] | None:
-        """Relax the types of model meta attributes such as ``_inherit``."""
-        return _normalize_meta_attributes
+        """Relax model meta attributes such as ``_inherit``; add delegated fields."""
+        return self._after_class_body
+
+    def _after_class_body(self, ctx: ClassDefContext) -> None:
+        """Run once the class body is analyzed (and again for each written base)."""
+        _normalize_meta_attributes(ctx)
+        if not ctx.cls.info.has_base(BASE_MODEL):
+            return  # the hook runs for every class, also outside Odoo
+        contribution = self.registry.contribution(ctx.cls.info.fullname)
+        if contribution is not None:
+            self._delegate_fields(contribution, ctx)
+
+    def _delegate_fields(self, contribution: Contribution, ctx: ClassDefContext) -> None:
+        """Add the fields of the models a class delegates to (``_inherits``).
+
+        They are added after the class body, so the class's own fields win, from the
+        delegated registry classes as the class's addon sees them. A delegated class
+        that is not analyzed yet makes mypy analyze this class again.
+        """
+        chain = self.registry.linearization(contribution)
+        sources: list[tuple[TypeInfo, tuple[str, ...]]] = []
+        for delegate in self.registry.delegated_models(chain, contribution.model):
+            classes = self.registry.delegate_chain(delegate, contribution.addon)
+            found = _field_sources(classes, ctx.api.modules)
+            if found is None and not ctx.api.final_iteration:
+                ctx.api.defer()
+                return
+            sources += found or []
+        add_delegated_fields(ctx.cls.info, sources)
 
     # -- type checking: env[...] and relational fields -------------------------------------
 
     def get_method_hook(self, fullname: str) -> Callable[[MethodContext], Type] | None:
-        """Type ``env["model.name"]``."""
-        return self._env_getitem if fullname == ENV_GETITEM else None
+        """Type ``env["model.name"]`` and unannotated overrides of ``-> Self`` methods."""
+        if fullname == ENV_GETITEM:
+            return self._env_getitem
+        return keep_receiver if is_self_method(fullname) else None
 
     def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
-        """Bind relational field constructors to their comodel."""
-        return self._relational_field if fullname in RELATIONAL_CLASSES else None
+        """Bind relational field constructors to their comodel; see through decorators."""
+        if fullname in RELATIONAL_CLASSES:
+            return self._relational_field
+        if fullname in IDENTITY_DECORATORS:
+            return identity_decorator
+        return identity_factory if fullname in IDENTITY_FACTORIES else None
 
     def get_method_signature_hook(
         self, fullname: str
     ) -> Callable[[MethodSigContext], FunctionLike] | None:
-        """Make reading a relational field return its comodel recordset."""
+        """Make reading a relational field return its comodel; let ``create`` take a dict."""
         # mypy names the hook after the descriptor's own class (``odoo.fields.Many2one``,
         # a custom subclass...), so match every ``__get__`` and check the MRO in the hook.
-        return self._relational_get if fullname.endswith(".__get__") else None
+        if fullname.endswith(".__get__"):
+            return self._relational_get
+        return create_signature if is_create(fullname) else None
 
     def get_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
         """Resolve record-typed attributes of model classes from the reading addon."""
+        if fullname in ENV_RECORDS:
+            return partial(self._env_record, ENV_RECORDS[fullname])
         owner = fullname.rpartition(".")[0]
         return self._record_attribute if self.registry.contribution(owner) else None
+
+    def _env_record(self, model: str, ctx: AttributeContext) -> Type:
+        """``env.user`` and the like: a record of a model, as the reading addon sees it."""
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if ctx.is_lvalue or addon_name is None:
+            return ctx.default_attr_type
+        resolved = self._env_model(model, addon_name, ctx.api)
+        return resolved if isinstance(resolved, Instance) else ctx.default_attr_type
 
     def _record_attribute(self, ctx: AttributeContext) -> Type:
         """Re-resolve an attribute whose type is a model class from the reading addon.
@@ -243,24 +323,46 @@ class OdooPlugin(Plugin):
         merged = create_view_class(
             checker.tree, model, addon_name, chain.infos, bases, lookup, chain.missing
         )
+        for delegate in self.registry.delegated_models(view.chain, model):
+            classes = self.registry.delegate_chain(delegate, addon_name)
+            add_delegated_fields(merged, _field_sources(classes, checker.modules) or [])
         return instance_of(merged)
 
     def _env_getitem(self, ctx: MethodContext) -> Type:
-        if not ctx.args or len(ctx.args[0]) != 1 or not isinstance(ctx.args[0][0], StrExpr):
-            return ctx.default_return_type
+        model = _model_name_argument(ctx)
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
-        if addon_name is None:
+        if model is None or addon_name is None:
             return ctx.default_return_type  # outside any addon: see the module docstring
-        model = ctx.args[0][0].value
         if self.registry.view_class(model, addon_name) is None:
-            ctx.api.fail(f'Unknown Odoo model "{model}"', ctx.context, code=ODOO_MODEL)
-            return ctx.default_return_type
-        module = _checker(ctx.api).tree.fullname
-        if not self.registry.loaded_with(model, addon_name, module, ctx.api.path):
+            outside = self._unknown_model(model, addon_name, ctx.context, ctx.api)
+            return outside or ctx.default_return_type
+        return self._env_model(model, addon_name, ctx.api) or ctx.default_return_type
+
+    def _env_model(self, model: str, addon_name: str, api: CheckerPluginInterface) -> ViewType:
+        """A model's records as an addon sees them; ``Any`` if not loaded with the module."""
+        module = _checker(api).tree.fullname
+        if not self.registry.loaded_with(model, addon_name, module, api.path):
             # ``env2 = self.env; env2["x"]``: the scan saw no model name, so no edge
             # makes mypy load the model's classes with this module.
             return AnyType(TypeOfAny.special_form)
-        return self._view_type(model, addon_name, ctx.api) or ctx.default_return_type
+        return self._view_type(model, addon_name, api)
+
+    def _unknown_model(
+        self, model: str, addon_name: str, context: Context, api: CheckerPluginInterface
+    ) -> AnyType | None:
+        """Report a model name that no addon in the view defines.
+
+        Returns:
+            ``Any`` if an addon outside the dependencies defines it (reported with
+            :data:`ODOO_MODEL_DEPENDS`); ``None`` for a name nothing defines.
+        """
+        outside = self.registry.addons_outside_defining(model, addon_name)
+        if outside:
+            message = f'Odoo model "{model}" is defined in {_outside(outside, addon_name)}'
+            api.fail(message, context, code=ODOO_MODEL_DEPENDS)
+            return AnyType(TypeOfAny.special_form)
+        api.fail(f'Unknown Odoo model "{model}"', context, code=ODOO_MODEL)
+        return None
 
     def _relational_field(self, ctx: FunctionContext) -> Type:
         """Bind ``fields.Many2one("x")`` to the class that defines model ``x``.
@@ -278,7 +380,7 @@ class OdooPlugin(Plugin):
             return ctx.default_return_type
         definition = self.registry.definition(comodel.value, addon_name)
         if definition is None:
-            ctx.api.fail(f'Unknown Odoo model "{comodel.value}"', comodel, code=ODOO_MODEL)
+            self._unknown_model(comodel.value, addon_name, comodel, ctx.api)
             return default.copy_modified(args=[AnyType(TypeOfAny.from_error)])
         found = _class_infos([definition], _checker(ctx.api).modules).infos
         model_type = instance_of(found[0]) if found else AnyType(TypeOfAny.special_form)
@@ -506,20 +608,51 @@ def _missing_parent_message(problem: MissingParent, addon: str) -> str:
             "Odoo registers the parent first"
         )
     if problem.outside_addons:
-        names = ", ".join(f'"{name}"' for name in problem.outside_addons)
-        where = (
-            f"addon {names}, which is"
-            if len(problem.outside_addons) == 1
-            else (f"addons {names}, which are")
-        )
-        return (
-            f'Odoo model "{model}" in _inherit is defined in {where} '
-            f'not in the dependencies of "{addon}"'
-        )
+        where = _outside(problem.outside_addons, addon)
+        return f'Odoo model "{model}" in _inherit is defined in {where}'
     message = f'Unknown Odoo model "{model}" in _inherit'
     if problem.missing_depends:
         message += f"; dependencies not found on addons_path: {', '.join(problem.missing_depends)}"
     return message
+
+
+def _outside(addons: tuple[str, ...], addon: str) -> str:
+    """``addon "sale", which is not in the dependencies of "my_addon"``."""
+    names = ", ".join(f'"{name}"' for name in addons)
+    where = f"addon {names}, which is" if len(addons) == 1 else f"addons {names}, which are"
+    return f'{where} not in the dependencies of "{addon}"'
+
+
+def _model_name_argument(ctx: MethodContext) -> str | None:
+    """The model name in ``env[...]``: a string literal, or a ``Final`` / ``Literal`` str."""
+    if not ctx.args or len(ctx.args[0]) != 1:
+        return None
+    if isinstance(ctx.args[0][0], StrExpr):
+        return ctx.args[0][0].value
+    arg_type = get_proper_type(ctx.arg_types[0][0])
+    if isinstance(arg_type, Instance) and arg_type.last_known_value is not None:
+        arg_type = arg_type.last_known_value
+    if isinstance(arg_type, LiteralType) and isinstance(arg_type.value, str):
+        return arg_type.value
+    return None
+
+
+def _field_sources(
+    classes: Iterable[Contribution], modules: dict[str, MypyFile]
+) -> list[tuple[TypeInfo, tuple[str, ...]]] | None:
+    """The mypy classes of contributions, each with the fields it declares.
+
+    Returns:
+        ``None`` if some class's module is part of this run but the class is not
+        analyzed yet; classes of modules outside the run are left out.
+    """
+    sources: list[tuple[TypeInfo, tuple[str, ...]]] = []
+    for item in classes:
+        found = _class_infos([item], modules)
+        if found.pending:
+            return None
+        sources += [(info, item.fields) for info in found.infos]
+    return sources
 
 
 def _comodel_expression(ctx: FunctionContext) -> StrExpr | None:

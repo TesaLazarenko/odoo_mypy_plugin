@@ -324,11 +324,11 @@ def test_inherit_of_unknown_or_unreachable_model_reports_error(run_mypy: RunMypy
     missing = "; dependencies not found on addons_path: ee_missing"
     assert result.messages("t_nodep/models.py") == [
         '5: error: Odoo model "t.partner" in _inherit is defined in addon "t_base", '
-        'which is not in the dependencies of "t_nodep"  [odoo-model]',
+        'which is not in the dependencies of "t_nodep"  [odoo-model-depends]',
         f'8: error: Unknown Odoo model "t.partnr" in _inherit{missing}  [odoo-model]',
         f'12: error: Unknown Odoo model "t.mixinn" in _inherit{missing}  [odoo-model]',
         '12: error: Odoo model "mail.thread" in _inherit is defined in addon "mail", '
-        'which is not in the dependencies of "t_nodep"  [odoo-model]',
+        'which is not in the dependencies of "t_nodep"  [odoo-model-depends]',
         '16: error: Odoo model "t.late" in _inherit is defined after this class; '
         "Odoo registers the parent first  [odoo-model]",
         '22: error: Unknown Odoo model "t.partnr"  [odoo-model]',

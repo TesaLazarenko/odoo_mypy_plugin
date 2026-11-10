@@ -187,33 +187,56 @@ def test_relational_field_unknown_comodel_reports_error(run_mypy: RunMypy) -> No
     ]
 
 
-def test_models_outside_dependencies_are_unknown(run_mypy: RunMypy) -> None:
+OTHER_MOD = """
+from odoo import models
+
+class Other(models.Model):
+    _name = "other.model"
+"""
+
+OUTSIDE_USER = """
+from odoo import fields, models
+
+class Thing(models.Model):
+    _name = "my.thing"
+
+    other_id = fields.Many2one("other.model")
+
+    def action(self) -> None:
+        reveal_type(self.env["other.model"])
+        self.env["other.modl"]
+        self.env["other.model"]  # type: ignore[odoo-model]
+"""
+
+
+def test_models_outside_dependencies_report_depends_code(run_mypy: RunMypy) -> None:
     result = run_mypy(
-        {
-            "other_mod": {
-                "models.py": """
-                from odoo import models
-
-                class Other(models.Model):
-                    _name = "other.model"
-                """
-            },
-            "my_mod": {
-                "models.py": """
-                from odoo import models
-
-                class Thing(models.Model):
-                    _name = "my.thing"
-
-                    def action(self) -> None:
-                        self.env["other.model"]
-                """
-            },
-        },
+        {"other_mod": {"models.py": OTHER_MOD}, "my_mod": {"models.py": OUTSIDE_USER}},
         check=["my_mod"],
     )
-    assert result.messages("models.py") == [
-        '8: error: Unknown Odoo model "other.model"  [odoo-model]'
+
+    outside = (
+        'Odoo model "other.model" is defined in addon "other_mod", '
+        'which is not in the dependencies of "my_mod"  [odoo-model-depends]'
+    )
+    assert result.messages("my_mod/models.py") == [
+        f"7: error: {outside}",
+        f"10: error: {outside}",
+        '10: note: Revealed type is "Any"',
+        '11: error: Unknown Odoo model "other.modl"  [odoo-model]',
+    ]
+
+
+def test_models_outside_dependencies_depends_code_can_be_disabled(run_mypy: RunMypy) -> None:
+    result = run_mypy(
+        {"other_mod": {"models.py": OTHER_MOD}, "my_mod": {"models.py": OUTSIDE_USER}},
+        check=["my_mod"],
+        flags=["--disable-error-code", "odoo-model-depends"],
+    )
+
+    assert result.messages("my_mod/models.py") == [
+        '10: note: Revealed type is "Any"',
+        '11: error: Unknown Odoo model "other.modl"  [odoo-model]',
     ]
 
 
