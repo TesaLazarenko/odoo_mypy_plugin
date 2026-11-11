@@ -29,6 +29,7 @@ __all__ = [
     "ODOO_FIELD_REF",
     "PathResult",
     "decorator_problem",
+    "did_you_mean",
     "field_kind",
     "missing_method_message",
     "resolve_path",
@@ -68,6 +69,7 @@ KNOWN_CLASSES: Final = (
 # Steps a path does not go through by comodel: the model is not known statically
 # (a reference), or the next name is a property (``properties.key``).
 OPAQUE: Final = REFERENCE | {"Properties"}
+DATE_CLASSES: Final = frozenset({"Date", "Datetime"})
 # Field classes that share their ``type`` with a parent class (``Image`` is ``binary``).
 SAME_KIND: Final = {"Image": "Binary"}
 
@@ -93,7 +95,11 @@ class PathResult:
 
 
 def resolve_path(
-    path: str, model: str, fields_of: Callable[[str], Mapping[str, FieldInfo]], argument: str
+    path: str,
+    model: str,
+    fields_of: Callable[[str], Mapping[str, FieldInfo]],
+    argument: str,
+    date_parts: Collection[str] = (),
 ) -> PathResult:
     """Follow a dotted path of fields (``partner_id.country_id.code``) from a model.
 
@@ -102,6 +108,8 @@ def resolve_path(
         model: The model its first field belongs to.
         fields_of: The fields of a model (empty if the model is unknown).
         argument: How the message names the path (``related="..."``).
+        date_parts: Names that may follow a date field as the last step (a domain's
+            ``date.year_number``).
 
     Returns:
         The last field; a problem; or neither, when a step cannot be known (a comodel
@@ -116,9 +124,11 @@ def resolve_path(
         info = fields.get(name)
         if info is None:
             message = f'Odoo model "{model}" has no field "{name}" in {argument}'
-            return PathResult(problem=message + _did_you_mean(name, fields))
+            return PathResult(problem=message + did_you_mean(name, fields))
         if position == len(names) - 1:
             break
+        if date_parts and info.field_type in DATE_CLASSES and position == len(names) - 2:
+            return _date_part(names[-1], name, model, argument, date_parts)
         if info.field_type not in RELATIONAL:
             if info.field_type not in KNOWN_CLASSES or info.field_type in OPAQUE:
                 return PathResult()  # a custom class, a reference: model unknown
@@ -131,10 +141,21 @@ def resolve_path(
     return PathResult(field=info, model=model)
 
 
+def _date_part(
+    part: str, name: str, model: str, argument: str, date_parts: Collection[str]
+) -> PathResult:
+    if part in date_parts:
+        return PathResult()
+    message = (
+        f'"{part}" of date field "{name}" of Odoo model "{model}" in {argument} is not a date part'
+    )
+    return PathResult(problem=message + did_you_mean(part, date_parts))
+
+
 def missing_method_message(model: str, argument: str, name: str, methods: Collection[str]) -> str:
     """The message for a method name that the model does not have."""
     message = f'Odoo model "{model}" has no method "{name}" ({argument}="{name}")'
-    return message + _did_you_mean(name, methods)
+    return message + did_you_mean(name, methods)
 
 
 def decorator_problem(
@@ -154,6 +175,7 @@ def decorator_problem(
     return resolve_path(name, model, fields_of, argument).problem
 
 
-def _did_you_mean(name: str, candidates: Collection[str]) -> str:
+def did_you_mean(name: str, candidates: Collection[str]) -> str:
+    """``; did you mean "x"?`` with the closest candidate, or nothing."""
     matches = get_close_matches(name, list(candidates), n=1, cutoff=0.6)
     return f'; did you mean "{matches[0]}"?' if matches else ""

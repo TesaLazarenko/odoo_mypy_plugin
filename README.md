@@ -25,6 +25,7 @@ plugin:
 | `line.product_id.uom_id` (`_inherits` of `product.template`) | silent (`Any`) | the `uom.uom` record: fields of `_inherits` (and `delegate=True`) parents are delegated, methods are not |
 | `self.create_date`, `self.create_uid.name` | `has no attribute` | `datetime \| Literal[False]`, the `res.users` record: Odoo's log-access fields, unless `_log_access` / `_auto` is `False` |
 | `fields.Char(related="partner_id.citty")`, `fields.Float(compute="_compute_totl")`, `@api.depends("partner_id.nmae")` | silent | `Odoo model "res.partner" has no field "citty" in related="partner_id.citty"; did you mean "city"?`, `Odoo model "res.partner" has no method "_compute_totl" ...`  (both `odoo-field-ref`) |
+| `self.search([("x_scroe", "=", 1), ("state", "in", ["draft", "dun"])])`, `fields.Many2one("res.partner", domain="[('nme', '=', 'x')]")` | silent | `Odoo model "res.partner" has no field "x_scroe" in domain; did you mean "x_score"?`, `Value "dun" is not in the selection of field "state" ...` (both `odoo-domain`) |
 | `self.create({"x_score": "oops", "nmae": "x"})` | silent | `Incompatible type for field "x_score" of Odoo model "res.partner" (expression has type "str", Integer field takes "int \| NewId \| Literal[False] \| None")  [odoo-vals-type]`, `Odoo model "res.partner" has no field "nmae"; did you mean "name"?  [odoo-vals-key]` |
 | `self.write({"state": "cancelled", "partner_id": self.env.user})` | silent | `Value "cancelled" is not in the selection of field "state" ...`, `Incompatible records for field "partner_id" ... (expression has "res.users" records, Many2one field takes "res.partner" records)` (both `odoo-vals-type`) |
 
@@ -66,6 +67,19 @@ with more fields. What each field class takes follows Odoo's `convert_to_cache`
 `x = cond and value` and `min(..., default=False)` are typed `bool`. `Boolean`
 (`bool(value)`), computed `Binary` fields that are not stored (widget data), `Json`,
 `Properties` and custom field classes are not checked.
+
+`odoo-domain` covers literal domains: the `domain` of `search()`, `search_count()`,
+`search_read()`, `search_fetch()`, `filtered_domain()`, `read_group()`, `_read_group()`,
+`_search()` (a list, or `Domain([...])` / `Domain(path, operator, value)` on Odoo 19+),
+and the `domain=` of relational fields, checked against the comodel (a string domain
+is evaluated by the client, so only its field paths and operators are checked, and
+`parent.x` is skipped). Each term with a literal path is checked: its fields
+(through the comodels; a date field may end with a date part such as
+`date.year_number`), its operator (the operators of the configured Odoo version: `<>`
+is gone in 20, `any!` is new in 19), `any` / `not any` sub-domains against the comodel,
+and a string value of a `Selection` field with literal keys. Logical operators other
+than `&`, `|`, `!` are errors. Terms built from variables, `(1, "=", 1)` and domains
+of abstract models are not checked.
 
 **Code outside any addon** (scripts, and Odoo's own `odoo/*.py` modules, which mypy always
 analyzes) has no `depends` closure, so the plugin leaves it alone: `env["..."]` keeps

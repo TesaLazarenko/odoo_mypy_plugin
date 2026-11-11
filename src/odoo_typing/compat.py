@@ -50,6 +50,8 @@ class OdooProfile:
         identity_template: A typed ``def [T] (T) -> T`` to give those decorators.
         field_decorators: Full names of ``api.depends`` / ``constrains`` / ``onchange``,
             each with its short name: their arguments name fields of the model.
+        domain_operators: The operators of a domain term (``"="``, ``"child_of"``...).
+        domain_class: Full name of the ``Domain`` class (Odoo 19+), ``None`` before.
     """
 
     version: int
@@ -70,6 +72,8 @@ class OdooProfile:
     identity_factories: frozenset[str]
     identity_template: str
     field_decorators: Mapping[str, str]
+    domain_operators: frozenset[str]
+    domain_class: str | None
 
     def is_field_class(self, fullname: str) -> bool:
         """Whether a full name is that of a field class (``odoo.fields.Char``...)."""
@@ -81,6 +85,21 @@ FIELD_DECORATORS = ("depends", "constrains", "onchange")
 
 def _field_decorators(module: str) -> Mapping[str, str]:
     return MappingProxyType({f"{module}.{name}": name for name in FIELD_DECORATORS})
+
+
+# odoo/osv/expression.py: TERM_OPERATORS, and '<>' that normalize_leaf rewrites.
+_OPERATORS_18 = frozenset(
+    {"=", "!=", "<>", "<=", "<", ">", ">=", "=?", "=like", "=ilike", "like", "not like"}
+    | {"ilike", "not ilike", "in", "not in", "child_of", "parent_of", "any", "not any"}
+)
+# odoo/orm/domains.py: STANDARD_CONDITION_OPERATORS, then the operators that the
+# ``@operator_optimization`` functions add to CONDITION_OPERATORS.
+_STANDARD_OPERATORS_19 = frozenset(
+    {"any", "not any", "any!", "not any!", "in", "not in", "<", ">", "<=", ">="}
+    | {"like", "not like", "ilike", "not ilike", "=like", "not =like", "=ilike", "not =ilike"}
+)
+_OPERATORS_19 = _STANDARD_OPERATORS_19 | {"<>", "=", "!=", "==", "=?", "parent_of", "child_of"}
+_OPERATORS_20 = _STANDARD_OPERATORS_19 | {"=", "!=", "=?", "access", "parent_of", "child_of"}
 
 
 def _env_records(environment: str) -> Mapping[str, str]:
@@ -124,6 +143,8 @@ ODOO_18 = OdooProfile(
     ),
     identity_template="odoo.api.model",
     field_decorators=_field_decorators("odoo.api"),
+    domain_operators=_OPERATORS_18,
+    domain_class=None,
 )
 
 # Odoo 19: the ORM lives in odoo/orm/*; odoo.fields / odoo.models / odoo.api re-export it.
@@ -162,11 +183,14 @@ ODOO_19 = OdooProfile(
     ),
     identity_template="odoo.orm.decorators.model",
     field_decorators=_field_decorators("odoo.orm.decorators"),
+    domain_operators=_OPERATORS_19,
+    domain_class="odoo.orm.domains.Domain",
 )
 
 # Odoo 20: the same names as 19. The sources use PEP 695 type parameters
 # (``class Field[T]``, ``def model[C: Callable]``), which mypy parses from Python 3.12.
-ODOO_20 = replace(ODOO_19, version=20, min_python=(3, 12))
+# ``<>`` and ``==`` are gone; ``access`` is new.
+ODOO_20 = replace(ODOO_19, version=20, min_python=(3, 12), domain_operators=_OPERATORS_20)
 
 _PROFILES: Mapping[int, OdooProfile] = MappingProxyType({18: ODOO_18, 19: ODOO_19, 20: ODOO_20})
 

@@ -283,6 +283,8 @@ def test_probe_fixture_reports_type_errors(run_mypy: RunMypy) -> None:
         '15: error: Unsupported operand types for + ("int" and "str")  [operator]',
         '15: note: Right operand is of type "str | Literal[False]"',
         '18: error: Unknown Odoo model "res.partnr"  [odoo-model]',
+        '19: error: Odoo model "res.partner" has no field "x_scroe" in domain; did you mean '
+        '"x_score"?  [odoo-domain]',
         '20: error: Incompatible type for field "x_score" of Odoo model "res.partner" '
         '(expression has type "str", Integer field takes "int | NewId | Literal[False] | None")  '
         "[odoo-vals-type]",
