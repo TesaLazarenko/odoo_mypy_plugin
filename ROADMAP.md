@@ -208,6 +208,34 @@
 
 ## Етап 1 — фундамент: індекс полів і методів (P1, передумова для етапів 2–5)
 
+**Стан (2026-11-11): 1a і 1b зроблено, 1c — наполовину.**
+- [x] **1a. Сканер.** `FieldInfo` на кожне визначення поля: клас поля, `comodel`,
+  `inverse_name`, `selection` (ключі списку або назва методу), `selection_add`,
+  `related`, `compute`/`inverse`/`search` (назва методу, також `compute=_compute_x`),
+  `readonly`/`required`/`store`/`delegate`; аргумент, який сканер не обчислює (лямбда,
+  імпорт з іншого addon), позначається в `dynamic`. `Contribution.methods`: `def`,
+  аліаси (`a = b = method`), `x = module.function`, з name mangling (`__x` →
+  `_Class__x`). `Contribution.inherits`: пари `_inherits`. `_evaluate` тепер вміє `+`
+  списків і кортежів, а `from .consts import STATES` дає значення з модуля того самого
+  addon.
+- [x] **1b. Реєстр.** `Registry.fields(model, addon)` (модуль `model_fields.py`):
+  визначення по MRO view від бази до tip, кожне перекриває лише свої аргументи;
+  несумісний клас поля (`Char` → `Text`) скидає попередні, підклас (`Binary` → `Image`)
+  ні; метод у похідному класі ховає поле; `selection_add` додає ключі; делеговані поля
+  стають `related="<поле>.<назва>"` (транзитивно, власні поля мають перевагу);
+  службові поля `id`, `display_name` і log-access. Mixin-и теж отримують службові поля
+  (так само, як типи з 4.1), хоча в Odoo їх дає лише клас, що визначає модель.
+  `Registry.methods(model, addon)`.
+  - Попутно виправлено: цикл `_inherits` (`a` ↔ `b`) валив mypy з `RecursionError` у
+    `view_class`.
+- [~] **1c. Звірка з Odoo.** `tools/fields/dump_runtime.py` (інтерпретатором Odoo, без
+  бази) і `tools/fields/compare.py` порівнюють визначення класів. Odoo 18, 3749 класів,
+  14864 поля: 18325 аргументів збігаються, розбіжностей 0; методи збігаються в усіх
+  класах. Лишається 52 `selection` і 2 `selection_add`, які сканер не обчислює
+  (константи з інших addons, comprehension-и, функції модуля), і поле
+  `IrRule.global` (`setattr` поза класом). Не зроблено: звірка злитого
+  `env[model]._fields` — потрібна база PostgreSQL.
+
 **Проблема.**
 - Зараз сканер збирає лише назви полів (`Contribution.fields`), comodel-і і делегування.
 - Етапам 2 (vals), 3 (related, домени, mapped), 4.1, 4.2, 4.12 і 5.1 потрібне те саме

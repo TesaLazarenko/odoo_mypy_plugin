@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import re
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property, partial
 from pathlib import Path
@@ -33,9 +33,17 @@ from pathlib import Path
 from odoo_typing.addons import BASE, Addon, AddonIndex
 from odoo_typing.config import Settings
 from odoo_typing.graphs import c3_merge, components_from
+from odoo_typing.model_fields import (
+    chain_definitions,
+    delegated_field,
+    delegation_fields,
+    merge_definitions,
+    service_definitions,
+)
 from odoo_typing.scanner import (
     AddonScan,
     Contribution,
+    FieldInfo,
     ModuleScan,
     SourceError,
     parse_source,
@@ -135,6 +143,7 @@ class Registry:
         self._definers: dict[str, tuple[str, ...]] = {}
         self._definition_index: dict[str, list[str]] | None = None
         self._misnamed: set[str] = set()  # addons warned about by misnamed()
+        self._fields: dict[tuple[str, str], Mapping[str, FieldInfo]] = {}
 
     @cached_property
     def addons(self) -> AddonIndex:
@@ -429,6 +438,8 @@ class Registry:
         """
         key = (model, addon_name)
         if key not in self._views:
+            # An _inherits cycle comes back here (through _same_delegates): no view yet.
+            self._views[key] = None
             self._views[key] = self._compute_view(model, addon_name)
         return self._views[key]
 
@@ -513,12 +524,51 @@ class Registry:
         model using it has. Default: on. Never for ``base``: its class is in the MRO of
         every model, which would give the fields to models without them too.
         """
-        if contribution.model == "base":
-            return False
-        for item in self.linearization(contribution):
-            if item.model == contribution.model and item.log_access is not None:
-                return item.log_access
-        return True
+        return _chain_log_access(self.linearization(contribution), contribution.model)
+
+    # -- the field index: env[model]._fields, statically -------------------------------------
+
+    def fields(self, model: str, addon_name: str) -> Mapping[str, FieldInfo]:
+        """The fields of a model's registry class as an addon sees it (``_fields``).
+
+        Merged from the definitions of the classes of :meth:`view_class`, then the
+        fields delegated through ``_inherits`` (transitively) and the service fields
+        (see :mod:`odoo_typing.model_fields`). Fields of Odoo's own Python classes
+        (``BaseModel``) are not in it, except for the service fields.
+
+        Returns:
+            Field name to field; empty if no class in the addon's view defines the model.
+        """
+        key = (model, addon_name)
+        if key not in self._fields:
+            self._fields[key] = {}  # a model in a delegation cycle sees no fields there
+            self._fields[key] = self._compute_fields(model, addon_name)
+        return self._fields[key]
+
+    def methods(self, model: str, addon_name: str) -> frozenset[str]:
+        """Names of the methods the classes of a model's view define (not BaseModel's)."""
+        view = self.view_class(model, addon_name)
+        chain = view.chain if view is not None else ()
+        return frozenset(name for item in chain for name in item.methods)
+
+    def _compute_fields(self, model: str, addon_name: str) -> Mapping[str, FieldInfo]:
+        view = self.view_class(model, addon_name)
+        if view is None:
+            return {}
+        definitions = {
+            info.name: [info] for info in service_definitions(_chain_log_access(view.chain, model))
+        }
+        for name, found in chain_definitions(view.chain).items():
+            definitions.setdefault(name, []).extend(found)
+        fields = {name: merge_definitions(found) for name, found in definitions.items()}
+        inherited: dict[str, FieldInfo] = {}
+        for delegate, field_name in delegation_fields(view.chain, fields).items():
+            if delegate != model:
+                for name, info in self.fields(delegate, addon_name).items():
+                    inherited[name] = delegated_field(info, field_name)
+        for name, info in inherited.items():
+            fields.setdefault(name, info)
+        return fields
 
     # -- _inherits delegation ----------------------------------------------------------------
 
@@ -760,6 +810,16 @@ def _parents(contribution: Contribution) -> tuple[str, ...]:
     if contribution.model == BASE or BASE in contribution.parents:
         return contribution.parents
     return (*contribution.parents, BASE)
+
+
+def _chain_log_access(chain: Sequence[Contribution], model: str) -> bool:
+    """Whether a model's classes leave ``_log_access`` on (see :meth:`Registry.log_access`)."""
+    if model == "base":
+        return False
+    for item in chain:
+        if item.model == model and item.log_access is not None:
+            return item.log_access
+    return True
 
 
 def _defines(contribution: Contribution) -> bool:

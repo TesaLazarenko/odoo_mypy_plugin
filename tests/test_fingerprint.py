@@ -111,14 +111,29 @@ def test_addon_digest_warm_store_parses_nothing(tmp_path: Path, mocker: MockerFi
     assert (digest, scan.call_count) == (expected, 0)
 
 
+METHOD = "\n    def f(self) -> int:\n        return {}\n"
+
+
 def test_addon_digest_method_body_edited_stays_equal(tmp_path: Path) -> None:
     settings = _odoo(tmp_path)
     store = RecordStore(tmp_path / "cache")
+    models = settings.odoo_path / "addons/base/models.py"
+    _touch(models, MODEL.replace("x.a", "x.base") + METHOD.format(1))
     expected = _fingerprints(settings, store).addon_digest("my_mod")
-    source = MODEL.replace("x.a", "x.base") + "\n    def f(self) -> int:\n        return 1\n"
-    _touch(settings.odoo_path / "addons/base/models.py", source)
+    _touch(models, MODEL.replace("x.a", "x.base") + METHOD.format(2))
 
     assert _fingerprints(settings, store).addon_digest("my_mod") == expected
+
+
+def test_addon_digest_method_added_in_dependency_changes(tmp_path: Path) -> None:
+    # compute="f" and the like are checked against the methods of the model.
+    settings = _odoo(tmp_path)
+    store = RecordStore(tmp_path / "cache")
+    before = _fingerprints(settings, store).addon_digest("my_mod")
+    source = MODEL.replace("x.a", "x.base") + METHOD.format(1)
+    _touch(settings.odoo_path / "addons/base/models.py", source)
+
+    assert _fingerprints(settings, store).addon_digest("my_mod") != before
 
 
 def test_addon_digest_class_added_in_dependency_changes(tmp_path: Path) -> None:

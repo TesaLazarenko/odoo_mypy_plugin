@@ -116,3 +116,35 @@ def test_delegated_fields_include_extensions_seen_by_the_reading_addon(
         '17: note: Revealed type is "str | Literal[False]"',
         '18: note: Revealed type is "str | Literal[False]"',
     ]
+
+
+def test_inherits_cycle_does_not_crash(run_mypy: RunMypy) -> None:
+    # Odoo cannot set up such models, but a typo must not crash mypy (recursion).
+    result = run_mypy(
+        {
+            "t_loop": {
+                "models.py": """
+                from odoo import fields, models
+
+                class Loop(models.Model):
+                    _name = "t.loop"
+                    _inherits = {"t.loop2": "other_id"}
+
+                    other_id = fields.Many2one("t.loop2")
+                    own = fields.Char()
+
+                class Loop2(models.Model):
+                    _name = "t.loop2"
+                    _inherits = {"t.loop": "back_id"}
+
+                    back_id = fields.Many2one("t.loop")
+
+                    def action(self) -> None:
+                        reveal_type(self.env["t.loop"].own)
+                """
+            }
+        }
+    )
+
+    # Odoo 19 declares ``_inherits: frozendict[str, str]``: a dict is its own error there.
+    assert '18: note: Revealed type is "str | Literal[False]"' in result.messages("models.py")

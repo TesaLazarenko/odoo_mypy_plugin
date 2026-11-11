@@ -23,6 +23,7 @@ from odoo_typing.addons import Addon, LoadKey
 __all__ = [
     "AddonScan",
     "Contribution",
+    "FieldInfo",
     "ModuleScan",
     "SourceError",
     "parse_source",
@@ -36,6 +37,19 @@ RELATIONAL_FIELDS = frozenset({"Many2one", "One2many", "Many2many"})
 ENV_RECORDS: Final = {"user": "res.users", "company": "res.company", "companies": "res.company"}
 # Log-access fields that are res.users records (``record.create_uid``).
 LOG_ACCESS_USERS: Final = frozenset({"create_uid", "write_uid"})
+# Positional parameters of the field classes (Odoo 18-20); ``string`` for the others.
+POSITIONAL_PARAMETERS: Final = {
+    "Many2one": ("comodel_name", "string"),
+    "One2many": ("comodel_name", "inverse_name", "string"),
+    "Many2many": ("comodel_name", "relation", "column1", "column2", "string"),
+    "Selection": ("selection", "string"),
+    "Reference": ("selection", "string"),
+    "Float": ("string", "digits"),
+    "Monetary": ("string", "currency_field"),
+}
+# Field arguments naming a method of the model, by name or as the function itself.
+METHOD_ARGUMENTS: Final = ("compute", "inverse", "search")
+FLAG_ARGUMENTS: Final = ("readonly", "required", "store", "delegate")
 # Concrete node classes that have no child nodes worth visiting (``ast.Load`` etc.).
 LEAF_NODES: frozenset[type] = frozenset(
     {ast.Name, ast.Constant, ast.alias}
@@ -45,6 +59,52 @@ LEAF_NODES: frozenset[type] = frozenset(
         for cls in base.__subclasses__()
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class FieldInfo:
+    """One field definition in a class body (``name = fields.Char(...)``).
+
+    Each attribute is the argument the definition passes, ``None`` if it passes none:
+    Odoo merges the definitions of a field argument by argument (see
+    :mod:`odoo_typing.model_fields`). An argument whose value the scan cannot evaluate
+    (an imported constant, a lambda) stays ``None`` and is named in ``dynamic``.
+
+    Attributes:
+        name: Field name.
+        field_type: Name of the field class (``Char``, ``Many2one``).
+        comodel: ``comodel_name`` of a relational field.
+        inverse_name: ``inverse_name`` of a ``One2many``.
+        selection: Keys of a ``selection`` given as a list of pairs.
+        selection_method: Name of the method of a ``selection`` given as a method.
+        selection_add: Keys a ``selection_add`` adds.
+        related: ``related`` path.
+        compute: Name of the ``compute`` method.
+        inverse: Name of the ``inverse`` method.
+        search: Name of the ``search`` method.
+        readonly: ``readonly`` flag.
+        required: ``required`` flag.
+        store: ``store`` flag.
+        delegate: ``delegate`` flag (``Many2one``).
+        dynamic: Arguments passed with values the scan cannot evaluate.
+    """
+
+    name: str
+    field_type: str
+    comodel: str | None = None
+    inverse_name: str | None = None
+    selection: tuple[str, ...] | None = None
+    selection_method: str | None = None
+    selection_add: tuple[str, ...] | None = None
+    related: str | None = None
+    compute: str | None = None
+    inverse: str | None = None
+    search: str | None = None
+    readonly: bool | None = None
+    required: bool | None = None
+    store: bool | None = None
+    delegate: bool | None = None
+    dynamic: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,9 +121,12 @@ class Contribution:
             creation index within the addon.
         comodels: Comodels of the relational fields the class body declares
             (``x = fields.Many2one("res.partner")``), in source order.
-        fields: Names of the fields the class body declares (``x = fields.Char()``).
+        fields: The fields the class body declares (``x = fields.Char()``), in source
+            order.
+        methods: Names of the methods the class body defines.
         delegates: Models the class delegates fields to: the keys of ``_inherits``,
             then the comodels of ``fields.Many2one(..., delegate=True)``.
+        inherits: ``_inherits`` of the class body: (model, field name) pairs.
         log_access: ``_log_access`` as the class body sets it, ``False`` if it only
             sets ``_auto = False`` (Odoo's default follows ``_auto``), ``None`` if
             neither is set.
@@ -76,14 +139,21 @@ class Contribution:
     parents: tuple[str, ...]
     position: tuple[int, str, int]
     comodels: tuple[str, ...] = ()
-    fields: tuple[str, ...] = ()
+    fields: tuple[FieldInfo, ...] = ()
+    methods: tuple[str, ...] = ()
     delegates: tuple[str, ...] = ()
+    inherits: tuple[tuple[str, str], ...] = ()
     log_access: bool | None = None
 
     @property
     def fullname(self) -> str:
         """Fully qualified class name."""
         return f"{self.module}.{self.class_name}"
+
+    @property
+    def field_names(self) -> tuple[str, ...]:
+        """Names of the fields the class body declares, in source order."""
+        return tuple(info.name for info in self.fields)
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +267,7 @@ class _ImportWalker:
         self.errors: list[SourceError] = []
         self._seen: set[Path] = set()
         self._classes: set[str] = set()
+        self._names: dict[str, dict[str, object]] = {}  # module-level names of each module
         # Absolute spellings of the addon's own package: Odoo's, and the one mypy uses.
         self._roots = {f"odoo.addons.{addon.name}", addon.module_prefix}
 
@@ -218,6 +289,7 @@ class _ImportWalker:
             self.errors.append(error)
             return
         file = _File(module=module, package=package)
+        self._names[module] = file.names
         self._walk(tree.body, file)
         self.scans.append(
             ModuleScan(
@@ -247,11 +319,15 @@ class _ImportWalker:
         package = file.package.split(".") if node.level else []
         dotted = package[: len(package) - node.level + 1] if node.level else []
         dotted += node.module.split(".") if node.module else []
-        if self._inner_parts(dotted) is None:
+        parts = self._inner_parts(dotted)
+        if parts is None:
             return
         self._import(dotted)
+        source = self._names.get(".".join([self.addon.module_prefix, *parts]), {})
         for alias in node.names:
             self._import([*dotted, alias.name])  # runs only if it is a submodule
+            if alias.name in source:  # ``from .consts import STATES``: a known value
+                file.names[alias.asname or alias.name] = source[alias.name]
 
     def _import(self, dotted: list[str]) -> None:
         """Run ``import a.b.c`` if it names this addon: each package, then the module."""
@@ -278,6 +354,9 @@ class _ImportWalker:
         if model is None or not attrs.get("_register", True) or fullname in self._classes:
             return
         self._classes.add(fullname)
+        methods = _defined_methods(node)
+        inherits = attrs.get("_inherits")
+        scope = ChainMap(attrs, file.names)
         file.contributions.append(
             Contribution(
                 addon=self.addon.name,
@@ -287,8 +366,10 @@ class _ImportWalker:
                 parents=_as_names(attrs.get("_inherit")),
                 position=(*self.load_key, len(self._classes)),
                 comodels=_declared_comodels(node),
-                fields=_declared_fields(node),
-                delegates=_delegated_models(node, attrs.get("_inherits")),
+                fields=_declared_fields(node, scope, frozenset(methods)),
+                methods=methods,
+                delegates=_delegated_models(node, inherits),
+                inherits=_inherits_pairs(inherits),
                 log_access=_log_access(attrs),
             )
         )
@@ -312,15 +393,173 @@ def _declared_comodels(node: ast.ClassDef) -> tuple[str, ...]:
     return tuple(comodels)
 
 
-def _declared_fields(node: ast.ClassDef) -> tuple[str, ...]:
-    """Names assigned ``fields.<Type>(...)`` in a class body (also annotated)."""
-    names: dict[str, None] = {}
+def _declared_fields(
+    node: ast.ClassDef, scope: Mapping[str, object], methods: frozenset[str]
+) -> tuple[FieldInfo, ...]:
+    """The fields assigned ``fields.<Type>(...)`` in a class body (also annotated).
+
+    A name assigned twice keeps its last definition, as the class namespace does.
+    """
+    found: dict[str, FieldInfo] = {}
     for statement in node.body:
         target = _single_target(statement)
         value = statement.value if isinstance(statement, ast.Assign | ast.AnnAssign) else None
         if target is not None and isinstance(value, ast.Call) and _is_fields_call(value):
-            names[target] = None
+            found.pop(target, None)
+            found[target] = _field_info(target, value, scope, methods)
+    return tuple(found.values())
+
+
+def _field_info(
+    name: str, call: ast.Call, scope: Mapping[str, object], methods: frozenset[str]
+) -> FieldInfo:
+    """What one ``fields.<Type>(...)`` call passes, as far as the scan can evaluate it."""
+    field_type = _callee_name(call.func) or ""
+    arguments = _field_arguments(field_type, call)
+    dynamic: set[str] = set()
+
+    def text(key: str) -> str | None:
+        return _text_argument(arguments, key, scope, dynamic)
+
+    def method(key: str) -> str | None:
+        if key not in arguments:
+            return None
+        node = arguments[key]
+        if isinstance(node, ast.Name) and node.id in methods:
+            return node.id
+        return _text_argument(arguments, key, scope, dynamic)
+
+    def flag(key: str) -> bool | None:
+        if key not in arguments:
+            return None
+        value = _evaluate(arguments[key], scope)
+        if isinstance(value, bool):
+            return value
+        dynamic.add(key)
+        return None
+
+    selection, selection_method = _selection(arguments, scope, methods, dynamic)
+    if "comodel_name" in dynamic:  # attribute names, not argument names
+        dynamic.discard("comodel_name")
+        dynamic.add("comodel")
+    return FieldInfo(
+        name=name,
+        field_type=field_type,
+        comodel=text("comodel_name"),
+        inverse_name=text("inverse_name"),
+        selection=selection,
+        selection_method=selection_method,
+        selection_add=_selection_keys(arguments, "selection_add", scope, dynamic),
+        related=text("related"),
+        compute=method("compute"),
+        inverse=method("inverse"),
+        search=method("search"),
+        readonly=flag("readonly"),
+        required=flag("required"),
+        store=flag("store"),
+        delegate=flag("delegate"),
+        dynamic=frozenset(dynamic),
+    )
+
+
+def _field_arguments(field_type: str, call: ast.Call) -> dict[str, ast.expr]:
+    """Arguments of a field call by parameter name (positional ones up to a ``*args``)."""
+    arguments: dict[str, ast.expr] = {}
+    parameters = POSITIONAL_PARAMETERS.get(field_type, ("string",))
+    for parameter, node in zip(parameters, call.args, strict=False):
+        if isinstance(node, ast.Starred):
+            break
+        arguments[parameter] = node
+    for keyword in call.keywords:
+        if keyword.arg is not None:  # ``**kwargs`` cannot be read
+            arguments[keyword.arg] = keyword.value
+    return arguments
+
+
+def _text_argument(
+    arguments: Mapping[str, ast.expr], key: str, scope: Mapping[str, object], dynamic: set[str]
+) -> str | None:
+    if key not in arguments:
+        return None
+    value = _evaluate(arguments[key], scope)
+    if isinstance(value, str):
+        return value
+    dynamic.add(key)
+    return None
+
+
+def _selection(
+    arguments: Mapping[str, ast.expr],
+    scope: Mapping[str, object],
+    methods: frozenset[str],
+    dynamic: set[str],
+) -> tuple[tuple[str, ...] | None, str | None]:
+    """``selection`` as (keys of a list, name of a method); both ``None`` if not given."""
+    node = arguments.get("selection")
+    if node is None:
+        return None, None
+    if isinstance(node, ast.Name) and node.id in methods:
+        return None, node.id
+    value = _evaluate(node, scope)
+    if isinstance(value, str):
+        return None, value
+    return _selection_keys(arguments, "selection", scope, dynamic), None
+
+
+def _selection_keys(
+    arguments: Mapping[str, ast.expr], key: str, scope: Mapping[str, object], dynamic: set[str]
+) -> tuple[str, ...] | None:
+    """Keys of a list of ``(key, label)`` pairs (``selection_add`` also allows ``(key,)``)."""
+    if key not in arguments:
+        return None
+    value = _evaluate(arguments[key], scope)
+    if isinstance(value, list | tuple):
+        keys = [pair[0] if isinstance(pair, list | tuple) and pair else UNKNOWN for pair in value]
+        if all(isinstance(item, str) for item in keys):
+            return tuple(item for item in keys if isinstance(item, str))
+    dynamic.add(key)
+    return None
+
+
+def _defined_methods(node: ast.ClassDef) -> tuple[str, ...]:
+    """Names of the functions a class body defines, in source order.
+
+    Also ``alias = method`` and ``name = module.function`` assignments
+    (``_check_company_domain = models.check_company_domain_parent_of``). Private
+    names get Python's mangling (``__x`` in ``Order`` is ``_Order__x``).
+    """
+    names: dict[str, None] = {}
+    for statement in node.body:
+        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+            names[_mangled(statement.name, node.name)] = None
+            continue
+        if not isinstance(statement, ast.Assign):
+            continue
+        value = statement.value
+        aliased = isinstance(value, ast.Name) and _mangled(value.id, node.name) in names
+        function = isinstance(value, ast.Attribute) and value.attr[:1].islower()
+        if aliased or function:  # also ``a = b = method``
+            targets = (target for target in statement.targets if isinstance(target, ast.Name))
+            names.update(dict.fromkeys(_mangled(target.id, node.name) for target in targets))
     return tuple(names)
+
+
+def _mangled(name: str, class_name: str) -> str:
+    """A name as the class namespace stores it (private name mangling)."""
+    if name.startswith("__") and not name.endswith("__") and class_name.strip("_"):
+        return f"_{class_name.lstrip('_')}{name}"
+    return name
+
+
+def _inherits_pairs(inherits: object) -> tuple[tuple[str, str], ...]:
+    """The (model, field name) pairs of an ``_inherits`` dict, in order."""
+    if not isinstance(inherits, dict):
+        return ()
+    return tuple(
+        (model, name)
+        for model, name in inherits.items()
+        if isinstance(model, str) and isinstance(name, str)
+    )
 
 
 def _delegated_models(node: ast.ClassDef, inherits: object) -> tuple[str, ...]:
@@ -429,8 +668,8 @@ def _assign(
 def _evaluate(node: ast.expr, scope: Mapping[str, object]) -> object:
     """Value of a constant expression, or :data:`UNKNOWN`.
 
-    Handles literals, lists, tuples and dicts, names bound earlier, ``+`` of strings
-    and f-strings of known values: what model names, ``_inherit`` lists and
+    Handles literals, lists, tuples and dicts, names bound earlier, ``+`` of strings,
+    lists or tuples and f-strings of known values: what model names, ``_inherit`` lists and
     ``_inherits`` dicts are made of.
     """
     if isinstance(node, ast.Constant):
@@ -443,12 +682,22 @@ def _evaluate(node: ast.expr, scope: Mapping[str, object]) -> object:
         items = [_evaluate(item, scope) for item in node.elts]
         return items if isinstance(node, ast.List) else tuple(items)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left, right = _evaluate(node.left, scope), _evaluate(node.right, scope)
-        return left + right if isinstance(left, str) and isinstance(right, str) else UNKNOWN
+        return _concatenate(_evaluate(node.left, scope), _evaluate(node.right, scope))
     if isinstance(node, ast.JoinedStr):
         parts = [_format_part(part, scope) for part in node.values]
         strings = [part for part in parts if isinstance(part, str)]
         return "".join(strings) if len(strings) == len(parts) else UNKNOWN
+    return UNKNOWN
+
+
+def _concatenate(left: object, right: object) -> object:
+    """``left + right`` of two strings, lists or tuples (``STATES + [("x", "X")]``)."""
+    if isinstance(left, str) and isinstance(right, str):
+        return left + right
+    if isinstance(left, list) and isinstance(right, list):
+        return left + right
+    if isinstance(left, tuple) and isinstance(right, tuple):
+        return left + right
     return UNKNOWN
 
 

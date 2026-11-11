@@ -42,8 +42,8 @@ def test_scan_inherits_and_delegate_fields_are_delegates(tmp_path: Path) -> None
     child = _get(registry, "t_core.m.Child")
 
     assert child.delegates == ("t.parent", "t.holder")
-    assert child.fields == ("parent_id", "size", "holder_id")
-    assert _get(registry, "t_core.m.Parent").fields == ("color",)
+    assert child.field_names == ("parent_id", "size", "holder_id")
+    assert _get(registry, "t_core.m.Parent").field_names == ("color",)
 
 
 def test_delegated_models_merge_chain_and_skip_own_model(tmp_path: Path) -> None:

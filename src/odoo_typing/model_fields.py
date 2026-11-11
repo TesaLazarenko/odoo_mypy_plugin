@@ -1,0 +1,214 @@
+"""The fields of a model's registry class, merged from its definitions as Odoo sets them up.
+
+Odoo (``Field._get_attrs``, ``Selection._setup_attrs``, ``BaseModel._add_inherited_fields``):
+
+- The field of a name is the value the registry class's MRO gives first; the definitions
+  merged into it are the field definitions of that name in MRO order, up to the first
+  class where the name is something else (a method).
+- From the base definition to the most derived one, each argument a definition passes
+  overrides the earlier value. A definition whose class the most derived one does not
+  subclass (``Char`` redefined as ``Text``) drops everything gathered before it.
+- ``selection`` replaces the keys; each ``selection_add`` adds its new keys.
+- ``_inherits`` (and ``Many2one(delegate=True)``) adds each field of the delegated model
+  that the model does not define, as ``related="<delegate field>.<name>"``.
+- ``id``, ``display_name`` and the log-access fields are added to every model.
+
+This module has the pure parts; :meth:`odoo_typing.registry.Registry.fields` feeds it
+the classes of a model's view.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import replace
+from typing import Final, TypeVar
+
+from odoo_typing.scanner import Contribution, FieldInfo
+
+__all__ = [
+    "LOG_ACCESS_FIELDS",
+    "MAGIC_FIELDS",
+    "chain_definitions",
+    "delegated_field",
+    "delegation_fields",
+    "merge_definitions",
+    "service_definitions",
+]
+
+T = TypeVar("T")
+# Field classes that subclass another field class (Odoo 18-20); a redefinition with a
+# subclass keeps the arguments of the earlier definitions.
+FIELD_PARENTS: Final = {"Image": "Binary", "Reference": "Selection", "Many2oneReference": "Integer"}
+# Arguments one definition passes and a later one overrides.
+OVERRIDABLE: Final = (
+    "comodel",
+    "inverse_name",
+    "related",
+    "compute",
+    "inverse",
+    "search",
+    "readonly",
+    "required",
+    "store",
+    "delegate",
+)
+# Added by MetaModel to every class that defines a model.
+MAGIC_FIELDS: Final = (
+    FieldInfo("id", "Id"),
+    FieldInfo(
+        "display_name", "Char", compute="_compute_display_name", search="_search_display_name"
+    ),
+)
+# Added with them unless ``_log_access`` is off.
+LOG_ACCESS_FIELDS: Final = (
+    FieldInfo("create_uid", "Many2one", comodel="res.users", readonly=True),
+    FieldInfo("create_date", "Datetime", readonly=True),
+    FieldInfo("write_uid", "Many2one", comodel="res.users", readonly=True),
+    FieldInfo("write_date", "Datetime", readonly=True),
+)
+
+
+def chain_definitions(chain: Sequence[Contribution]) -> dict[str, list[FieldInfo]]:
+    """The definitions of each field of a registry class, base first.
+
+    Args:
+        chain: The classes of the registry class, most derived first.
+
+    Returns:
+        Field name to its definitions, from the base one to the most derived; the
+        names in the order the classes, base first, declare them.
+    """
+    found: dict[str, list[FieldInfo]] = {}
+    stopped: set[str] = set()
+    for item in chain:
+        for info in item.fields:
+            if info.name not in stopped:
+                found.setdefault(info.name, []).append(info)
+        stopped.update(item.methods)
+    names = (info.name for item in reversed(chain) for info in item.fields)
+    return {name: found[name][::-1] for name in dict.fromkeys(names) if name in found}
+
+
+def merge_definitions(definitions: Sequence[FieldInfo]) -> FieldInfo:
+    """The field the definitions of one name make, base definition first.
+
+    The result passes every argument the merge resolves; ``selection_add`` is folded
+    into ``selection``, and ``dynamic`` names what stays unknown.
+    """
+    tip = definitions[-1]
+    merged: FieldInfo | None = None
+    for definition in definitions:
+        if not _compatible(tip.field_type, definition.field_type):
+            merged = None
+            continue
+        merged = _override(merged, definition)
+    assert merged is not None  # the tip is compatible with itself
+    return replace(merged, field_type=tip.field_type, selection_add=None)
+
+
+def _compatible(field_type: str, base_type: str) -> bool:
+    """Whether a field class is (a subclass of) another one."""
+    while field_type != base_type and field_type in FIELD_PARENTS:
+        field_type = FIELD_PARENTS[field_type]
+    return field_type == base_type
+
+
+def _override(merged: FieldInfo | None, definition: FieldInfo) -> FieldInfo:
+    """``merged`` with the arguments ``definition`` passes."""
+    if merged is None:
+        merged = FieldInfo(definition.name, definition.field_type)
+    passed = {name for name, value in _arguments(definition).items() if value is not None}
+    passed |= definition.dynamic & set(OVERRIDABLE)
+    dynamic = (merged.dynamic - passed) | (definition.dynamic & passed)
+
+    def take(old: T | None, new: T | None, name: str) -> T | None:
+        return new if name in passed else old
+
+    selection, method = merged.selection, merged.selection_method
+    if _passes_selection(definition):
+        selection, method = definition.selection, definition.selection_method
+        dynamic = (dynamic - {"selection"}) | (definition.dynamic & {"selection"})
+    if definition.selection_add is not None and selection is not None:
+        selection += tuple(key for key in definition.selection_add if key not in selection)
+    elif definition.selection_add is not None or "selection_add" in definition.dynamic:
+        selection = None  # added to a selection the scan does not know
+        dynamic |= {"selection"}
+    return FieldInfo(
+        merged.name,
+        definition.field_type,
+        comodel=take(merged.comodel, definition.comodel, "comodel"),
+        inverse_name=take(merged.inverse_name, definition.inverse_name, "inverse_name"),
+        selection=selection,
+        selection_method=method,
+        related=take(merged.related, definition.related, "related"),
+        compute=take(merged.compute, definition.compute, "compute"),
+        inverse=take(merged.inverse, definition.inverse, "inverse"),
+        search=take(merged.search, definition.search, "search"),
+        readonly=take(merged.readonly, definition.readonly, "readonly"),
+        required=take(merged.required, definition.required, "required"),
+        store=take(merged.store, definition.store, "store"),
+        delegate=take(merged.delegate, definition.delegate, "delegate"),
+        dynamic=frozenset(dynamic - {"selection_add"}),
+    )
+
+
+def _arguments(info: FieldInfo) -> dict[str, str | bool | None]:
+    """The overridable arguments of a definition by name (see :data:`OVERRIDABLE`)."""
+    return {
+        "comodel": info.comodel,
+        "inverse_name": info.inverse_name,
+        "related": info.related,
+        "compute": info.compute,
+        "inverse": info.inverse,
+        "search": info.search,
+        "readonly": info.readonly,
+        "required": info.required,
+        "store": info.store,
+        "delegate": info.delegate,
+    }
+
+
+def _passes_selection(definition: FieldInfo) -> bool:
+    return (
+        definition.selection is not None
+        or definition.selection_method is not None
+        or "selection" in definition.dynamic
+    )
+
+
+def delegation_fields(
+    chain: Sequence[Contribution], fields: Mapping[str, FieldInfo]
+) -> dict[str, str]:
+    """The merged ``_inherits`` of a registry class: delegated model to its field name.
+
+    ``_build_model`` merges the ``_inherits`` of the classes (the most derived wins);
+    each merged ``Many2one(delegate=True)`` adds its comodel.
+    """
+    found: dict[str, str] = {}
+    for item in reversed(chain):
+        found.update(item.inherits)
+    for name, info in fields.items():
+        if info.delegate and info.comodel:
+            found[info.comodel] = name
+    return found
+
+
+def delegated_field(info: FieldInfo, delegate_field: str) -> FieldInfo:
+    """The related field ``_add_inherited_fields`` makes for a delegated model's field."""
+    return FieldInfo(
+        info.name,
+        info.field_type,
+        comodel=info.comodel,
+        selection=info.selection,
+        selection_method=info.selection_method,
+        related=f"{delegate_field}.{info.name}",
+        readonly=info.readonly,
+        dynamic=info.dynamic & {"comodel", "selection", "readonly"},
+    )
+
+
+def service_definitions(log_access: bool) -> Iterable[FieldInfo]:
+    """The fields Odoo adds to a model besides those its classes declare."""
+    yield from MAGIC_FIELDS
+    if log_access:
+        yield from LOG_ACCESS_FIELDS

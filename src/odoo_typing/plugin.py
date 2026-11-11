@@ -906,7 +906,7 @@ def _field_sources(
         found = _class_infos([item], modules, incomplete)
         if found.pending:
             return None
-        sources += [(info, item.fields) for info in found.infos]
+        sources += [(info, item.field_names) for info in found.infos]
     return sources
 
 
