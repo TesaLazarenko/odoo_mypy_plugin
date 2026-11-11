@@ -3,8 +3,8 @@
 mypy calls a plugin hook with the full name of the class or function where it is
 *defined*, after following re-exports. Odoo 19 moved the ORM into ``odoo.orm.*``, and
 ``odoo.fields`` / ``odoo.models`` / ``odoo.api`` only re-export it, so hooks keyed on
-``odoo.fields.Many2one`` stop firing there. Every such name lives in a profile; the
-``odoo_version`` setting selects it.
+``odoo.fields.Many2one`` stop firing there (Odoo 20 keeps the names of 19). Every such
+name lives in a profile; the ``odoo_version`` setting selects it.
 
 Supported versions are 17 to 20; a version without a profile is reported as not
 supported yet (see ROADMAP.md, "Версії Odoo").
@@ -13,7 +13,7 @@ supported yet (see ROADMAP.md, "Версії Odoo").
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 
 __all__ = ["SUPPORTED_VERSIONS", "OdooProfile", "profile_for"]
@@ -27,6 +27,7 @@ class OdooProfile:
 
     Attributes:
         version: Odoo major version.
+        min_python: Oldest Python the Odoo sources parse with (``MIN_PY_VERSION``).
         namespace_odoo: Whether ``odoo`` and ``odoo.addons`` are namespace packages
             (no ``__init__.py``): mypy then names files by their package bases only
             with ``explicit_package_bases``.
@@ -47,6 +48,7 @@ class OdooProfile:
     """
 
     version: int
+    min_python: tuple[int, int]
     namespace_odoo: bool
     base_model: str
     env_getitem: str
@@ -74,6 +76,7 @@ def _env_records(environment: str) -> Mapping[str, str]:
 # Odoo 18: the ORM lives in odoo/fields.py, odoo/models.py, odoo/api.py.
 ODOO_18 = OdooProfile(
     version=18,
+    min_python=(3, 10),
     namespace_odoo=False,
     base_model="odoo.models.BaseModel",
     env_getitem="odoo.api.Environment.__getitem__",
@@ -111,6 +114,7 @@ ODOO_18 = OdooProfile(
 # without an argument, that is ``Callable[[Any], Any]``.
 ODOO_19 = OdooProfile(
     version=19,
+    min_python=(3, 10),
     namespace_odoo=True,
     base_model="odoo.orm.models.BaseModel",
     env_getitem="odoo.orm.environments.Environment.__getitem__",
@@ -139,7 +143,11 @@ ODOO_19 = OdooProfile(
     identity_template="odoo.orm.decorators.model",
 )
 
-_PROFILES: Mapping[int, OdooProfile] = MappingProxyType({18: ODOO_18, 19: ODOO_19})
+# Odoo 20: the same names as 19. The sources use PEP 695 type parameters
+# (``class Field[T]``, ``def model[C: Callable]``), which mypy parses from Python 3.12.
+ODOO_20 = replace(ODOO_19, version=20, min_python=(3, 12))
+
+_PROFILES: Mapping[int, OdooProfile] = MappingProxyType({18: ODOO_18, 19: ODOO_19, 20: ODOO_20})
 
 
 def profile_for(version: int) -> OdooProfile | None:

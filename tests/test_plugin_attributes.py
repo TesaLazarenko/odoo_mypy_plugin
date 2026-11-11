@@ -44,9 +44,18 @@ def test_meta_attributes_rec_name_and_same_file_list_inherit_do_not_clash(
         }
     )
 
-    # Odoo 18 does not annotate _order and _rec_name; Odoo 19 declares them.
+    # Odoo 18 does not annotate _order and _rec_name; Odoo 19 declares them, and Odoo 20
+    # declares ``_rec_name: str = ''``, so ``_rec_name = None`` is an error there.
     order, rec_name = ("Any", "Any") if names.version < 19 else ("str", "str | None")
+    rec_name_none = []
+    if names.version >= 20:
+        rec_name = "str"
+        rec_name_none = [
+            '13: error: Incompatible types in assignment (expression has type "None", '
+            'variable has type "str")  [assignment]'
+        ]
     assert result.messages("models.py") == [
+        *rec_name_none,
         '16: note: Revealed type is "str | list[str] | tuple[str, ...]"',
         f'17: note: Revealed type is "{order}"',
         f'18: note: Revealed type is "{rec_name}"',

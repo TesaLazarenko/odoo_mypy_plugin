@@ -306,15 +306,18 @@ def test_env_getitem_outside_addon_keeps_declared_type_unchecked(
 
 
 def test_cold_run_scans_only_addons_of_loaded_files(
-    run_mypy: RunMypy, mocker: MockerFixture
+    run_mypy: RunMypy, mocker: MockerFixture, odoo_version: int
 ) -> None:
     # Odoo core files (odoo/http.py, odoo/tests/common.py...) use env[...] too; they
     # must not make the plugin scan every installed addon.
     scan = mocker.spy(registry_module, "scan_addon")
+    # Odoo 20's odoo/tests/common.py imports odoo.addons.bus.tools: bus (and web, its
+    # dependency) are addons of loaded files there.
+    core = {"bus", "web"} if odoo_version >= 20 else set()
 
     run_mypy(ENV_LOOKUP, scripts={"tool.py": SCRIPT}, fresh_cache=True)
 
-    assert {call.args[0].name for call in scan.call_args_list} == {"base", "my_mod"}
+    assert {call.args[0].name for call in scan.call_args_list} == {"base", "my_mod"} | core
 
 
 def test_inherit_from_utf8_bom_file_exposes_fields(run_mypy: RunMypy) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -75,10 +76,47 @@ def test_plugin_init_version_without_profile_exits_with_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with pytest.raises(SystemExit) as exit_info:
+        OdooPlugin(_plugin_options(tmp_path, "", version="odoo_version = 17\n"))
+
+    assert exit_info.value.code == 2
+    assert "Odoo 17 is not supported yet" in capsys.readouterr().err
+
+
+def test_plugin_init_odoo_20_on_python_3_11_exits_with_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mocker: MockerFixture
+) -> None:
+    mocker.patch.object(sys, "version_info", (3, 11, 9, "final", 0))
+
+    with pytest.raises(SystemExit) as exit_info:
         OdooPlugin(_plugin_options(tmp_path, "", version="odoo_version = 20\n"))
 
     assert exit_info.value.code == 2
-    assert "Odoo 20 is not supported yet" in capsys.readouterr().err
+    assert "Odoo 20 needs Python 3.12 or newer to parse" in capsys.readouterr().err
+
+
+def test_plugin_init_odoo_20_targeting_python_3_11_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    options = _plugin_options(tmp_path, "", version="odoo_version = 20\n")
+    options.python_version = (3, 11)
+
+    OdooPlugin(options)
+
+    err = capsys.readouterr().err
+    assert "odoo-typing: warning:" in err
+    assert 'python_version = "3.12"' in err
+
+
+@pytest.mark.parametrize(("version", "python"), [(20, (3, 12)), (18, (3, 10))])
+def test_plugin_init_python_version_new_enough_prints_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], version: int, python: tuple[int, int]
+) -> None:
+    options = _plugin_options(tmp_path, "", version=f"odoo_version = {version}\n")
+    options.python_version = python
+
+    OdooPlugin(options)
+
+    assert capsys.readouterr().err == ""
 
 
 def _overlay_options(tmp_path: Path, version: int, explicit_package_bases: bool) -> Options:

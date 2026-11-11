@@ -51,6 +51,20 @@ def test_profile_for_19_hooks_only_decorator_factories() -> None:
     assert "odoo.orm.decorators.onchange" in profile.identity_factories
 
 
-@pytest.mark.parametrize("version", [17, 20])
-def test_profile_for_version_not_implemented_yet_returns_none(version: int) -> None:
-    assert profile_for(version) is None
+def test_profile_for_20_keeps_names_of_19_and_needs_python_3_12() -> None:
+    profile_19, profile_20 = _profile(19), _profile(20)
+
+    assert profile_20.version == 20
+    assert profile_20.min_python == (3, 12)
+    assert profile_20.base_model == profile_19.base_model
+    assert profile_20.comodel_generic == profile_19.comodel_generic
+    assert profile_20.identity_factories == profile_19.identity_factories
+
+
+@pytest.mark.parametrize("version", [18, 19])
+def test_profile_for_18_and_19_parse_with_python_3_10(version: int) -> None:
+    assert _profile(version).min_python == (3, 10)
+
+
+def test_profile_for_version_not_implemented_yet_returns_none() -> None:
+    assert profile_for(17) is None

@@ -149,6 +149,9 @@ class OdooPlugin(Plugin):
         super().__init__(options)
         self._settings = _settings_or_exit(options)
         self._profile = _profile_or_exit(self._settings)
+        interpreter = (sys.version_info[0], sys.version_info[1])
+        if warning := _python_version_warning_or_exit(self._profile, options, interpreter):
+            print(warning, file=sys.stderr)
         if warning := version_mismatch_warning(self._profile.version, self._settings.odoo_path):
             print(warning, file=sys.stderr)
         if warning := _package_bases_warning(self._profile, self._settings, options):
@@ -570,6 +573,42 @@ def _package_bases_warning(
         f"odoo-typing: warning: Odoo {profile.version} has no odoo/addons/__init__.py: set "
         "explicit_package_bases = true in [tool.mypy], or mypy does not name the files "
         'of overlay_root "odoo.addons.<name>"'
+    )
+
+
+def _python_version_warning_or_exit(
+    profile: OdooProfile, options: Options, interpreter: tuple[int, int]
+) -> str | None:
+    """Exit if mypy runs on a Python too old for the Odoo sources; warn if it targets one.
+
+    Odoo 20 declares ``class Field[T]`` (PEP 695). An older interpreter cannot parse it
+    at all (a blocking syntax error in Odoo). An older ``python_version`` is fine for the
+    silenced Odoo modules (mypy parses them for the interpreter), but each checked file
+    with the syntax, Odoo's own addons too, gets a ``[syntax]`` error.
+
+    Args:
+        profile: Profile of the configured Odoo version.
+        options: mypy options (``python_version`` is the target).
+        interpreter: Version of the Python that runs mypy.
+
+    Returns:
+        The warning text, or ``None`` when the target is new enough.
+    """
+    needed = ".".join(map(str, profile.min_python))
+    if interpreter < profile.min_python:
+        running = ".".join(map(str, interpreter))
+        print(
+            f"odoo-typing: error: Odoo {profile.version} needs Python {needed} or newer "
+            f"to parse; mypy runs on Python {running}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if options.python_version >= profile.min_python:
+        return None
+    target = ".".join(map(str, options.python_version))
+    return (
+        f"odoo-typing: warning: Odoo {profile.version} uses Python {needed} syntax: set "
+        f'python_version = "{needed}" in [tool.mypy] (mypy targets {target})'
     )
 
 

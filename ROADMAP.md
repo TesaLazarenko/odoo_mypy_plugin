@@ -173,10 +173,29 @@
     `odoo.models`/`odoo.orm.models`), версійні очікування там, де 19 типізує те, що 18
     не типізує (`_order`, `env.user`, `search_count`), `@pytest.mark.odoo(18)` для
     `api.returns`.
-- [ ] **V4. Odoo 20.**
-  - Як 19 плюс синтаксис PEP 695. mypy запускати з `python_version >= 3.12`, тож потрібна
-    перевірка в конфігу.
-  - `CachedModel` у сканері.
+- [x] **V4. Odoo 20** — ✅ зроблено.
+  - Профіль `ODOO_20` — це `ODOO_19` з `version=20`: назви `odoo.orm.*`, сигнатури
+    декораторів, `_Relational(Field[BaseModel])` ті самі. `odoo.api`/`fields`/`models`
+    тепер пакети, а не модулі, але лише реекспортують `odoo.orm`.
+  - PEP 695. mypy розбирає `class Field[T]` синтаксисом інтерпретатора, а не
+    `python_version`, коли модулі Odoo приглушені. Тому в профілі є `min_python`
+    (`MIN_PY_VERSION` з `release.py`: 3.10 для 18/19, 3.12 для 20). Якщо mypy запущено
+    на старішому Python, плагін зупиняється з повідомленням. Якщо старіший лише
+    `python_version`, він попереджає: неприглушений Odoo і addons з PEP 695 дають
+    помилки `[syntax]`.
+  - `CachedModel` (`res.country`, `res.currency`...) сканеру не заважає: він визначає
+    моделі за `_name`/`_inherit`, а не за базовим класом.
+  - README: `exclude = "/migrations/"` (у бенчмарку є з V2).
+  - Відмінності, які лише змінили очікування тестів: `_rec_name: str = ''` (у 19
+    `str | None`), а `odoo/tests/common.py` імпортує `odoo.addons.bus.tools`, тож
+    холодний запуск сканує ще `bus` і `web`.
+  - Бенчмарк 20 (crm / sale / account): без плагіна 2207 / 2749 / 12009, з плагіном
+    1318 / 1835 / 8975; лише з плагіном 23 / 56 / 177. Групи ті самі, що на 19; їх
+    більше, бо Odoo 20 типізує більше (`_track_execute`, рядки `_read_group` як `Self`).
+    Серед них є й, схоже, справжня помилка Odoo: `message_post` на
+    `account.bank.statement.line` (`account_journal.py:1420`), яка має лише `_inherits`
+    від `account.move`.
+  - Тести: 18 — 317, 19 і 20 — 316 + 1 пропущений (`api.returns`).
 - [ ] **V5. Odoo 17.**
   - Odoo нічого не типізує, тож типи полів має давати сам плагін за класом поля, а comodel
     — за назвою атрибута. Потребує етапу 1 (індекс полів).

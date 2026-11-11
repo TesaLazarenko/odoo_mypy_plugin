@@ -1,8 +1,8 @@
 # odoo-typing
 
 mypy plugin that understands the Odoo ORM, for mypy 2.1-2.4. The target Odoo version is
-set in the config (`odoo_version`); supported: Odoo 18 and 19. Odoo 17 and 20 are
-planned (see [ROADMAP.md](ROADMAP.md), «Версії Odoo»).
+set in the config (`odoo_version`); supported: Odoo 18, 19 and 20. Odoo 17 is planned
+(see [ROADMAP.md](ROADMAP.md), «Версії Odoo»).
 
 Plain mypy treats `env["res.partner"]` as `BaseModel`. It cannot see fields that other
 modules add through `_inherit`, and it reads every relational field as `Any`. With this
@@ -83,6 +83,12 @@ warns if it is missing), and whenever you give mypy files under the Odoo tree. O
 declares relational fields `Field[BaseModel]`; the plugin makes `Many2one`, `One2many`
 and `Many2many` generic in the comodel (`fields.Many2one[ResPartner]`), as Odoo 18
 declares them.
+
+**Odoo 20** has the names of Odoo 19 plus PEP 695 type parameters (`class Field[T]`), so
+mypy must target Python 3.12 or newer (`python_version = "3.12"`, or run mypy on 3.12+);
+with an older target the plugin stops with a message. Some addons ship migration scripts
+(`migrations/<version>/pre-migrate.py`) that mypy sees as duplicate modules: add
+`exclude = "/migrations/"` to `[tool.mypy]`.
 
 Unknown keys in this table are a configuration error, so a typo such as `addon_path`
 does not go unnoticed. `dynamic_env = "base"` keeps plain mypy's `BaseModel` for
