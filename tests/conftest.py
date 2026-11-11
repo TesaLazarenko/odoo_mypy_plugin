@@ -13,6 +13,9 @@ from pathlib import Path
 import pytest
 from mypy import api as mypy_api
 
+from odoo_typing.compat import profile_for
+from odoo_typing.odoo_version import read_odoo_version
+
 FIND_ODOO = "import os, odoo; print(os.path.dirname(odoo.__file__))"
 
 
@@ -39,8 +42,37 @@ def odoo_path() -> Path:
 
 
 @pytest.fixture(scope="session")
-def odoo_root(odoo_path: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Directory that contains only an ``odoo`` symlink, for ``mypy_path``."""
+def odoo_version(odoo_path: Path) -> int:
+    """The Odoo major version the e2e tests target: ``ODOO_VERSION``, else ``release.py``.
+
+    Other versions: ``tools/odoo/fetch.sh 19.0`` prints an ``ODOO_PATH`` to use.
+    """
+    if env := os.environ.get("ODOO_VERSION"):
+        return int(env)
+    detected = read_odoo_version(odoo_path)
+    if detected is None:
+        pytest.skip(f"cannot read the Odoo version of {odoo_path}; set ODOO_VERSION")
+    return detected[0]
+
+
+@pytest.fixture(autouse=True)
+def _only_for_marked_versions(request: pytest.FixtureRequest) -> None:
+    """``@pytest.mark.odoo(18, 19)``: run the test only for those Odoo versions."""
+    marker = request.node.get_closest_marker("odoo")
+    if marker is not None:
+        version = request.getfixturevalue("odoo_version")
+        if version not in marker.args:
+            pytest.skip(f"only for Odoo {', '.join(map(str, marker.args))}")
+
+
+@pytest.fixture(scope="session")
+def odoo_root(odoo_path: Path, odoo_version: int, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Directory that contains only an ``odoo`` symlink, for ``mypy_path``.
+
+    Every e2e test needs it, so they are all skipped for a version without a profile.
+    """
+    if profile_for(odoo_version) is None:
+        pytest.skip(f"the plugin has no profile for Odoo {odoo_version} yet")
     root = tmp_path_factory.mktemp("odoo_root")
     (root / "odoo").symlink_to(odoo_path)
     return root
@@ -80,7 +112,7 @@ follow_imports = "silent"
 
 [tool.odoo_typing]
 odoo_path = "{odoo_root}/odoo"
-odoo_version = 18
+odoo_version = {odoo_version}
 addons_path = {addons_path}
 """
 
@@ -99,7 +131,11 @@ def _assert_no_crash(status: int, *outputs: str) -> None:
 
 @pytest.fixture
 def run_mypy(
-    tmp_path: Path, odoo_root: Path, mypy_cache: Path, capfd: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    odoo_root: Path,
+    odoo_version: int,
+    mypy_cache: Path,
+    capfd: pytest.CaptureFixture[str],
 ) -> RunMypy:
     """Write addons to a temp dir and type-check them.
 
@@ -148,6 +184,7 @@ def run_mypy(
         config.write_text(
             PYPROJECT.format(
                 odoo_root=odoo_root,
+                odoo_version=odoo_version,
                 mypy_path=_toml_paths(search_path),
                 addons_path=_toml_paths(addons_path or [root]),
             )

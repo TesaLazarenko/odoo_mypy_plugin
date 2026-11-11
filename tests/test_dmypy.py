@@ -79,7 +79,7 @@ class Daemon:
 
 
 @pytest.fixture
-def daemon(tmp_path: Path, odoo_root: Path) -> Iterator[Daemon]:
+def daemon(tmp_path: Path, odoo_root: Path, odoo_version: int) -> Iterator[Daemon]:
     root = tmp_path / "addons"
     write_addon(root / "dep_mod", {"models.py": THING})
     write_addon(root / "my_mod", {"depends": ["dep_mod"], "user.py": USER})
@@ -87,6 +87,7 @@ def daemon(tmp_path: Path, odoo_root: Path) -> Iterator[Daemon]:
     config.write_text(
         PYPROJECT.format(
             odoo_root=odoo_root,
+            odoo_version=odoo_version,
             mypy_path=json.dumps([str(odoo_root), str(root)]),
             addons_path=json.dumps([str(root)]),
         )

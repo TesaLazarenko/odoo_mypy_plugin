@@ -37,6 +37,7 @@ convention = "google"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests", "tools/bench"]
+markers = ["odoo(*versions): run only when the e2e tests target one of these Odoo versions"]
 
 [tool.mypy]
 # Settings for type-checking the plugin's own code (not Odoo code).

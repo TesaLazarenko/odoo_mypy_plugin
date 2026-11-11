@@ -55,6 +55,12 @@ SCRATCH = Path(
 )
 DEFAULT_ODOO_ROOT = SCRATCH / "smoke" / "odoo_root"
 DEFAULT_BENCH_DIR = SCRATCH / "bench"
+DEFAULT_ODOO_VERSION = 18
+NAMESPACE_ODOO_VERSION = 19  # first version whose odoo/ and odoo/addons/ are namespaces
+# tools/odoo/fetch.sh <version>.0 builds <cache>/<version>.0/root (its odoo/ is ODOO_PATH).
+FETCH_CACHE = Path(
+    os.environ.get("ODOO_TYPING_ODOO_CACHE", Path.home() / ".cache/odoo-typing/odoo")
+)
 DEFAULT_ADDONS = ("crm", "sale", "account", "website_sale", "project_sms", "sale_stock")
 BASELINE_LABEL = "noplugin"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -75,14 +81,16 @@ check_untyped_defs = true
 show_error_codes = true
 show_traceback = true
 error_summary = false
-
+# Migration scripts (migrations/<version>/pre-migrate.py) are run by Odoo, not imported.
+exclude = "/migrations/"
+{package_bases}
 [[tool.mypy.overrides]]
 module = ["odoo", "odoo.*"]
 follow_imports = "silent"
 
 [tool.odoo_typing]
 odoo_path = "{odoo_root}/odoo"
-odoo_version = 18
+odoo_version = {odoo_version}
 addons_path = []
 """
 
@@ -146,6 +154,7 @@ class BenchContext:
     odoo_root: Path
     bench_dir: Path
     timeout: float
+    odoo_version: int = DEFAULT_ODOO_VERSION
 
     @property
     def config_dir(self) -> Path:
@@ -174,7 +183,14 @@ def write_config(context: BenchContext, with_plugin: bool) -> Path:
     name = "plugin.toml" if with_plugin else "noplugin.toml"
     path = context.config_dir / name
     plugins = '"odoo_typing.plugin"' if with_plugin else ""
-    path.write_text(CONFIG_TEMPLATE.format(plugins=plugins, odoo_root=context.odoo_root))
+    path.write_text(
+        CONFIG_TEMPLATE.format(
+            plugins=plugins,
+            odoo_root=context.odoo_root,
+            odoo_version=context.odoo_version,
+            package_bases=_package_bases(context.odoo_version),
+        )
+    )
     return path
 
 
@@ -502,6 +518,16 @@ def _group_lines(title: str, errors: list[str]) -> list[str]:
     return lines
 
 
+def _package_bases(version: int) -> str:
+    """The ``explicit_package_bases`` line the config needs for an Odoo version.
+
+    Odoo 19+ has no ``odoo/__init__.py`` / ``odoo/addons/__init__.py`` (namespace
+    packages): mypy then names an addon's files ``crm.x`` unless module names are taken
+    relative to ``mypy_path``.
+    """
+    return "explicit_package_bases = true\n" if version >= NAMESPACE_ODOO_VERSION else ""
+
+
 # -- command line ------------------------------------------------------------------------
 
 
@@ -513,8 +539,18 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--compare-only", help="diff this stored label, do not run mypy")
     parser.add_argument("--addons", nargs="+", default=list(DEFAULT_ADDONS))
     parser.add_argument("--refresh-baseline", action="store_true")
-    parser.add_argument("--odoo-root", type=Path, default=DEFAULT_ODOO_ROOT)
-    parser.add_argument("--bench-dir", type=Path, default=DEFAULT_BENCH_DIR)
+    parser.add_argument(
+        "--odoo-version", type=int, default=DEFAULT_ODOO_VERSION, help="odoo_version to target"
+    )
+    parser.add_argument(
+        "--odoo-root", type=Path, help="dir with odoo/ (default: per version, see fetched_root)"
+    )
+    parser.add_argument(
+        "--bench-dir",
+        type=Path,
+        default=DEFAULT_BENCH_DIR,
+        help="reports of version 18 here, of other versions in its odoo-<version> subdirectory",
+    )
     parser.add_argument("--python", default=sys.executable, help="interpreter with mypy")
     parser.add_argument("--jobs", type=int, default=1, help="addons measured at once")
     parser.add_argument("--timeout", type=float, default=1800, help="seconds per mypy run")
@@ -523,7 +559,20 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         parser.error("give exactly one of --label and --compare-only")
     if args.label == BASELINE_LABEL:
         parser.error(f"label {BASELINE_LABEL!r} is reserved for the run without the plugin")
+    version = args.odoo_version
+    if args.odoo_root is None:
+        args.odoo_root = (
+            DEFAULT_ODOO_ROOT if version == DEFAULT_ODOO_VERSION else fetched_root(version)
+        )
+    if version != DEFAULT_ODOO_VERSION:
+        # Each version has its own baseline and labels; 18 keeps the original layout.
+        args.bench_dir = args.bench_dir / f"odoo-{version}"
     return args
+
+
+def fetched_root(version: int) -> Path:
+    """The root ``tools/odoo/fetch.sh <version>.0`` builds (it contains ``odoo/``)."""
+    return FETCH_CACHE / f"{version}.0" / "root"
 
 
 def run(args: argparse.Namespace) -> Report:
@@ -533,6 +582,7 @@ def run(args: argparse.Namespace) -> Report:
         odoo_root=args.odoo_root.absolute(),
         bench_dir=args.bench_dir.absolute(),
         timeout=args.timeout,
+        odoo_version=args.odoo_version,
     )
     if not (context.odoo_root / "odoo" / "release.py").is_file():
         raise BenchError(f"{context.odoo_root} does not contain odoo/release.py")

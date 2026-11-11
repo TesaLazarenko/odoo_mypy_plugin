@@ -29,13 +29,13 @@ def _mypy(config: Path, tmp_path: Path, capfd: pytest.CaptureFixture[str]) -> tu
 
 
 def test_mypy_bad_addons_path_exits_with_clean_message(
-    tmp_path: Path, odoo_root: Path, capfd: pytest.CaptureFixture[str]
+    tmp_path: Path, odoo_root: Path, odoo_version: int, capfd: pytest.CaptureFixture[str]
 ) -> None:
     write_addon(tmp_path / "addons" / "my_mod", {"models.py": USER})
     config = tmp_path / "pyproject.toml"
     config.write_text(
         '[tool.mypy]\nplugins = ["odoo_typing.plugin"]\n'
-        f'[tool.odoo_typing]\nodoo_path = "{odoo_root}/odoo"\nodoo_version = 18\n'
+        f'[tool.odoo_typing]\nodoo_path = "{odoo_root}/odoo"\nodoo_version = {odoo_version}\n'
         'addons_path = ["missing"]\n'
     )
 
@@ -46,14 +46,14 @@ def test_mypy_bad_addons_path_exits_with_clean_message(
 
 
 def test_mypy_ini_section_configures_plugin(
-    tmp_path: Path, odoo_root: Path, capfd: pytest.CaptureFixture[str]
+    tmp_path: Path, odoo_root: Path, odoo_version: int, capfd: pytest.CaptureFixture[str]
 ) -> None:
     write_addon(tmp_path / "addons" / "my_mod", {"models.py": USER})
     config = tmp_path / "mypy.ini"
     config.write_text(
         f"[mypy]\nplugins = odoo_typing.plugin\nmypy_path = {odoo_root}:addons\n"
         "[mypy-odoo.*]\nfollow_imports = silent\n"
-        "[odoo_typing]\naddons_path = addons\nodoo_version = 18\n"
+        f"[odoo_typing]\naddons_path = addons\nodoo_version = {odoo_version}\n"
     )
 
     output, status = _mypy(config, tmp_path, capfd)

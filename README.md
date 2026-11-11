@@ -321,6 +321,16 @@ uv run ruff check src tests tools && uv run ruff format --check src tests tools 
 The end-to-end tests run the real mypy on throw-away addons against the installed Odoo.
 They fail when mypy crashes (`INTERNAL ERROR`, exit status 2), not only on wrong messages.
 
+Other Odoo versions: `tools/odoo/fetch.sh` makes a shallow, sparse checkout (no `static/`
+or `i18n/`, about 150-200 MB) under `~/.cache/odoo-typing/odoo/<version>/` and prints the
+`odoo` package directory to test against. The tests read the version from its
+`release.py` (or `ODOO_VERSION`); for a version the plugin has no profile for yet, the
+end-to-end tests are skipped. `@pytest.mark.odoo(18, 19)` limits a test to some versions.
+
+```bash
+ODOO_PATH=$(tools/odoo/fetch.sh 19.0) uv run pytest
+```
+
 ### Regression benchmark
 
 [tools/bench/bench.py](tools/bench/bench.py) runs mypy on real Odoo core addons (default:
@@ -335,12 +345,16 @@ uv run python tools/bench/bench.py --label wp1 --compare baseline
 uv run python tools/bench/bench.py --compare-only wp1 --compare baseline   # no mypy run
 ```
 
+- `--odoo-version N` (default 18): `odoo_version` of the plugin config. Other versions
+  default to the root `tools/odoo/fetch.sh N.0` builds and keep their reports and baseline
+  in `<bench-dir>/odoo-N/`.
 - `--odoo-root DIR`: a directory that holds only an `odoo` symlink (see the note above).
 - `--bench-dir DIR`: where `<label>.json`, the generated configs (`config/`) and the caches
   (`cache/<label>/<addon>`) go.
 - `--addons a b ...`, `--jobs N` (addons at once; 1 gives the most stable timings).
 - The run without the plugin is saved once as `noplugin.json` and reused. Pass
-  `--refresh-baseline` after upgrading mypy or Odoo.
+  `--refresh-baseline` after upgrading mypy or Odoo; it rebuilds the baseline from the
+  `--addons` given, so pass all of them.
 
 `--compare` prints per-addon counts and times, then the plugin-only errors that are NEW or
 GONE compared with the earlier label. They are grouped by error code and message pattern

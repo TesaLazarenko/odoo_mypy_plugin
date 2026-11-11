@@ -34,7 +34,7 @@ follow_imports = "silent"
 
 [tool.odoo_typing]
 odoo_path = "{odoo_path}"
-odoo_version = 18
+odoo_version = {odoo_version}
 addons_path = ["addons"]
 overlay_root = ".odoo-root"
 """
@@ -107,12 +107,17 @@ class Project:
 
 
 @pytest.fixture(scope="module")
-def project(odoo_path: Path, tmp_path_factory: pytest.TempPathFactory) -> Project:
+def project(
+    odoo_path: Path, odoo_root: Path, odoo_version: int, tmp_path_factory: pytest.TempPathFactory
+) -> Project:
+    del odoo_root  # requested for its skip: no profile for this Odoo version yet
     root = tmp_path_factory.mktemp("overlay_project")
     write_addon(root / "addons" / "ov_base", OV_BASE)
     write_addon(root / "addons" / "ov_ext", OV_EXT)
     config = root / "pyproject.toml"
-    config.write_text(PYPROJECT.format(root=root / ".odoo-root", odoo_path=odoo_path))
+    config.write_text(
+        PYPROJECT.format(root=root / ".odoo-root", odoo_path=odoo_path, odoo_version=odoo_version)
+    )
     build_overlay(load_settings(str(config), require_overlay=False), root / ".odoo-root")
     return Project(root=root, config=config)
 

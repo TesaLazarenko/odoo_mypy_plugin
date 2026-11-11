@@ -101,3 +101,52 @@ def test_run_mypy_crashing_process_reports_status_and_output(tmp_path: Path) -> 
         "oops\n",
     )
     assert result.peak_rss_mb > 0
+
+
+# -- several Odoo versions (roadmap V2) ---------------------------------------------------------
+
+
+def test_parse_args_default_version_keeps_existing_layout() -> None:
+    args = bench.parse_args(["--label", "x"])
+
+    assert args.odoo_version == 18
+    assert args.odoo_root == bench.DEFAULT_ODOO_ROOT
+    assert args.bench_dir == bench.DEFAULT_BENCH_DIR
+
+
+def test_parse_args_other_version_uses_fetched_root_and_own_dir(tmp_path: Path) -> None:
+    args = bench.parse_args(["--label", "x", "--odoo-version", "19", "--bench-dir", str(tmp_path)])
+
+    assert args.odoo_root == bench.fetched_root(19)
+    assert args.bench_dir == tmp_path / "odoo-19"
+
+
+def test_parse_args_explicit_root_wins(tmp_path: Path) -> None:
+    args = bench.parse_args(["--label", "x", "--odoo-version", "17", "--odoo-root", str(tmp_path)])
+
+    assert args.odoo_root == tmp_path
+
+
+def test_write_config_names_the_odoo_version(tmp_path: Path) -> None:
+    context = bench.BenchContext(
+        python="python", odoo_root=tmp_path, bench_dir=tmp_path, timeout=1, odoo_version=20
+    )
+
+    text = bench.write_config(context, with_plugin=True).read_text()
+
+    assert "odoo_version = 20\n" in text
+
+
+def test_write_config_namespace_odoo_uses_explicit_package_bases(tmp_path: Path) -> None:
+    def config(version: int) -> str:
+        context = bench.BenchContext(
+            python="python",
+            odoo_root=tmp_path,
+            bench_dir=tmp_path / str(version),
+            timeout=1,
+            odoo_version=version,
+        )
+        return bench.write_config(context, with_plugin=False).read_text()
+
+    assert "explicit_package_bases = true" not in config(18)
+    assert "explicit_package_bases = true" in config(19)
