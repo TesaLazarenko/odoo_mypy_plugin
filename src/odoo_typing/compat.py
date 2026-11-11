@@ -48,6 +48,8 @@ class OdooProfile:
         identity_decorators: Decorators that return the decorated method.
         identity_factories: Decorator factories whose decorator returns the method.
         identity_template: A typed ``def [T] (T) -> T`` to give those decorators.
+        field_decorators: Full names of ``api.depends`` / ``constrains`` / ``onchange``,
+            each with its short name: their arguments name fields of the model.
     """
 
     version: int
@@ -67,10 +69,18 @@ class OdooProfile:
     identity_decorators: frozenset[str]
     identity_factories: frozenset[str]
     identity_template: str
+    field_decorators: Mapping[str, str]
 
     def is_field_class(self, fullname: str) -> bool:
         """Whether a full name is that of a field class (``odoo.fields.Char``...)."""
         return fullname.startswith(self.field_modules)
+
+
+FIELD_DECORATORS = ("depends", "constrains", "onchange")
+
+
+def _field_decorators(module: str) -> Mapping[str, str]:
+    return MappingProxyType({f"{module}.{name}": name for name in FIELD_DECORATORS})
 
 
 def _env_records(environment: str) -> Mapping[str, str]:
@@ -113,6 +123,7 @@ ODOO_18 = OdooProfile(
         {"odoo.api.returns", "odoo.api.onchange", "odoo.api.ondelete", "odoo.api.depends_context"}
     ),
     identity_template="odoo.api.model",
+    field_decorators=_field_decorators("odoo.api"),
 )
 
 # Odoo 19: the ORM lives in odoo/orm/*; odoo.fields / odoo.models / odoo.api re-export it.
@@ -150,6 +161,7 @@ ODOO_19 = OdooProfile(
         for name in ("constrains", "depends", "depends_context", "onchange", "ondelete")
     ),
     identity_template="odoo.orm.decorators.model",
+    field_decorators=_field_decorators("odoo.orm.decorators"),
 )
 
 # Odoo 20: the same names as 19. The sources use PEP 695 type parameters

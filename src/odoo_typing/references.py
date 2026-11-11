@@ -1,10 +1,12 @@
-"""Names in field definitions: ``related="a.b.c"``, ``compute="_compute_x"``...
+"""Names in field definitions and in ``@api.depends`` / ``constrains`` / ``onchange``.
 
 Odoo resolves these strings when it sets up the fields of the registry (``_setup_related``,
-``_setup_regular_full``): a field of a related path that does not exist, a path that
-goes through a non-relational field, a related field whose class differs from the
-target's, or a method name that the model does not have, stop the registry from
-loading. They are checked against the field index of the declaring addon's view
+``_setup_regular_full``, ``resolve_depends``): a field of a related or depends path that
+does not exist, a path that goes through a non-relational field, a related field whose
+class differs from the target's, or a method name that the model does not have, stop the
+registry from loading. ``constrains`` and ``onchange`` take field names only: Odoo logs a
+warning for any other name and never calls the method for it. They are checked against
+the field index of the declaring addon's view
 (:meth:`odoo_typing.registry.Registry.fields` / ``methods``).
 
 This module has the pure parts: resolving a path and the messages.
@@ -26,6 +28,7 @@ __all__ = [
     "METHOD_ARGUMENTS",
     "ODOO_FIELD_REF",
     "PathResult",
+    "decorator_problem",
     "field_kind",
     "missing_method_message",
     "resolve_path",
@@ -62,6 +65,9 @@ KNOWN_CLASSES: Final = (
         "Id",
     }
 )
+# Steps a path does not go through by comodel: the model is not known statically
+# (a reference), or the next name is a property (``properties.key``).
+OPAQUE: Final = REFERENCE | {"Properties"}
 # Field classes that share their ``type`` with a parent class (``Image`` is ``binary``).
 SAME_KIND: Final = {"Image": "Binary"}
 
@@ -114,8 +120,8 @@ def resolve_path(
         if position == len(names) - 1:
             break
         if info.field_type not in RELATIONAL:
-            if info.field_type not in KNOWN_CLASSES or info.field_type in REFERENCE:
-                return PathResult()  # a custom class, or a reference: model unknown
+            if info.field_type not in KNOWN_CLASSES or info.field_type in OPAQUE:
+                return PathResult()  # a custom class, a reference: model unknown
             return PathResult(
                 problem=f'Field "{name}" of Odoo model "{model}" in {argument} is not relational'
             )
@@ -129,6 +135,23 @@ def missing_method_message(model: str, argument: str, name: str, methods: Collec
     """The message for a method name that the model does not have."""
     message = f'Odoo model "{model}" has no method "{name}" ({argument}="{name}")'
     return message + _did_you_mean(name, methods)
+
+
+def decorator_problem(
+    decorator: str, name: str, model: str, fields_of: Callable[[str], Mapping[str, FieldInfo]]
+) -> str | None:
+    """Why an argument of ``@api.depends`` / ``constrains`` / ``onchange`` is wrong, if it is.
+
+    Args:
+        decorator: The short name of the decorator (``depends``).
+        name: The argument: a path for ``depends``, a field name for the others.
+        model: The model of the class whose method is decorated.
+        fields_of: The fields of a model (empty if the model is unknown).
+    """
+    argument = f'@api.{decorator}("{name}")'
+    if decorator != "depends" and "." in name:
+        return f"{argument} takes field names, not paths: Odoo ignores it"
+    return resolve_path(name, model, fields_of, argument).problem
 
 
 def _did_you_mean(name: str, candidates: Collection[str]) -> str:

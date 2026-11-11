@@ -24,7 +24,7 @@ plugin:
 | `from odoo.addons.my_base.models.x import Y` (a custom addon) | `import-not-found`, `Any` | the real class, with the overlay root ([Setup](#setup)) |
 | `line.product_id.uom_id` (`_inherits` of `product.template`) | silent (`Any`) | the `uom.uom` record: fields of `_inherits` (and `delegate=True`) parents are delegated, methods are not |
 | `self.create_date`, `self.create_uid.name` | `has no attribute` | `datetime \| Literal[False]`, the `res.users` record: Odoo's log-access fields, unless `_log_access` / `_auto` is `False` |
-| `fields.Char(related="partner_id.citty")`, `fields.Float(compute="_compute_totl")` | silent | `Odoo model "res.partner" has no field "citty" in related="partner_id.citty"; did you mean "city"?`, `Odoo model "res.partner" has no method "_compute_totl" ...`  (both `odoo-field-ref`) |
+| `fields.Char(related="partner_id.citty")`, `fields.Float(compute="_compute_totl")`, `@api.depends("partner_id.nmae")` | silent | `Odoo model "res.partner" has no field "citty" in related="partner_id.citty"; did you mean "city"?`, `Odoo model "res.partner" has no method "_compute_totl" ...`  (both `odoo-field-ref`) |
 | `self.create({"x_score": "oops", "nmae": "x"})` | silent | `Incompatible type for field "x_score" of Odoo model "res.partner" (expression has type "str", Integer field takes "int \| NewId \| Literal[False] \| None")  [odoo-vals-type]`, `Odoo model "res.partner" has no field "nmae"; did you mean "name"?  [odoo-vals-key]` |
 | `self.write({"state": "cancelled", "partner_id": self.env.user})` | silent | `Value "cancelled" is not in the selection of field "state" ...`, `Incompatible records for field "partner_id" ... (expression has "res.users" records, Many2one field takes "res.partner" records)` (both `odoo-vals-type`) |
 
@@ -44,9 +44,11 @@ is `Any` there. `# type: ignore[odoo-model]` covers both codes.
 the registry: each field of a `related="a.b.c"` path (followed through the comodels,
 and the related field must have the class of the path's last field), and the method
 names of `compute=`, `inverse=`, `search=` and `selection=` (a string), looked up in the
-declaring addon's view of the model. Not in abstract models, whose fields refer to the
-models that use them. A relational field declared only with `related=` gets the comodel
-of the path's last field.
+declaring addon's view of the model. The paths of `@api.depends(...)` are checked the
+same way; `@api.constrains(...)` and `@api.onchange(...)` take field names of the model
+only (Odoo ignores a dotted name there). Not in abstract models, whose fields refer to
+the models that use them. A relational field declared only with `related=` gets the
+comodel of the path's last field.
 
 `odoo-vals` covers the `vals` of `create()`, `write()` and `copy(default=...)`, the
 vals inside x2many commands (`Command.create({...})`, `Command.update(id, {...})`,

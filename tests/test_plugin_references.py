@@ -1,8 +1,11 @@
-"""End-to-end tests of the names in field definitions (roadmap stage 3.1, 3.2)."""
+"""End-to-end tests of the names in field definitions and decorators (stage 3.1-3.3)."""
 
 from __future__ import annotations
 
 from conftest import RunMypy
+
+from odoo_typing.references import PathResult, decorator_problem, resolve_path
+from odoo_typing.scanner import FieldInfo
 
 T_BASE = """
 from odoo import fields, models
@@ -147,3 +150,74 @@ class Mixin(models.AbstractModel):
 
 def test_abstract_model_references_not_checked(run_mypy: RunMypy) -> None:
     assert _messages(run_mypy, MIXIN) == []
+
+
+DECORATORS = """
+from odoo import api, fields, models
+
+class Line(models.Model):
+    _inherit = "t.line"
+
+    total = fields.Float(compute="_compute_total")
+
+    @api.depends("label", "order_id.partner_id.city", "order_id.ref.name", "create_uid.name")
+    def _compute_total(self) -> None:
+        pass
+
+    @api.depends("order_id.nmae")
+    def _compute_a(self) -> None:
+        pass
+
+    @api.depends("label.size")
+    def _compute_b(self) -> None:
+        pass
+
+    @api.constrains("label", "order_id.name")
+    def _check_label(self) -> None:
+        pass
+
+    @api.onchange("lable", "display_name")
+    def _onchange_label(self) -> None:
+        reveal_type(self.label)
+
+@api.depends("anything")
+def module_function(records):
+    return records
+"""
+
+
+def test_decorator_paths_checked(run_mypy: RunMypy) -> None:
+    assert _messages(run_mypy, DECORATORS) == [
+        '13: error: Odoo model "t.order" has no field "nmae" in '
+        '@api.depends("order_id.nmae"); did you mean "name"?  [odoo-field-ref]',
+        '17: error: Field "label" of Odoo model "t.line" in @api.depends("label.size") is not '
+        "relational  [odoo-field-ref]",
+        '21: error: @api.constrains("order_id.name") takes field names, not paths: Odoo '
+        "ignores it  [odoo-field-ref]",
+        '25: error: Odoo model "t.line" has no field "lable" in @api.onchange("lable"); '
+        'did you mean "label"?  [odoo-field-ref]',
+        '27: note: Revealed type is "str | Literal[False]"',
+    ]
+
+
+MIXIN_DECORATORS = """
+from odoo import api, models
+
+class Mixin(models.AbstractModel):
+    _name = "t.mixin"
+
+    @api.depends("partner_id.name")
+    def _compute_partner_name(self) -> None:
+        pass
+"""
+
+
+def test_abstract_model_decorators_not_checked(run_mypy: RunMypy) -> None:
+    assert _messages(run_mypy, MIXIN_DECORATORS) == []
+
+
+def test_resolve_path_stops_at_properties() -> None:
+    fields = {"props": FieldInfo("props", "Properties")}
+
+    assert resolve_path("props.key", "t.order", lambda model: fields, "") == PathResult()
+    assert decorator_problem("depends", "props.key", "t.order", lambda model: fields) is None

@@ -32,7 +32,8 @@ What it does:
 * ``fields.X(related="a.b", compute="_m", ...)``: each field of the path and each
   method name must exist in the declaring addon's view (``odoo-field-ref``), see
   :mod:`odoo_typing.references`; a relational field declared only with ``related=``
-  gets the comodel of the path's last field.
+  gets the comodel of the path's last field. The same goes for the paths of
+  ``@api.depends(...)`` and the field names of ``@api.constrains`` / ``onchange``.
 * ``create({...})`` / ``write({...})``: the keys of a literal dict must be fields of the
   model (``odoo-vals-key``) and the values must fit them (``odoo-vals-type``), see
   :mod:`odoo_typing.vals`.
@@ -135,6 +136,7 @@ from odoo_typing.references import (
     KNOWN_CLASSES,
     METHOD_ARGUMENTS,
     ODOO_FIELD_REF,
+    decorator_problem,
     field_kind,
     missing_method_message,
     resolve_path,
@@ -421,9 +423,14 @@ class OdooPlugin(Plugin):
             return partial(self._field_definition, None)
         if fullname in profile.identity_decorators:
             return identity_decorator
-        if fullname in profile.identity_factories:
-            return partial(identity_factory, profile.identity_template)
-        return None
+        factory = (
+            partial(identity_factory, profile.identity_template)
+            if fullname in profile.identity_factories
+            else None
+        )
+        if fullname in profile.field_decorators:
+            return partial(self._decorator_fields, profile.field_decorators[fullname], factory)
+        return factory
 
     def get_method_signature_hook(
         self, fullname: str
@@ -627,6 +634,28 @@ class OdooPlugin(Plugin):
                 path,
                 code=ODOO_FIELD_REF,
             )
+
+    def _decorator_fields(
+        self,
+        decorator: str,
+        then: Callable[[FunctionContext], Type] | None,
+        ctx: FunctionContext,
+    ) -> Type:
+        """Check the fields that ``@api.depends(...)``, ``constrains``, ``onchange`` name.
+
+        Only in the body of a concrete model's class, as for field definitions.
+        """
+        owner = self._field_owner(ctx)
+        if owner is not None and self.registry.concrete(owner[0], owner[1]):
+            model, addon_name, _ = owner
+            fields_of = partial(self.registry.fields, addon_name=addon_name)
+            for argument in [item for arguments in ctx.args for item in arguments]:
+                if not isinstance(argument, StrExpr):
+                    continue  # a lambda, ``*names``
+                problem = decorator_problem(decorator, argument.value, model, fields_of)
+                if problem is not None:
+                    ctx.api.fail(problem, argument, code=ODOO_FIELD_REF)
+        return then(ctx) if then is not None else ctx.default_return_type
 
     def _related_comodel(self, ctx: FunctionContext) -> str | None:
         """The comodel of the last field of a ``related=`` path in a field definition."""
