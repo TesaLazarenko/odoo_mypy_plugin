@@ -39,7 +39,10 @@ the class); in `env["..."]` or a comodel it is often optional-dependency code gu
 `disable_error_code = ["odoo-model-depends"]` (typos are still reported); `env[...]`
 is `Any` there. `# type: ignore[odoo-model]` covers both codes.
 
-`odoo-vals` covers the `vals` of `create()` and `write()`: its sub-codes `odoo-vals-key`
+`odoo-vals` covers the `vals` of `create()`, `write()` and `copy(default=...)`, the
+vals inside x2many commands (`Command.create({...})`, `Command.update(id, {...})`,
+`(0, 0, {...})`, checked against the comodel) and values assigned to fields
+(`record.partner_id = "x"`): its sub-codes `odoo-vals-key`
 (a key that is not a field of the model, as the addon sees it: fields of later addons
 and of `_inherits` parents included) and `odoo-vals-type` (a value the field does not
 take). Only dict displays written in the call are checked (for `create`, also a list of
@@ -48,8 +51,10 @@ abstract models (mixins, `base`) keys are not checked, since their methods run o
 with more fields. What each field class takes follows Odoo's `convert_to_cache`
 (`False` and `None` clear a field; `Many2one` takes an id, a record of its comodel or a
 `(id, name)` pair; a `Selection` literal must be one of its keys, including
-`selection_add` of the addon's view); `Json`, `Properties` and custom field classes are
-not checked.
+`selection_add` of the addon's view). A plain `bool` is taken wherever `False` is, since
+`x = cond and value` and `min(..., default=False)` are typed `bool`. `Boolean`
+(`bool(value)`), computed `Binary` fields that are not stored (widget data), `Json`,
+`Properties` and custom field classes are not checked.
 
 **Code outside any addon** (scripts, and Odoo's own `odoo/*.py` modules, which mypy always
 analyzes) has no `depends` closure, so the plugin leaves it alone: `env["..."]` keeps
@@ -397,12 +402,10 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
 
 ## Not yet supported
 
-- `vals` outside `create()`/`write()`: `copy(default=...)`, `Command.create({...})` and
-  `(0, 0, {...})` inside x2many values, assignments to fields; a key guarded by
-  `if "x" in self._fields:` is still reported
+- `vals` built in a variable or with `dict(...)`, and `default_<field>` keys of
+  `with_context`; a key guarded by `if "x" in self._fields:` is still reported
 - relational fields declared only with `related=` (no comodel argument)
-- domains, `@api.depends` paths; assignments to fields (`record.partner_id = "x"`) are
-  not checked (`Field.__set__` is untyped)
+- domains, `@api.depends` paths
 - fields a delegated parent itself delegates (`_inherits` of an `_inherits` parent)
 - an unannotated override of a `-> Self` method (`create`, `copy`, `search`, `sudo`...)
   is typed `(self: Self, ...) -> Self`, so `super().create(...)` keeps the model type; in

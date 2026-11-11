@@ -276,7 +276,7 @@
 
 Цього не перевіряє ні odoo-ls, ні pylint-odoo, тож це головна ніша плагіна.
 
-**Стан (2026-11-11): 2.1, 2.2, 2.3 зроблено.**
+**Стан (2026-11-11): 2.1–2.6 зроблено (крім `default_<поле>` у `with_context`).**
 - [x] **2.1–2.2.** Модуль `vals.py`: method hook `create`/`write` (у тій самій функції,
   що й `keep_receiver`, наскрізна вимога 4) перевіряє dict-літерал (для `create` також
   список літералів). Ключі — проти `Registry.fields(model, addon)` з view
@@ -295,7 +295,23 @@
   перетворює), 6 полів з addons поза `depends` (`account_tax_python`,
   `account_payment`, enterprise), 1 поле під guard-ом `if "x" in ..._fields` (4.6).
   Холодний запуск +2–3,5 %.
-- Не зроблено: 2.4 (`Command`), 2.5 (присвоєння), 2.6 (`copy(default=)`).
+- [x] **2.5.** Signature hook на `*.__set__`: сигнатура лишається як є, значення
+  (виведене під `filter_errors`) перевіряє той самий `ValsChecker.check_value`; назва
+  поля — з `ctx.context` (`MemberExpr`), модель — з типу запису. Код той самий,
+  `odoo-vals-type`.
+- [x] **2.4.** У значенні x2many, записаному списком: `Command.create({...})`,
+  `Command.update(id, {...})`, `(0, 0, {...})`, `(1, id, {...})` перевіряються проти
+  полів comodel (рекурсивно).
+- [x] **2.6.** `copy(default={...})` — той самий хук, що й `create`/`write`.
+  `default_<поле>` у `with_context` не зроблено.
+- Бенчмарк після 2.4–2.6 показав ідіоми Odoo, які таблиця 2.2 відкидала, тому:
+  `Boolean` не перевіряється (`bool(value)`); простий `bool` приймається там, де
+  `False` (`x = cond and value`, `min(..., default=False)`); `""` у `Selection`
+  дозволено (Odoo пише `False`); обчислюваний нестворений у базі `Binary` не
+  перевіряється (там словники віджетів). Після цього нових помилок 8, усі в account:
+  6 `int` у Char у тестах (5 — усередині `Command.create`), `root.name = root.id`, і
+  одна хибна — `sequence_prefix`, бо `record[record._sequence_field]` Odoo типізує
+  як `Self`. Холодний запуск +2–4 % до кроку 2.1–2.3.
 
 ### 2.1 Механізм: перевірка літерала, а не TypedDict у сигнатурі
 - **Проблема (логічний конфлікт).** Якщо поставити TypedDict у сигнатуру `create`:

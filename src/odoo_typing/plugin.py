@@ -60,10 +60,12 @@ from mypy.nodes import (
     ClassDef,
     Context,
     Expression,
+    MemberExpr,
     MypyFile,
     NameExpr,
     RefExpr,
     StrExpr,
+    TempNode,
     TypeInfo,
     Var,
 )
@@ -139,8 +141,9 @@ ODOO_MODEL_DEPENDS = ErrorCode(
 )
 
 DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
-# Methods whose first argument is ``vals`` (``create``: also a list of them).
-VALS_METHODS = frozenset({"create", "write"})
+# Methods whose first argument is ``vals`` (``create``: also a list of them;
+# ``copy``: its ``default``).
+VALS_METHODS = frozenset({"create", "write", "copy"})
 
 
 class OdooPlugin(Plugin):
@@ -323,7 +326,7 @@ class OdooPlugin(Plugin):
     def get_method_hook(self, fullname: str) -> Callable[[MethodContext], Type] | None:
         """Type ``env["model.name"]`` and unannotated overrides of ``-> Self`` methods.
 
-        ``create`` and ``write`` also get their ``vals`` checked (one hook per name, so
+        ``create``, ``write`` and ``copy`` also get their ``vals`` checked (one hook per name, so
         the checks run in the same function).
         """
         if fullname == self._profile.env_getitem:
@@ -336,31 +339,65 @@ class OdooPlugin(Plugin):
         return None
 
     def _check_vals(self, method: str, ctx: MethodContext) -> Type:
-        """Check the literal ``vals`` of ``create`` / ``write`` (see :mod:`odoo_typing.vals`)."""
+        """Check the literal ``vals`` of ``create`` / ``write`` / ``copy(default=)``."""
         base_model = self._profile.base_model
         receiver = get_proper_type(ctx.type)
         argument = ctx.args[0][0] if ctx.args and ctx.args[0] else None
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
         model = self._model_of(receiver.type) if isinstance(receiver, Instance) else None
         if argument is not None and addon_name is not None and model is not None:
-            target = ValsTarget(
-                model,
-                self.registry.fields(model, addon_name),
-                check_keys=self.registry.concrete(model, addon_name),
-                ignore_keys=self._settings.vals_ignore_keys,
-            )
-            checker = ValsChecker(
-                _checker(ctx.api),
-                base_model,
-                self._profile.new_id,
-                self._model_of,
-                partial(self.registry.concrete, addon_name=addon_name),
-            )
+            target = self._vals_target(model, addon_name)
+            checker = self._vals_checker(ctx.api, addon_name)
             for vals in vals_dicts(argument, many=method == "create"):
                 checker.check(target, vals)
         if is_self_method(method):
             return keep_receiver(base_model, ctx)
         return ctx.default_return_type
+
+    def _vals_checker(self, api: CheckerPluginInterface, addon_name: str) -> ValsChecker:
+        return ValsChecker(
+            _checker(api),
+            self._profile.base_model,
+            self._profile.new_id,
+            self._model_of,
+            partial(self.registry.concrete, addon_name=addon_name),
+            partial(self._vals_target, addon_name=addon_name),
+        )
+
+    def _vals_target(self, model: str, addon_name: str) -> ValsTarget:
+        """The fields the vals of a model are checked against, as an addon sees them."""
+        return ValsTarget(
+            model,
+            self.registry.fields(model, addon_name),
+            check_keys=self.registry.concrete(model, addon_name),
+            ignore_keys=self._settings.vals_ignore_keys,
+        )
+
+    def _field_set(self, ctx: MethodSigContext) -> FunctionLike:
+        """Check the value assigned to a field (``record.partner_id = value``).
+
+        mypy types ``record.name = value`` as a call of the descriptor's ``__set__``;
+        the signature is kept (Odoo leaves the value unannotated) and the value is
+        checked like a ``vals`` value of that field (:mod:`odoo_typing.vals`).
+        """
+        lvalue = ctx.context
+        records = ctx.args[0][0] if len(ctx.args) == 2 and ctx.args[0] else None
+        value = ctx.args[1][0] if records is not None and ctx.args[1] else None
+        if not isinstance(lvalue, MemberExpr) or not isinstance(records, TempNode):
+            return ctx.default_signature
+        record = get_proper_type(records.type)
+        model = self._model_of(record.type) if isinstance(record, Instance) else None
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if value is None or model is None or addon_name is None:
+            return ctx.default_signature
+        info = self.registry.fields(model, addon_name).get(lvalue.name)
+        if info is None:
+            return ctx.default_signature
+        checker = _checker(ctx.api)
+        with checker.msg.filter_errors():  # reported where mypy checks the rvalue
+            value_type = checker.expr_checker.accept(value)
+        self._vals_checker(ctx.api, addon_name).check_value(model, info, value, value_type)
+        return ctx.default_signature
 
     def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
         """Bind relational field constructors to their comodel; see through decorators."""
@@ -376,11 +413,13 @@ class OdooPlugin(Plugin):
     def get_method_signature_hook(
         self, fullname: str
     ) -> Callable[[MethodSigContext], FunctionLike] | None:
-        """Make reading a relational field return its comodel; let ``create`` take a dict."""
+        """Type reading a relational field; check assigned values; let ``create`` take a dict."""
         # mypy names the hook after the descriptor's own class (``odoo.fields.Many2one``,
         # a custom subclass...), so match every ``__get__`` and check the MRO in the hook.
         if fullname.endswith(".__get__"):
             return self._relational_get
+        if fullname.endswith(".__set__"):
+            return self._field_set
         return partial(create_signature, self._profile.base_model) if is_create(fullname) else None
 
     def get_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:

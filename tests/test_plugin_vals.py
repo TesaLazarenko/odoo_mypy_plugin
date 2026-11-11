@@ -28,6 +28,7 @@ class Order(models.Model):
     tag_ids = fields.Many2many("res.partner.category")
     ref = fields.Reference(selection=[("res.partner", "Partner")])
     extra = fields.Json()
+    widget = fields.Binary(compute="_compute_widget")
 
     def _selection_kind(self):
         return []
@@ -40,10 +41,10 @@ class Line(models.Model):
 class Mixin(models.AbstractModel):
     _name = "t.mixin"
 
-    flag = fields.Boolean()
+    flag = fields.Integer()
 
     def touch(self) -> None:
-        self.write({"flag": True, "active": False})  # fields of the models using it
+        self.write({"flag": 1, "active": False})  # fields of the models using it
         self.write({"flag": "yes"})
 """
 
@@ -99,7 +100,7 @@ class Order(models.Model):
             "name": 1,
             "count": "1",
             "amount": "1.5",
-            "done": "yes",
+            "done": "yes",  # Boolean takes anything
             "day": 20240101,
             "data": 1,
             "partner_id": "abc",
@@ -118,7 +119,6 @@ def test_vals_values_of_wrong_type_reported(run_mypy: RunMypy) -> None:
             (10, "name"),
             (11, "count"),
             (12, "amount"),
-            (13, "done"),
             (14, "day"),
             (15, "data"),
             (16, "partner_id"),
@@ -217,7 +217,7 @@ def test_vals_abstract_model_checks_values_not_keys(run_mypy: RunMypy) -> None:
     result = run_mypy({"t_base": {"models.py": T_BASE}})
 
     assert [line.split(" (")[0] for line in result.messages("t_base/models.py")] == [
-        '41: error: Incompatible type for field "flag" of Odoo model "t.mixin"'
+        '42: error: Incompatible type for field "flag" of Odoo model "t.mixin"'
     ]
 
 
@@ -284,3 +284,118 @@ def test_vals_cache_field_class_changed_in_dependency_rechecks(run_mypy: RunMypy
 
     assert len(first.messages("t_use/models.py")) == 1
     assert second.messages("t_use/models.py") == []
+
+
+ASSIGNED = """
+import datetime
+from typing import Any
+from odoo import api, models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    @api.depends("count")
+    def _compute_all(self) -> None:
+        for order in self:
+            order.name = order.partner_id.name
+            order.amount = order.count * 1.5
+            order.partner_id = self.env.user.partner_id
+            order.partner_id = False
+            order.day = datetime.date.today()
+            order.state = "done"
+            order.line_ids = self.env["t.line"]
+            order.extra = {"a": 1}
+            order.count = "1"
+            order.state = "cancel"
+            order.partner_id = "abc"
+            order.partner_id = self.env.user
+"""
+
+
+def test_vals_assignment_to_field_checks_value(run_mypy: RunMypy) -> None:
+    messages = _messages(run_mypy, ASSIGNED)
+
+    assert [message.split(" (")[0] for message in messages] == [
+        '20: error: Incompatible type for field "count" of Odoo model "t.order"',
+        '21: error: Value "cancel" is not in the selection of field "state" of Odoo model '
+        '"t.order"',
+        '22: error: Incompatible type for field "partner_id" of Odoo model "t.order"',
+        '23: error: Incompatible records for field "partner_id" of Odoo model "t.order"',
+    ]
+
+
+COMMANDS = """
+from odoo import models
+from odoo.fields import Command
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self) -> None:
+        self.create({"line_ids": [
+            Command.create({"order_id": "x"}),
+            Command.update(1, {"nope": 1}),
+            (0, 0, {"order_id": False, "bad": 1}),
+            Command.link(1),
+            (4, 1, 0),
+        ]})
+        self.line_ids = [Command.create({"order_id": self, "missing": 1})]
+"""
+
+
+def test_vals_commands_of_x2many_checked_against_comodel(run_mypy: RunMypy) -> None:
+    messages = [line.split(" (")[0].split(";")[0] for line in _messages(run_mypy, COMMANDS)]
+
+    assert messages == [
+        '10: error: Incompatible type for field "order_id" of Odoo model "t.line"',
+        '11: error: Odoo model "t.line" has no field "nope"  [odoo-vals-key]',
+        '12: error: Odoo model "t.line" has no field "bad"  [odoo-vals-key]',
+        '16: error: Odoo model "t.line" has no field "missing"  [odoo-vals-key]',
+    ]
+
+
+COPY = """
+from odoo import models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self) -> None:
+        copied = self.copy({"name": 1})
+        self.copy(default={"nmae": "x"})
+        self.copy()
+        reveal_type(copied)
+"""
+
+
+def test_vals_copy_default_checked(run_mypy: RunMypy) -> None:
+    messages = [line.split(" (")[0].split(";")[0] for line in _messages(run_mypy, COPY)]
+
+    assert messages == [
+        '8: error: Incompatible type for field "name" of Odoo model "t.order"',
+        '9: error: Odoo model "t.order" has no field "nmae"',
+        '11: note: Revealed type is "t_use.models.Order"',
+    ]
+
+
+IDIOMS = """
+from odoo import models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def _compute_widget(self) -> None:
+        for order in self:
+            order.widget = {"lines": []}  # a computed Binary holds any data
+            order.done = order.line_ids  # Boolean: bool(value)
+            order.day = min([line.order_id.day for line in order.line_ids], default=False)
+            order.state = order.name and ""  # falsy: stored as False
+            label = False
+            if order.count:
+                label = True
+            order.name = label  # bool: usually False only
+"""
+
+
+def test_vals_odoo_idioms_accepted(run_mypy: RunMypy) -> None:
+    assert [line for line in _messages(run_mypy, IDIOMS) if "[odoo-vals" in line] == []

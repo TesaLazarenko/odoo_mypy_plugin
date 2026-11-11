@@ -10,7 +10,10 @@ value against the field's class (:data:`VALUE_TYPES`). Keys of ``**spread`` and
 non-literal keys are not checked, nor are dicts built any other way.
 
 What a field accepts follows Odoo's ``convert_to_cache``: ``False`` and ``None`` clear
-almost every field.
+almost every field. A plain ``bool`` value is taken where ``False`` is: Odoo code
+writes ``x = cond and value`` and ``min(..., default=False)``, which mypy types
+``bool``. ``Boolean`` takes any value (``bool(value)``), and a computed ``Binary`` that
+is not stored often holds other data (widget dicts), so neither is checked.
 """
 
 from __future__ import annotations
@@ -25,7 +28,18 @@ from typing import Final
 from mypy.errorcodes import ErrorCode
 from mypy.lookup import lookup_fully_qualified
 from mypy.messages import format_type, pretty_seq
-from mypy.nodes import DictExpr, Expression, ListExpr, StrExpr, TypeInfo
+from mypy.nodes import (
+    CallExpr,
+    DictExpr,
+    Expression,
+    IntExpr,
+    ListExpr,
+    MemberExpr,
+    RefExpr,
+    StrExpr,
+    TupleExpr,
+    TypeInfo,
+)
 from mypy.subtypes import is_subtype
 from mypy.types import (
     AnyType,
@@ -89,7 +103,6 @@ VALUE_TYPES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
         "Many2oneReference": _INTEGER,
         "Float": _FLOAT,
         "Monetary": _FLOAT,
-        "Boolean": ("builtins.bool", NONE),
         "Date": _DATE,
         "Datetime": _DATE,
         "Binary": _BINARY,
@@ -101,7 +114,13 @@ VALUE_TYPES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
     }
 )
 RELATIONAL_CLASSES: Final = frozenset({"Many2one", "One2many", "Many2many"})
+BINARY_CLASSES: Final = frozenset({"Binary", "Image"})
 SHOWN_KEYS: Final = 8  # selection keys listed in a message
+X2MANY_CLASSES: Final = frozenset({"One2many", "Many2many"})
+# x2many commands that carry the vals of a comodel record: ``Command`` method and the
+# position of its dict argument; ``(0, 0, vals)`` / ``(1, id, vals)`` tuples likewise.
+COMMAND_VALS: Final = {"create": 0, "update": 1}
+TUPLE_COMMANDS: Final = frozenset({0, 1})
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +159,7 @@ class ValsChecker:
         new_id: Full name of ``NewId``.
         model_of: The model of a model class, ``None`` if it is not one.
         concrete: Whether a model is not abstract (in the checking addon's view).
+        target_for: The vals target of a model (for the vals of x2many commands).
     """
 
     checker: TypeChecker
@@ -147,6 +167,7 @@ class ValsChecker:
     new_id: str
     model_of: Callable[[TypeInfo], str | None]
     concrete: Callable[[str], bool]
+    target_for: Callable[[str], ValsTarget]
 
     def check(self, target: ValsTarget, vals: DictExpr) -> None:
         """Report the problems of one dict display."""
@@ -156,8 +177,10 @@ class ValsChecker:
             info = target.fields.get(key.value)
             if info is None:
                 self._unknown_key(target, key)
-            else:
-                self._check_value(target.model, info, value)
+                continue
+            value_type = self.checker.lookup_type_or_none(value)
+            if value_type is not None:
+                self.check_value(target.model, info, value, value_type)
 
     def _unknown_key(self, target: ValsTarget, key: StrExpr) -> None:
         if not target.check_keys or not target.fields:
@@ -170,14 +193,14 @@ class ValsChecker:
             message += f"; did you mean {pretty_seq(matches, 'or')}?"
         self.checker.fail(message, key, code=ODOO_VALS_KEY)
 
-    def _check_value(self, model: str, info: FieldInfo, value: Expression) -> None:
+    def check_value(self, model: str, info: FieldInfo, value: Expression, value_type: Type) -> None:
+        """Report a value (of type ``value_type``) that a field of a model does not take."""
         accepted = self._accepted(info.field_type)
-        if accepted is None:
+        if accepted is None or (info.field_type in BINARY_CLASSES and not _stored(info)):
             return
-        value_type = self.checker.lookup_type_or_none(value)
-        if value_type is None:
-            return
-        if not is_subtype(value_type, accepted):
+        # Every listed class takes False: also take ``bool`` (see the module docstring).
+        widened = UnionType.make_union([accepted, self.checker.named_type("builtins.bool")])
+        if not is_subtype(value_type, widened):
             options = self.checker.options
             self.checker.fail(
                 f'Incompatible type for field "{info.name}" of Odoo model "{model}" '
@@ -192,6 +215,10 @@ class ValsChecker:
             self._check_selection_keys(model, info, items, value)
         if info.field_type in RELATIONAL_CLASSES and info.comodel and "comodel" not in info.dynamic:
             self._check_comodel(model, info, items, value)
+            if info.field_type in X2MANY_CLASSES and isinstance(value, ListExpr):
+                target = self.target_for(info.comodel)
+                for vals in _command_vals(value):
+                    self.check(target, vals)
 
     def _check_selection_keys(
         self, model: str, info: FieldInfo, items: Sequence[ProperType], value: Expression
@@ -200,7 +227,7 @@ class ValsChecker:
         if selection is None or "selection" in info.dynamic:
             return
         for key in _literal_strings(items):
-            if key not in selection:
+            if key and key not in selection:  # Odoo stores a falsy value as False
                 shown = ", ".join(f'"{item}"' for item in selection[:SHOWN_KEYS])
                 more = ", ..." if len(selection) > SHOWN_KEYS else ""
                 self.checker.fail(
@@ -265,3 +292,37 @@ def _literal_strings(items: Sequence[ProperType]) -> Iterator[str]:
         literal = item.last_known_value if isinstance(item, Instance) else item
         if isinstance(literal, LiteralType) and isinstance(literal.value, str):
             yield literal.value
+
+
+def _command_vals(commands: ListExpr) -> Iterator[DictExpr]:
+    """The comodel vals of an x2many value: ``Command.create({...})``, ``(0, 0, {...})``."""
+    for item in commands.items:
+        if isinstance(item, CallExpr):
+            position = COMMAND_VALS.get(_command_name(item.callee) or "")
+            if position is not None and len(item.args) > position:
+                argument = item.args[position]
+                if isinstance(argument, DictExpr):
+                    yield argument
+        elif isinstance(item, TupleExpr) and len(item.items) == 3:
+            code, _, vals = item.items
+            command = code.value if isinstance(code, IntExpr) else None
+            if command in TUPLE_COMMANDS and isinstance(vals, DictExpr):
+                yield vals
+
+
+def _command_name(callee: Expression) -> str | None:
+    """The method of Odoo's ``Command`` a callee is (``Command.create``), if it is one."""
+    if (
+        isinstance(callee, MemberExpr)
+        and isinstance(callee.expr, RefExpr)
+        and callee.expr.fullname.endswith(".Command")
+    ):
+        return callee.name
+    return None
+
+
+def _stored(info: FieldInfo) -> bool:
+    """Whether a field is stored: computed and related fields are not, by default."""
+    if info.store is not None:
+        return info.store
+    return info.compute is None and info.related is None and not info.dynamic & {"compute"}
