@@ -599,6 +599,30 @@ class Registry:
         found.pop(model, None)
         return tuple(found)
 
+    def delegate_closure(
+        self, chain: Iterable[Contribution], model: str, addon_name: str
+    ) -> tuple[str, ...]:
+        """Every model a registry class delegates to, also through its delegates.
+
+        Odoo's ``_add_inherited_fields`` copies a parent's ``_fields``, which already
+        hold the fields that parent delegates, so the order is depth-first: a direct
+        delegate, then what it delegates, then the next direct delegate. A cycle stops
+        at a model already met (the model itself included).
+        """
+        found: dict[str, None] = {}
+
+        def visit(delegates: Iterable[str]) -> None:
+            for delegate in delegates:
+                if delegate == model or delegate in found:
+                    continue
+                found[delegate] = None
+                view = self.view_class(delegate, addon_name)
+                if view is not None:
+                    visit(self.delegated_models(view.chain, delegate))
+
+        visit(self.delegated_models(chain, model))
+        return tuple(found)
+
     def delegate_chain(self, model: str, addon_name: str) -> tuple[Contribution, ...]:
         """The classes of a delegated model's registry class in an addon's view."""
         view = self.view_class(model, addon_name)
@@ -607,12 +631,9 @@ class Registry:
     def _delegate_modules(
         self, chain: Iterable[Contribution], model: str, addon_name: str
     ) -> frozenset[str]:
-        """Modules of the tips that make up the registry classes delegated to.
-
-        Only one level: the fields a delegated model itself delegates are left out.
-        """
+        """Modules of the tips that make up the registry classes delegated to (transitively)."""
         modules: set[str] = set()
-        for delegate in self.delegated_models(chain, model):
+        for delegate in self.delegate_closure(chain, model, addon_name):
             for node in self._registry_mro(delegate, addon_name, None):
                 if isinstance(node, str):
                     modules.update(tip.module for tip in self.model_tips(node, addon_name))
@@ -623,9 +644,13 @@ class Registry:
     ) -> bool:
         """Whether the registry classes a model delegates to look the same from two addons."""
         first, second = addons
+        chain = tuple(chain)
+        delegates = self.delegate_closure(chain, model, first)
+        if delegates != self.delegate_closure(chain, model, second):
+            return False
         return all(
             set(self.delegate_chain(delegate, first)) == set(self.delegate_chain(delegate, second))
-            for delegate in self.delegated_models(chain, model)
+            for delegate in delegates
         )
 
     def chain_comodels(self, contribution: Contribution) -> frozenset[str]:

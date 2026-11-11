@@ -109,3 +109,35 @@ def test_referenced_models_final_constants_and_env_records_are_found() -> None:
     models = referenced_models(ast.parse(source))
 
     assert models == {"x.final", "res.users", "res.company"}
+
+
+def test_delegate_closure_follows_delegates_of_delegates(tmp_path: Path) -> None:
+    grandchild = _cls(
+        "Grandchild",
+        "t.grandchild",
+        body='    _inherits = {"t.child": "child_id"}\n    child_id = fields.Many2one("t.child")\n',
+    )
+    cycle = _cls("Parent", inherit=["t.parent"], body='    _inherits = {"t.grandchild": "g_id"}\n')
+    registry = _build(
+        tmp_path,
+        base=BASE,
+        addons={
+            "t_core": ([], _files(PARENT + HOLDER + CHILD + grandchild)),
+            "t_cycle": (["t_core"], _files(cycle)),
+        },
+    )
+    item = _get(registry, "t_core.m.Grandchild")
+    chain = registry.linearization(item)
+
+    assert registry.delegated_models(chain, "t.grandchild") == ("t.child",)
+    assert registry.delegate_closure(chain, "t.grandchild", "t_core") == (
+        "t.child",
+        "t.parent",
+        "t.holder",
+    )
+    # t.parent delegates back to t.grandchild in t_cycle: the cycle stops there.
+    assert registry.delegate_closure(chain, "t.grandchild", "t_cycle") == (
+        "t.child",
+        "t.parent",
+        "t.holder",
+    )

@@ -148,3 +148,37 @@ def test_inherits_cycle_does_not_crash(run_mypy: RunMypy) -> None:
 
     # Odoo 19 declares ``_inherits: frozendict[str, str]``: a dict is its own error there.
     assert '18: note: Revealed type is "str | Literal[False]"' in result.messages("models.py")
+
+
+def test_inherits_is_transitive(run_mypy: RunMypy) -> None:
+    result = run_mypy(
+        {
+            "t_base": {"models.py": T_BASE},
+            "t_use": {
+                "depends": ["t_base"],
+                "models.py": """
+                from odoo import fields, models
+
+                class Grandchild(models.Model):
+                    _name = "t.grandchild"
+                    _inherits = {"t.child": "child_id"}
+
+                    child_id = fields.Many2one("t.child", required=True, ondelete="cascade")
+
+                    def action(self) -> None:
+                        reveal_type(self.color)
+                        reveal_type(self.size)
+                        self.create({"color": 1, "size": "x"})
+                """,
+            },
+        },
+        check=["t_use"],
+    )
+
+    # Odoo 19+ declares ``_inherits: frozendict``: a dict display is an ``assignment`` error.
+    messages = [line for line in result.messages("t_use/models.py") if "frozendict" not in line]
+    assert messages[:2] == [
+        '11: note: Revealed type is "int"',
+        '12: note: Revealed type is "int"',
+    ]
+    assert len(messages) == 3 and 'field "size"' in messages[2]

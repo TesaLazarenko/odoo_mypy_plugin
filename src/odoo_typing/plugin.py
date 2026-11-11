@@ -344,7 +344,8 @@ class OdooPlugin(Plugin):
         """
         chain = self.registry.linearization(contribution)
         sources: list[tuple[TypeInfo, tuple[str, ...]]] = []
-        for delegate in self.registry.delegated_models(chain, contribution.model):
+        delegates = self.registry.delegate_closure(chain, contribution.model, contribution.addon)
+        for delegate in delegates:
             classes = self.registry.delegate_chain(delegate, contribution.addon)
             found = _field_sources(classes, ctx.api.modules, _incomplete(ctx))
             if found is None and not ctx.api.final_iteration:
@@ -664,7 +665,7 @@ class OdooPlugin(Plugin):
         merged = create_view_class(
             checker.tree, model, addon_name, chain.infos, bases, lookup, chain.missing
         )
-        for delegate in self.registry.delegated_models(view.chain, model):
+        for delegate in self.registry.delegate_closure(view.chain, model, addon_name):
             classes = self.registry.delegate_chain(delegate, addon_name)
             add_delegated_fields(merged, _field_sources(classes, checker.modules) or [])
         return instance_of(merged)
