@@ -34,6 +34,7 @@ follow_imports = "silent"
 
 [tool.odoo_typing]
 odoo_path = "{odoo_path}"
+odoo_version = 18
 addons_path = ["addons"]
 overlay_root = ".odoo-root"
 """

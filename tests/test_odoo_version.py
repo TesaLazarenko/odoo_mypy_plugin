@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from odoo_typing.odoo_version import read_odoo_version, unsupported_version_warning
+from odoo_typing.odoo_version import read_odoo_version, version_mismatch_warning
 
 
 def _odoo(tmp_path: Path, release: str) -> Path:
@@ -40,14 +40,14 @@ def test_read_odoo_version_missing_file_returns_none(tmp_path: Path) -> None:
     assert read_odoo_version(tmp_path) is None
 
 
-def test_unsupported_version_warning_other_major_names_versions(tmp_path: Path) -> None:
+def test_version_mismatch_warning_other_major_names_both(tmp_path: Path) -> None:
     odoo = _odoo(tmp_path, "version_info = (17, 0, 0, 'final', 0, '')\n")
 
-    message = unsupported_version_warning(odoo)
+    message = version_mismatch_warning(18, odoo)
 
     assert message is not None
+    assert "odoo_version = 18" in message
     assert "Odoo 17.0" in message
-    assert "Odoo 18" in message
     assert str(odoo) in message
 
 
@@ -55,7 +55,7 @@ def test_unsupported_version_warning_other_major_names_versions(tmp_path: Path) 
     "release",
     ["version_info = (18, 0, 0, 'final', 0, '')\n", "version_info = ('saas~18', 2)\n", ""],
 )
-def test_unsupported_version_warning_supported_or_unknown_returns_none(
+def test_version_mismatch_warning_same_major_or_unknown_returns_none(
     tmp_path: Path, release: str
 ) -> None:
-    assert unsupported_version_warning(_odoo(tmp_path, release)) is None
+    assert version_mismatch_warning(18, _odoo(tmp_path, release)) is None

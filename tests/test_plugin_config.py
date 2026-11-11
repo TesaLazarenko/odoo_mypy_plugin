@@ -35,7 +35,8 @@ def test_mypy_bad_addons_path_exits_with_clean_message(
     config = tmp_path / "pyproject.toml"
     config.write_text(
         '[tool.mypy]\nplugins = ["odoo_typing.plugin"]\n'
-        f'[tool.odoo_typing]\nodoo_path = "{odoo_root}/odoo"\naddons_path = ["missing"]\n'
+        f'[tool.odoo_typing]\nodoo_path = "{odoo_root}/odoo"\nodoo_version = 18\n'
+        'addons_path = ["missing"]\n'
     )
 
     output, status = _mypy(config, tmp_path, capfd)
@@ -52,7 +53,7 @@ def test_mypy_ini_section_configures_plugin(
     config.write_text(
         f"[mypy]\nplugins = odoo_typing.plugin\nmypy_path = {odoo_root}:addons\n"
         "[mypy-odoo.*]\nfollow_imports = silent\n"
-        "[odoo_typing]\naddons_path = addons\n"
+        "[odoo_typing]\naddons_path = addons\nodoo_version = 18\n"
     )
 
     output, status = _mypy(config, tmp_path, capfd)

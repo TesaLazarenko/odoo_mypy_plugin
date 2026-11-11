@@ -33,8 +33,6 @@ from mypy.typevars import fill_typevars
 from mypy.checker import TypeChecker
 
 __all__ = [
-    "IDENTITY_DECORATORS",
-    "IDENTITY_FACTORIES",
     "SELF_METHODS",
     "annotate_self_overrides",
     "create_signature",
@@ -45,31 +43,6 @@ __all__ = [
     "keep_receiver",
 ]
 
-BASE_MODEL = "odoo.models.BaseModel"
-# Decorators that return the decorated method itself (some are typed ``T -> T``
-# already; listing them keeps the signature with older or untyped Odoo versions).
-IDENTITY_DECORATORS: Final = frozenset(
-    {
-        "odoo.api.private",
-        "odoo.api.model",
-        "odoo.api.readonly",
-        "odoo.api.model_create_multi",
-        "odoo.api.model_create_single",
-        "odoo.api.autovacuum",
-    }
-)
-# Untyped decorator factories: ``returns("self")``, ``onchange("x")``... return a
-# decorator that returns the method (``api.depends``/``constrains`` are typed already).
-IDENTITY_FACTORIES: Final = frozenset(
-    {
-        "odoo.api.returns",
-        "odoo.api.onchange",
-        "odoo.api.ondelete",
-        "odoo.api.depends_context",
-    }
-)
-# A typed ``def [T] (T) -> T`` that the factories' decorators are given.
-IDENTITY_TEMPLATE = "odoo.api.model"
 # BaseModel methods declared ``-> Self``: an unannotated override returns the receiver.
 SELF_METHODS: Final = frozenset(
     {
@@ -99,11 +72,14 @@ def identity_decorator(ctx: FunctionContext) -> Type:
     return ctx.default_return_type
 
 
-def identity_factory(ctx: FunctionContext) -> Type:
-    """``@api.returns("self")``: a decorator that keeps the method's own signature."""
+def identity_factory(template: str, ctx: FunctionContext) -> Type:
+    """``@api.returns("self")``: a decorator that keeps the method's own signature.
+
+    ``template`` is the full name of a typed ``def [T] (T) -> T`` (``api.model``).
+    """
     if not isinstance(ctx.api, TypeChecker):
         return ctx.default_return_type
-    node = lookup_fully_qualified(IDENTITY_TEMPLATE, ctx.api.modules)
+    node = lookup_fully_qualified(template, ctx.api.modules)
     func = node.node if node is not None else None
     if isinstance(func, FuncDef) and isinstance(func.type, CallableType):
         return func.type
@@ -120,7 +96,7 @@ def is_create(fullname: str) -> bool:
     return fullname.rpartition(".")[2] == "create"
 
 
-def create_signature(ctx: MethodSigContext) -> FunctionLike:
+def create_signature(base_model: str, ctx: MethodSigContext) -> FunctionLike:
     """``create(vals_list: list[X])`` also accepts one ``X``, as ``model_create_multi`` does.
 
     ``BaseModel.create`` is declared with a list, but its decorator wraps a single dict
@@ -131,7 +107,7 @@ def create_signature(ctx: MethodSigContext) -> FunctionLike:
     if (
         not isinstance(signature, CallableType)
         or not isinstance(receiver, Instance)
-        or not receiver.type.has_base(BASE_MODEL)
+        or not receiver.type.has_base(base_model)
         or not signature.arg_types
     ):
         return signature
@@ -142,7 +118,7 @@ def create_signature(ctx: MethodSigContext) -> FunctionLike:
     return signature.copy_modified(arg_types=[accepted, *signature.arg_types[1:]])
 
 
-def keep_receiver(ctx: MethodContext) -> Type:
+def keep_receiver(base_model: str, ctx: MethodContext) -> Type:
     """Return the receiver from an unannotated override of a ``-> Self`` method.
 
     Only when the method's return type is the implicit ``Any`` of a def without
@@ -154,7 +130,7 @@ def keep_receiver(ctx: MethodContext) -> Type:
         isinstance(default, AnyType)
         and default.type_of_any == TypeOfAny.unannotated
         and isinstance(receiver, Instance)
-        and receiver.type.has_base(BASE_MODEL)
+        and receiver.type.has_base(base_model)
     ):
         return receiver
     return ctx.default_return_type

@@ -1,8 +1,8 @@
 """Detect the version of the configured Odoo, without importing it.
 
-The plugin models Odoo 18's registry and relies on Odoo 18's annotations and hook
-targets (``odoo.fields.Many2one``, ``odoo.api.Environment.__getitem__``...). On
-another version it still runs, but its results may be wrong, so the user is warned.
+The ``odoo_version`` setting is the single source of truth for which version the
+checks target (see :mod:`odoo_typing.compat`). The Odoo found on disk is only compared
+with it, so that a config that points at another Odoo is noticed.
 """
 
 from __future__ import annotations
@@ -11,9 +11,7 @@ import ast
 import re
 from pathlib import Path
 
-__all__ = ["SUPPORTED_MAJOR", "read_odoo_version", "unsupported_version_warning"]
-
-SUPPORTED_MAJOR = 18
+__all__ = ["read_odoo_version", "version_mismatch_warning"]
 _SAAS = re.compile(r"saas~(\d+)")
 
 
@@ -53,17 +51,18 @@ def _major_minor(elements: list[ast.expr]) -> tuple[int, int] | None:
     return (major, values[1]) if isinstance(major, int) else None
 
 
-def unsupported_version_warning(odoo_path: Path) -> str | None:
-    """Warning text if the Odoo at ``odoo_path`` is not the supported major version.
+def version_mismatch_warning(configured: int, odoo_path: Path) -> str | None:
+    """Warning text if the Odoo at ``odoo_path`` is not the configured major version.
 
     An undetectable version gives no warning: test trees and patched checkouts may
     have no usable ``release.py``.
     """
     version = read_odoo_version(odoo_path)
-    if version is None or version[0] == SUPPORTED_MAJOR:
+    if version is None or version[0] == configured:
         return None
     major, minor = version
     return (
-        f"odoo-typing: warning: found Odoo {major}.{minor} at {odoo_path}; the plugin is "
-        f"developed and tested for Odoo {SUPPORTED_MAJOR} only, so its results may be wrong"
+        f"odoo-typing: warning: odoo_version = {configured}, but the Odoo at {odoo_path} "
+        f"is Odoo {major}.{minor}; the checks follow odoo_version, so set it to {major} "
+        f"or point odoo_path at an Odoo {configured}"
     )

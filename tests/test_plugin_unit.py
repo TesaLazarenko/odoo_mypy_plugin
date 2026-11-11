@@ -20,7 +20,7 @@ def test_plugin_init_fully_cached_run_reads_no_manifest(
     (odoo / "addons" / "base" / "__manifest__.py").write_text("{'depends': []}")
     (odoo / "release.py").write_text("")
     config = tmp_path / "pyproject.toml"
-    config.write_text('[tool.odoo_typing]\nodoo_path = "odoo"\n')
+    config.write_text('[tool.odoo_typing]\nodoo_path = "odoo"\nodoo_version = 18\n')
     options = Options()
     options.config_file = str(config)
     read_depends = mocker.spy(addons_module, "read_depends")
@@ -30,29 +30,52 @@ def test_plugin_init_fully_cached_run_reads_no_manifest(
     assert read_depends.call_count == 0
 
 
-def _plugin_options(tmp_path: Path, release: str) -> Options:
+def _plugin_options(tmp_path: Path, release: str, version: str = "odoo_version = 18\n") -> Options:
     odoo = tmp_path / "odoo"
     (odoo / "addons" / "base").mkdir(parents=True)
     (odoo / "addons" / "base" / "__manifest__.py").write_text("{'depends': []}")
     (odoo / "release.py").write_text(release)
     config = tmp_path / "pyproject.toml"
-    config.write_text('[tool.odoo_typing]\nodoo_path = "odoo"\n')
+    config.write_text('[tool.odoo_typing]\nodoo_path = "odoo"\n' + version)
     options = Options()
     options.config_file = str(config)
     return options
 
 
-def test_plugin_init_other_odoo_version_warns_on_stderr(
+def test_plugin_init_release_differs_from_config_warns_on_stderr(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     OdooPlugin(_plugin_options(tmp_path, "version_info = (17, 0, 0, 'final', 0, '')\n"))
 
-    assert "odoo-typing: warning: found Odoo 17.0" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "odoo-typing: warning:" in err
+    assert "odoo_version = 18" in err
+    assert "Odoo 17.0" in err
 
 
-def test_plugin_init_odoo_18_prints_nothing(
+def test_plugin_init_release_matches_config_prints_nothing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     OdooPlugin(_plugin_options(tmp_path, "version_info = (18, 0, 0, 'final', 0, '')\n"))
 
     assert capsys.readouterr().err == ""
+
+
+def test_plugin_init_without_odoo_version_exits_with_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        OdooPlugin(_plugin_options(tmp_path, "", version=""))
+
+    assert exit_info.value.code == 2
+    assert "odoo-typing: error: set odoo_version" in capsys.readouterr().err
+
+
+def test_plugin_init_version_without_profile_exits_with_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        OdooPlugin(_plugin_options(tmp_path, "", version="odoo_version = 19\n"))
+
+    assert exit_info.value.code == 2
+    assert "Odoo 19 is not supported yet" in capsys.readouterr().err

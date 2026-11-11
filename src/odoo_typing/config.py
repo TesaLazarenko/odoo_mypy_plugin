@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from odoo_typing.addons import CORE_PREFIX, MANIFEST_NAMES, find_manifest
+from odoo_typing.compat import SUPPORTED_VERSIONS
 
 __all__ = ["ConfigError", "Settings", "load_settings"]
 
@@ -42,7 +43,7 @@ WHERE = f"[tool.{SECTION}] (pyproject.toml) or [{SECTION}] (mypy.ini, setup.cfg)
 LIST_SEPARATOR = re.compile(r"[,\n]")
 # What ``env[name]`` is when ``name`` is not a literal: ``Any``, or Odoo's ``BaseModel``.
 DYNAMIC_ENV_CHOICES = ("any", "base")
-OPTIONS = ("odoo_path", "addons_path", "overlay_root", "dynamic_env")
+OPTIONS = ("odoo_path", "odoo_version", "addons_path", "overlay_root", "dynamic_env")
 
 
 class ConfigError(Exception):
@@ -61,16 +62,19 @@ class Settings:
             ``addons_path`` addons are top-level packages on ``mypy_path``.
         dynamic_env: Type of ``env[name]`` when ``name`` is not a literal: ``"any"``
             (default) or ``"base"`` (``BaseModel``, so reading a field is an error).
+        odoo_version: The Odoo major version the checks target (``odoo_version``);
+            the plugin requires it, ``odoo-typing-root`` does not need it.
     """
 
     odoo_path: Path
     addons_paths: tuple[Path, ...]
     overlay_root: Path | None = None
     dynamic_env: str = "any"
+    odoo_version: int | None = None
 
     def option_data(self) -> list[str]:
         """The options that change check results; part of every module's cache key."""
-        return [f"dynamic_env={self.dynamic_env}"]
+        return [f"dynamic_env={self.dynamic_env}", f"odoo_version={self.odoo_version}"]
 
     @property
     def custom_prefix(self) -> str:
@@ -104,7 +108,20 @@ def load_settings(
         addons_paths=_addons_paths(table.get("addons_path", []), base_dir),
         overlay_root=_overlay_root(table.get("overlay_root"), base_dir, require_overlay),
         dynamic_env=_choice("dynamic_env", table.get("dynamic_env", "any"), DYNAMIC_ENV_CHOICES),
+        odoo_version=_odoo_version(table.get("odoo_version")),
     )
+
+
+def _odoo_version(value: object) -> int | None:
+    """``odoo_version = 18`` (an INI file gives the string ``"18"``)."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value.isdigit():
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or value not in SUPPORTED_VERSIONS:
+        allowed = ", ".join(str(version) for version in SUPPORTED_VERSIONS)
+        raise ConfigError(f"odoo_version must be one of {allowed}, not {value!r}")
+    return value
 
 
 def _check_option_names(table: dict[str, object]) -> None:

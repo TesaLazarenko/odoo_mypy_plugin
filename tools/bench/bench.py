@@ -82,6 +82,7 @@ follow_imports = "silent"
 
 [tool.odoo_typing]
 odoo_path = "{odoo_root}/odoo"
+odoo_version = 18
 addons_path = []
 """
 

@@ -106,11 +106,10 @@ from odoo_typing.classes import (
     view_class_name,
     view_class_origin,
 )
-from odoo_typing.config import ConfigError, Settings, load_settings
+from odoo_typing.compat import SUPPORTED_VERSIONS, OdooProfile, profile_for
+from odoo_typing.config import WHERE, ConfigError, Settings, load_settings
 from odoo_typing.fingerprint import Fingerprints
 from odoo_typing.methods import (
-    IDENTITY_DECORATORS,
-    IDENTITY_FACTORIES,
     annotate_self_overrides,
     create_signature,
     identity_decorator,
@@ -119,7 +118,7 @@ from odoo_typing.methods import (
     is_self_method,
     keep_receiver,
 )
-from odoo_typing.odoo_version import unsupported_version_warning
+from odoo_typing.odoo_version import version_mismatch_warning
 from odoo_typing.records import RecordStore, load_index
 from odoo_typing.registry import MissingParent, Registry
 from odoo_typing.scanner import LOG_ACCESS_USERS, Contribution
@@ -134,18 +133,6 @@ ODOO_MODEL_DEPENDS = ErrorCode(
     sub_code_of=ODOO_MODEL,
 )
 
-ENV_GETITEM = "odoo.api.Environment.__getitem__"
-RELATIONAL_CLASSES = frozenset(
-    {"odoo.fields.Many2one", "odoo.fields.One2many", "odoo.fields.Many2many"}
-)
-RELATIONAL_BASE = "odoo.fields._Relational"
-ENV_RECORDS = {
-    "odoo.api.Environment.user": "res.users",
-    "odoo.api.Environment.company": "res.company",
-    "odoo.api.Environment.companies": "res.company",
-}
-FIELDS_MODULE = "odoo.fields."
-BASE_MODEL = "odoo.models.BaseModel"
 DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
 
 
@@ -160,7 +147,8 @@ class OdooPlugin(Plugin):
         """
         super().__init__(options)
         self._settings = _settings_or_exit(options)
-        if warning := unsupported_version_warning(self._settings.odoo_path):
+        self._profile = _profile_or_exit(self._settings)
+        if warning := version_mismatch_warning(self._profile.version, self._settings.odoo_path):
             print(warning, file=sys.stderr)
         self._store = RecordStore.for_cache_dir(options.cache_dir)
         self._inputs_checked = False
@@ -283,15 +271,15 @@ class OdooPlugin(Plugin):
 
     def _after_class_body(self, ctx: ClassDefContext) -> None:
         """Run once the class body is analyzed (and again for each written base)."""
-        _normalize_meta_attributes(ctx)
-        if not ctx.cls.info.has_base(BASE_MODEL):
+        _normalize_meta_attributes(ctx, self._profile)
+        if not ctx.cls.info.has_base(self._profile.base_model):
             return  # the hook runs for every class, also outside Odoo
         annotate_self_overrides(ctx)
         contribution = self.registry.contribution(ctx.cls.info.fullname)
         if contribution is not None:
             self._delegate_fields(contribution, ctx)
             if self.registry.log_access(contribution):
-                add_log_access_fields(ctx.cls.info, _log_access_types(ctx))
+                add_log_access_fields(ctx.cls.info, _log_access_types(ctx, self._profile))
 
     def _delegate_fields(self, contribution: Contribution, ctx: ClassDefContext) -> None:
         """Add the fields of the models a class delegates to (``_inherits``).
@@ -315,17 +303,22 @@ class OdooPlugin(Plugin):
 
     def get_method_hook(self, fullname: str) -> Callable[[MethodContext], Type] | None:
         """Type ``env["model.name"]`` and unannotated overrides of ``-> Self`` methods."""
-        if fullname == ENV_GETITEM:
+        if fullname == self._profile.env_getitem:
             return self._env_getitem
-        return keep_receiver if is_self_method(fullname) else None
+        if is_self_method(fullname):
+            return partial(keep_receiver, self._profile.base_model)
+        return None
 
     def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
         """Bind relational field constructors to their comodel; see through decorators."""
-        if fullname in RELATIONAL_CLASSES:
+        profile = self._profile
+        if fullname in profile.relational_classes:
             return self._relational_field
-        if fullname in IDENTITY_DECORATORS:
+        if fullname in profile.identity_decorators:
             return identity_decorator
-        return identity_factory if fullname in IDENTITY_FACTORIES else None
+        if fullname in profile.identity_factories:
+            return partial(identity_factory, profile.identity_template)
+        return None
 
     def get_method_signature_hook(
         self, fullname: str
@@ -335,12 +328,12 @@ class OdooPlugin(Plugin):
         # a custom subclass...), so match every ``__get__`` and check the MRO in the hook.
         if fullname.endswith(".__get__"):
             return self._relational_get
-        return create_signature if is_create(fullname) else None
+        return partial(create_signature, self._profile.base_model) if is_create(fullname) else None
 
     def get_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
         """Resolve record-typed attributes of model classes from the reading addon."""
-        if fullname in ENV_RECORDS:
-            return partial(self._env_record, ENV_RECORDS[fullname])
+        if fullname in self._profile.env_records:
+            return partial(self._env_record, self._profile.env_records[fullname])
         owner, _, name = fullname.rpartition(".")
         if name in LOG_ACCESS_USERS and self.registry.contribution(owner):
             # Declared as ``Many2one[Any]``: the res.users records the reading addon sees.
@@ -474,7 +467,8 @@ class OdooPlugin(Plugin):
         if not isinstance(descriptor, Instance) or not isinstance(signature, CallableType):
             return signature
         mro = descriptor.type.mro
-        base = next((item for item in mro if item.fullname == RELATIONAL_BASE), None)
+        relational = self._profile.relational_base
+        base = next((item for item in mro if item.fullname == relational), None)
         if base is None:
             return signature
         records = _record_type(ctx)
@@ -541,6 +535,19 @@ def _settings_or_exit(options: Options) -> Settings:
     except ConfigError as exc:
         print(f"odoo-typing: error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
+
+
+def _profile_or_exit(settings: Settings) -> OdooProfile:
+    """The profile of the configured Odoo version; exit with status 2 if there is none."""
+    version = settings.odoo_version
+    if version is None:
+        message = f"set odoo_version (one of {', '.join(map(str, SUPPORTED_VERSIONS))}) in {WHERE}"
+    elif (profile := profile_for(version)) is not None:
+        return profile
+    else:
+        message = f"Odoo {version} is not supported yet (see ROADMAP.md, Odoo versions)"
+    print(f"odoo-typing: error: {message}", file=sys.stderr)
+    raise SystemExit(2)
 
 
 Incomplete = Callable[[str], bool]
@@ -666,10 +673,10 @@ def _conflict_message(class_name: str) -> str:
     )
 
 
-def _log_access_types(ctx: ClassDefContext) -> dict[str, Instance]:
+def _log_access_types(ctx: ClassDefContext, profile: OdooProfile) -> dict[str, Instance]:
     """Descriptor types of the log-access fields (``odoo.fields`` is analyzed first)."""
-    many2one = ctx.api.lookup_fully_qualified_or_none(FIELDS_MODULE + "Many2one")
-    datetime = ctx.api.lookup_fully_qualified_or_none(FIELDS_MODULE + "Datetime")
+    many2one = ctx.api.lookup_fully_qualified_or_none(profile.many2one)
+    datetime = ctx.api.lookup_fully_qualified_or_none(profile.datetime)
     if not (
         many2one
         and isinstance(many2one.node, TypeInfo)
@@ -682,7 +689,7 @@ def _log_access_types(ctx: ClassDefContext) -> dict[str, Instance]:
     return {"create_uid": user, "create_date": date, "write_uid": user, "write_date": date}
 
 
-def _normalize_meta_attributes(ctx: ClassDefContext) -> None:
+def _normalize_meta_attributes(ctx: ClassDefContext, profile: OdooProfile) -> None:
     """Relax the private class attributes of model classes (``_inherit``, ``_order``...).
 
     Odoo classes override such configuration attributes freely: ``_inherit = "x"``
@@ -695,13 +702,13 @@ def _normalize_meta_attributes(ctx: ClassDefContext) -> None:
     (``_x = fields.Char()``) keep their type unless ``BaseModel`` declares the name.
     """
     info = ctx.cls.info
-    if info.fullname == BASE_MODEL or not info.has_base(BASE_MODEL):
+    if info.fullname == profile.base_model or not info.has_base(profile.base_model):
         return
     for statement in ctx.cls.defs.body:
         target = _private_attribute(statement)
         if target is None or not isinstance(statement, AssignmentStmt):
             continue
-        declared = _meta_attribute_type(info, target.name, statement.rvalue)
+        declared = _meta_attribute_type(info, target.name, statement.rvalue, profile)
         if target.name == "_name":
             # Only BaseModel itself has ``_name = None``; in a model class the name is
             # a str, and ``str | None`` would reject ``_inherit = _name``. Every class
@@ -731,7 +738,9 @@ def _private_attribute(statement: object) -> NameExpr | None:
     return target if private else None
 
 
-def _meta_attribute_type(info: TypeInfo, name: str, value: Expression) -> Type | None:
+def _meta_attribute_type(
+    info: TypeInfo, name: str, value: Expression, profile: OdooProfile
+) -> Type | None:
     """The type a private class attribute gets (see _normalize_meta_attributes).
 
     Returns:
@@ -746,16 +755,16 @@ def _meta_attribute_type(info: TypeInfo, name: str, value: Expression) -> Type |
             return None
         if node.node.type is not None and not node.node.is_inferred:
             return node.node.type  # annotated (or normalized) on a base class
-        if base.fullname == BASE_MODEL:
+        if base.fullname == profile.base_model:
             return AnyType(TypeOfAny.special_form)
         break
-    return None if _is_field_definition(value) else AnyType(TypeOfAny.special_form)
+    return None if _is_field_definition(value, profile) else AnyType(TypeOfAny.special_form)
 
 
-def _is_field_definition(value: Expression) -> bool:
+def _is_field_definition(value: Expression, profile: OdooProfile) -> bool:
     """``fields.Char(...)`` and the like (f-strings are calls too, in mypy's tree)."""
     callee = value.callee if isinstance(value, CallExpr) else None
-    return isinstance(callee, RefExpr) and callee.fullname.startswith(FIELDS_MODULE)
+    return isinstance(callee, RefExpr) and profile.is_field_class(callee.fullname)
 
 
 def _inherit_value(cls: ClassDef) -> Expression | None:

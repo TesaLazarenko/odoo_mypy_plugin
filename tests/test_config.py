@@ -274,3 +274,36 @@ def test_settings_option_data_changes_with_dynamic_env(tmp_path: Path) -> None:
     base = load_settings(_options_config(tmp_path / "b", 'dynamic_env = "base"\n'))
 
     assert default.option_data() != base.option_data()
+
+
+# -- odoo_version: the Odoo version the checks target (single source of truth) ----------------
+
+
+@pytest.mark.parametrize(("value", "expected"), [("18", 18), ("17", 17), ('"20"', 20)])
+def test_load_settings_odoo_version_is_an_int(tmp_path: Path, value: str, expected: int) -> None:
+    settings = load_settings(_options_config(tmp_path, f"odoo_version = {value}\n"))
+
+    assert settings.odoo_version == expected
+
+
+def test_load_settings_odoo_version_from_ini(tmp_path: Path) -> None:
+    settings = load_settings(_options_config(tmp_path, "odoo_version = 19\n", "mypy.ini"))
+
+    assert settings.odoo_version == 19
+
+
+def test_load_settings_odoo_version_missing_is_none(tmp_path: Path) -> None:
+    assert load_settings(_options_config(tmp_path, "")).odoo_version is None
+
+
+@pytest.mark.parametrize("value", ["16", "21", '"18.0"', '"x"', "true"])
+def test_load_settings_odoo_version_invalid_raises_config_error(tmp_path: Path, value: str) -> None:
+    with pytest.raises(ConfigError, match=r"odoo_version must be one of 17, 18, 19, 20"):
+        load_settings(_options_config(tmp_path, f"odoo_version = {value}\n"))
+
+
+def test_settings_option_data_changes_with_odoo_version(tmp_path: Path) -> None:
+    v17 = load_settings(_options_config(tmp_path / "a", "odoo_version = 17\n"))
+    v18 = load_settings(_options_config(tmp_path / "b", "odoo_version = 18\n"))
+
+    assert v17.option_data() != v18.option_data()
