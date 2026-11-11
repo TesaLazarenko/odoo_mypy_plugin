@@ -33,6 +33,9 @@ class Order(models.Model):
     def _selection_kind(self):
         return []
 
+    def _compute_widget(self):
+        pass
+
 class Line(models.Model):
     _name = "t.line"
 
@@ -217,7 +220,7 @@ def test_vals_abstract_model_checks_values_not_keys(run_mypy: RunMypy) -> None:
     result = run_mypy({"t_base": {"models.py": T_BASE}})
 
     assert [line.split(" (")[0] for line in result.messages("t_base/models.py")] == [
-        '42: error: Incompatible type for field "flag" of Odoo model "t.mixin"'
+        '45: error: Incompatible type for field "flag" of Odoo model "t.mixin"'
     ]
 
 

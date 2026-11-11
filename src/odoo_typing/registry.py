@@ -144,6 +144,7 @@ class Registry:
         self._definition_index: dict[str, list[str]] | None = None
         self._misnamed: set[str] = set()  # addons warned about by misnamed()
         self._fields: dict[tuple[str, str], Mapping[str, FieldInfo]] = {}
+        self._methods: dict[tuple[str, str], frozenset[str]] = {}
 
     @cached_property
     def addons(self) -> AddonIndex:
@@ -556,9 +557,12 @@ class Registry:
 
     def methods(self, model: str, addon_name: str) -> frozenset[str]:
         """Names of the methods the classes of a model's view define (not BaseModel's)."""
-        view = self.view_class(model, addon_name)
-        chain = view.chain if view is not None else ()
-        return frozenset(name for item in chain for name in item.methods)
+        key = (model, addon_name)
+        if key not in self._methods:
+            view = self.view_class(model, addon_name)
+            chain = view.chain if view is not None else ()
+            self._methods[key] = frozenset(name for item in chain for name in item.methods)
+        return self._methods[key]
 
     def _compute_fields(self, model: str, addon_name: str) -> Mapping[str, FieldInfo]:
         view = self.view_class(model, addon_name)

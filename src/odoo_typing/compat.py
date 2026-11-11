@@ -39,6 +39,7 @@ class OdooProfile:
             (``env.user``), each with its model.
         relational_classes: Full names of ``Many2one``, ``One2many``, ``Many2many``.
         relational_base: Full name of their common base class.
+        field_base: Full name of ``Field``, the base of every field class.
         comodel_generic: Field classes the plugin makes generic in the comodel, where
             Odoo declares them ``Field[BaseModel]`` (Odoo 19+).
         field_modules: Prefixes of the full names of field classes (``fields.Char``).
@@ -58,6 +59,7 @@ class OdooProfile:
     env_records: Mapping[str, str]
     relational_classes: frozenset[str]
     relational_base: str
+    field_base: str
     comodel_generic: frozenset[str]
     field_modules: tuple[str, ...]
     many2one: str
@@ -89,6 +91,7 @@ ODOO_18 = OdooProfile(
         {"odoo.fields.Many2one", "odoo.fields.One2many", "odoo.fields.Many2many"}
     ),
     relational_base="odoo.fields._Relational",
+    field_base="odoo.fields.Field",
     comodel_generic=frozenset(),  # Field[M] already
     field_modules=("odoo.fields.",),
     many2one="odoo.fields.Many2one",
@@ -132,6 +135,7 @@ ODOO_19 = OdooProfile(
         }
     ),
     relational_base="odoo.orm.fields_relational._Relational",
+    field_base="odoo.orm.fields.Field",
     comodel_generic=frozenset(
         f"odoo.orm.fields_relational.{name}"
         for name in ("_Relational", "_RelationalMulti", "Many2one", "One2many", "Many2many")

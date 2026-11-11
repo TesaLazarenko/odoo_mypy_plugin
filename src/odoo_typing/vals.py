@@ -27,7 +27,7 @@ from typing import Final
 
 from mypy.errorcodes import ErrorCode
 from mypy.lookup import lookup_fully_qualified
-from mypy.messages import format_type, pretty_seq
+from mypy.messages import format_type
 from mypy.nodes import (
     CallExpr,
     DictExpr,
@@ -188,9 +188,9 @@ class ValsChecker:
         if any(fnmatchcase(key.value, pattern) for pattern in target.ignore_keys):
             return
         message = f'Odoo model "{target.model}" has no field "{key.value}"'
-        matches = get_close_matches(key.value, list(target.fields), n=3, cutoff=0.6)
+        matches = get_close_matches(key.value, list(target.fields), n=1, cutoff=0.6)
         if matches:
-            message += f"; did you mean {pretty_seq(matches, 'or')}?"
+            message += f'; did you mean "{matches[0]}"?'
         self.checker.fail(message, key, code=ODOO_VALS_KEY)
 
     def check_value(self, model: str, info: FieldInfo, value: Expression, value_type: Type) -> None:

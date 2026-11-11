@@ -278,6 +278,8 @@ def test_probe_fixture_reports_type_errors(run_mypy: RunMypy) -> None:
     result = run_mypy({"probe_mod": {"partner.py": source.read_text()}})
     assert result.messages("partner.py") == [
         '8: error: Unknown Odoo model "res.partnr"  [odoo-model]',
+        '9: error: Odoo model "res.partner" has no method "_compute_totl" '
+        '(compute="_compute_totl"); did you mean "_compute_total"?  [odoo-field-ref]',
         '15: error: Unsupported operand types for + ("int" and "str")  [operator]',
         '15: note: Right operand is of type "str | Literal[False]"',
         '18: error: Unknown Odoo model "res.partnr"  [odoo-model]',

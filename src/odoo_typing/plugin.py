@@ -29,6 +29,10 @@ What it does:
   return the receiver (:mod:`odoo_typing.methods`).
 * ``_inherits`` (and ``Many2one(delegate=True)``): the delegated models' fields, not
   their methods, are part of the child model's classes.
+* ``fields.X(related="a.b", compute="_m", ...)``: each field of the path and each
+  method name must exist in the declaring addon's view (``odoo-field-ref``), see
+  :mod:`odoo_typing.references`; a relational field declared only with ``related=``
+  gets the comodel of the path's last field.
 * ``create({...})`` / ``write({...})``: the keys of a literal dict must be fields of the
   model (``odoo-vals-key``) and the values must fit them (``odoo-vals-type``), see
   :mod:`odoo_typing.vals`.
@@ -55,6 +59,7 @@ from functools import partial
 from mypy.errorcodes import ErrorCode
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import (
+    ARG_POS,
     AssignmentStmt,
     CallExpr,
     ClassDef,
@@ -126,8 +131,16 @@ from odoo_typing.methods import (
 )
 from odoo_typing.odoo_version import version_mismatch_warning
 from odoo_typing.records import RecordStore, load_index
+from odoo_typing.references import (
+    KNOWN_CLASSES,
+    METHOD_ARGUMENTS,
+    ODOO_FIELD_REF,
+    field_kind,
+    missing_method_message,
+    resolve_path,
+)
 from odoo_typing.registry import MissingParent, Registry
-from odoo_typing.scanner import LOG_ACCESS_USERS, Contribution
+from odoo_typing.scanner import LOG_ACCESS_USERS, POSITIONAL_PARAMETERS, Contribution
 from odoo_typing.vals import ValsChecker, ValsTarget, vals_dicts
 
 __all__ = ["ODOO_MODEL", "ODOO_MODEL_DEPENDS", "OdooPlugin", "plugin"]
@@ -403,7 +416,9 @@ class OdooPlugin(Plugin):
         """Bind relational field constructors to their comodel; see through decorators."""
         profile = self._profile
         if fullname in profile.relational_classes:
-            return self._relational_field
+            return partial(self._field_definition, self._relational_field)
+        if profile.is_field_class(fullname):
+            return partial(self._field_definition, None)
         if fullname in profile.identity_decorators:
             return identity_decorator
         if fullname in profile.identity_factories:
@@ -531,6 +546,104 @@ class OdooPlugin(Plugin):
         api.fail(f'Unknown Odoo model "{model}"', context, code=ODOO_MODEL)
         return None
 
+    def _field_definition(
+        self, then: Callable[[FunctionContext], Type] | None, ctx: FunctionContext
+    ) -> Type:
+        """Check the names a field definition refers to, then type it (``then``)."""
+        owner = self._field_owner(ctx)
+        default = get_proper_type(ctx.default_return_type)
+        if (
+            owner is not None
+            and isinstance(ctx.context, CallExpr)
+            and isinstance(default, Instance)
+        ):
+            self._check_field_references(ctx.context, default.type, *owner, ctx.api)
+        return then(ctx) if then is not None else ctx.default_return_type
+
+    def _field_owner(self, ctx: FunctionContext) -> tuple[str, str, TypeInfo] | None:
+        """The model, addon and class whose body a field definition is in, if a model's."""
+        checker = _checker(ctx.api)
+        info = checker.scope.active_class()
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        model = self._model_of(info) if info is not None else None
+        if info is None or model is None or addon_name is None:
+            return None
+        return model, addon_name, info
+
+    def _check_field_references(
+        self,
+        call: CallExpr,
+        field_class: TypeInfo,
+        model: str,
+        addon_name: str,
+        owner: TypeInfo,
+        api: CheckerPluginInterface,
+    ) -> None:
+        """Report fields of ``related=`` and methods of ``compute=``... that do not exist.
+
+        Not in abstract models: their fields refer to fields and methods of the models
+        that use them.
+        """
+        if not field_class.has_base(self._profile.field_base) or not self.registry.concrete(
+            model, addon_name
+        ):
+            return
+        for argument, value in _field_arguments(call, field_class.name):
+            if not isinstance(value, StrExpr):
+                continue
+            if argument == "related":
+                self._check_related(value, field_class.name, model, addon_name, api)
+            elif argument in METHOD_ARGUMENTS and not (
+                argument == "selection" and field_class.name not in {"Selection", "Reference"}
+            ):
+                methods = self.registry.methods(model, addon_name)
+                if value.value not in methods and owner.get(value.value) is None:
+                    message = missing_method_message(model, argument, value.value, methods)
+                    api.fail(message, value, code=ODOO_FIELD_REF)
+
+    def _check_related(
+        self,
+        path: StrExpr,
+        field_class: str,
+        model: str,
+        addon_name: str,
+        api: CheckerPluginInterface,
+    ) -> None:
+        fields_of = partial(self.registry.fields, addon_name=addon_name)
+        result = resolve_path(path.value, model, fields_of, f'related="{path.value}"')
+        if result.problem is not None:
+            api.fail(result.problem, path, code=ODOO_FIELD_REF)
+            return
+        target = result.field
+        if (
+            target is not None
+            and field_class in KNOWN_CLASSES
+            and target.field_type in KNOWN_CLASSES
+            and field_kind(field_class) != field_kind(target.field_type)
+        ):
+            api.fail(
+                f'Related field is a {field_class}, but "{path.value}" is a '
+                f'{target.field_type} field of Odoo model "{result.model}"',
+                path,
+                code=ODOO_FIELD_REF,
+            )
+
+    def _related_comodel(self, ctx: FunctionContext) -> str | None:
+        """The comodel of the last field of a ``related=`` path in a field definition."""
+        owner = self._field_owner(ctx)
+        call = ctx.context
+        if owner is None or not isinstance(call, CallExpr):
+            return None
+        model, addon_name, _ = owner
+        path = dict(_field_arguments(call, "")).get("related")
+        if not isinstance(path, StrExpr):
+            return None
+        fields_of = partial(self.registry.fields, addon_name=addon_name)
+        target = resolve_path(path.value, model, fields_of, "").field
+        if target is None or "comodel" in target.dynamic:
+            return None
+        return target.comodel
+
     def _relational_field(self, ctx: FunctionContext) -> Type:
         """Bind ``fields.Many2one("x")`` to the class that defines model ``x``.
 
@@ -543,14 +656,16 @@ class OdooPlugin(Plugin):
             return ctx.default_return_type
         comodel = _comodel_expression(ctx)
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
-        if comodel is None or addon_name is None:
+        name = comodel.value if comodel is not None else self._related_comodel(ctx)
+        if name is None or addon_name is None:
             # A redefinition (``fields.Many2one(ondelete=...)``) keeps the comodel of the
             # earlier declaration; mypy cannot infer ``M`` from such a call.
             unknown = AnyType(TypeOfAny.special_form)
             return default.copy_modified(args=[unknown]) if default.args else default
-        definition = self.registry.definition(comodel.value, addon_name)
+        definition = self.registry.definition(name, addon_name)
         if definition is None:
-            self._unknown_model(comodel.value, addon_name, comodel, ctx.api)
+            if comodel is not None:
+                self._unknown_model(name, addon_name, comodel, ctx.api)
             return default.copy_modified(args=[AnyType(TypeOfAny.from_error)])
         found = _class_infos([definition], _checker(ctx.api).modules).infos
         model_type = instance_of(found[0]) if found else AnyType(TypeOfAny.special_form)
@@ -987,6 +1102,21 @@ def _field_sources(
             return None
         sources += [(info, item.field_names) for info in found.infos]
     return sources
+
+
+def _field_arguments(call: CallExpr, field_class: str) -> list[tuple[str, Expression]]:
+    """The arguments of a field definition by parameter name (positional ones too)."""
+    positional = POSITIONAL_PARAMETERS.get(field_class, ("string",))
+    found: list[tuple[str, Expression]] = []
+    position = 0
+    for name, value, kind in zip(call.arg_names, call.args, call.arg_kinds, strict=True):
+        if name is not None:
+            found.append((name, value))
+        elif kind == ARG_POS:
+            if position < len(positional):
+                found.append((positional[position], value))
+            position += 1
+    return found
 
 
 def _comodel_expression(ctx: FunctionContext) -> StrExpr | None:
