@@ -522,7 +522,20 @@
   - Типи: `Many2one[res.users]` для `*_uid`, `Datetime` для `*_date`.
   - Також додати в індекс етапу 1 як readonly.
 
-### 4.2 Нетипізовані поля
+### 4.2 Нетипізовані поля — ✅ зроблено
+- **Зроблено.** `_value_get` у signature hook на `__get__`: `Binary`/`Image` (лише коли
+  Odoo типізує їх як Any, тобто 18–19) → `bytes | Literal[False]`, крім обчислюваних
+  незбережених (Odoo тримає в них dict для віджета, `tax_totals`) — вони лишаються Any.
+  `Reference` → union записів моделей статичного `selection` з view читаючого addon,
+  інакше `BaseModel`, плюс `Literal[False]` (на 19/20 Odoo типізує його як `str` від
+  `Selection`, тож тип замінюється завжди). Опція `literal_selection` (за замовчуванням
+  вимкнена): `Selection` зі статичними ключами view → `Literal[<ключі>] | Literal[False]`.
+  У бенчмарку з'явилась опція `--option "key = value"`.
+- **Бенчмарк.** Без опції нових помилок 0, час без змін. Перший варіант без винятку для
+  обчислюваних `Binary` дав десятки хибних помилок на account. З `literal_selection`:
+  +0 / +2 / +10 (crm / sale / account), усі одного виду — `Literal[...] | False`
+  передано туди, де чекають `str` (`dict.get(journal.type)`), тож опція лишається
+  вимкненою.
 - **Перевірено:** в Odoo 18 `Binary`, `Json` і `Properties` оголошено як `Field` без
   параметра, а `Reference.__get__` нетипізований. При читанні всі вони дають Any.
 - **Як вирішити.** Розширити наявний signature hook на `__get__`:

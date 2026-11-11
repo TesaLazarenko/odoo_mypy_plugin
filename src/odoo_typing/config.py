@@ -52,9 +52,13 @@ OPTIONS = (
     "overlay_root",
     "dynamic_env",
     "vals_ignore_keys",
+    "literal_selection",
 )
 # Options that are lists; in an INI file, entries separated by commas or newlines.
 LIST_OPTIONS = ("addons_path", "vals_ignore_keys")
+# Spellings of a flag in an INI file (TOML has booleans).
+FLAG_VALUES = {"true": True, "yes": True, "on": True, "1": True}
+FLAG_VALUES |= {"false": False, "no": False, "off": False, "0": False}
 # Keys of ``vals`` not checked against the model's fields: fields created in the
 # database (manual ``x_`` fields, Studio's ``x_studio_``).
 DEFAULT_VALS_IGNORE_KEYS = ("x_*",)
@@ -80,6 +84,8 @@ class Settings:
             the plugin requires it, ``odoo-typing-root`` does not need it.
         vals_ignore_keys: Glob patterns of ``vals`` keys that are not reported as
             unknown fields (``fnmatch``, case-sensitive).
+        literal_selection: Read a ``Selection`` field with literal keys as
+            ``Literal[<keys>] | Literal[False]`` instead of ``str | Literal[False]``.
     """
 
     odoo_path: Path
@@ -88,6 +94,7 @@ class Settings:
     dynamic_env: str = "any"
     odoo_version: int | None = None
     vals_ignore_keys: tuple[str, ...] = DEFAULT_VALS_IGNORE_KEYS
+    literal_selection: bool = False
 
     def option_data(self) -> list[str]:
         """The options that change check results; part of every module's cache key."""
@@ -95,6 +102,7 @@ class Settings:
             f"dynamic_env={self.dynamic_env}",
             f"odoo_version={self.odoo_version}",
             f"vals_ignore_keys={','.join(self.vals_ignore_keys)}",
+            f"literal_selection={self.literal_selection}",
         ]
 
     @property
@@ -133,7 +141,16 @@ def load_settings(
         vals_ignore_keys=_patterns(
             "vals_ignore_keys", table.get("vals_ignore_keys", list(DEFAULT_VALS_IGNORE_KEYS))
         ),
+        literal_selection=_flag("literal_selection", table.get("literal_selection", False)),
     )
+
+
+def _flag(name: str, value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in FLAG_VALUES:
+        return FLAG_VALUES[value.strip().lower()]
+    raise ConfigError(f"{name} must be true or false, got {value!r}")
 
 
 def _patterns(name: str, value: object) -> tuple[str, ...]:

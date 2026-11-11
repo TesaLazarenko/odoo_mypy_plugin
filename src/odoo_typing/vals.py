@@ -70,6 +70,7 @@ __all__ = [
     "VALUE_TYPES",
     "ValsChecker",
     "ValsTarget",
+    "stored",
     "vals_dicts",
 ]
 
@@ -196,7 +197,7 @@ class ValsChecker:
     def check_value(self, model: str, info: FieldInfo, value: Expression, value_type: Type) -> None:
         """Report a value (of type ``value_type``) that a field of a model does not take."""
         accepted = self._accepted(info.field_type)
-        if accepted is None or (info.field_type in BINARY_CLASSES and not _stored(info)):
+        if accepted is None or (info.field_type in BINARY_CLASSES and not stored(info)):
             return
         # Every listed class takes False: also take ``bool`` (see the module docstring).
         widened = UnionType.make_union([accepted, self.checker.named_type("builtins.bool")])
@@ -321,7 +322,7 @@ def _command_name(callee: Expression) -> str | None:
     return None
 
 
-def _stored(info: FieldInfo) -> bool:
+def stored(info: FieldInfo) -> bool:
     """Whether a field is stored: computed and related fields are not, by default."""
     if info.store is not None:
         return info.store

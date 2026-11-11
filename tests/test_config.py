@@ -276,6 +276,33 @@ def test_settings_option_data_changes_with_dynamic_env(tmp_path: Path) -> None:
     assert default.option_data() != base.option_data()
 
 
+# -- literal_selection (roadmap 4.2) ---------------------------------------------------------
+
+
+def test_load_settings_literal_selection_default_is_off(tmp_path: Path) -> None:
+    assert load_settings(_options_config(tmp_path, "")).literal_selection is False
+
+
+@pytest.mark.parametrize(
+    ("options", "name"),
+    [("literal_selection = true\n", "pyproject.toml"), ("literal_selection = yes\n", "mypy.ini")],
+)
+def test_load_settings_literal_selection_on(tmp_path: Path, options: str, name: str) -> None:
+    assert load_settings(_options_config(tmp_path, options, name)).literal_selection is True
+
+
+def test_load_settings_literal_selection_invalid_raises_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="literal_selection must be true or false"):
+        load_settings(_options_config(tmp_path, 'literal_selection = "sometimes"\n'))
+
+
+def test_settings_option_data_changes_with_literal_selection(tmp_path: Path) -> None:
+    default = load_settings(_options_config(tmp_path / "a", ""))
+    literal = load_settings(_options_config(tmp_path / "b", "literal_selection = true\n"))
+
+    assert default.option_data() != literal.option_data()
+
+
 # -- odoo_version: the Odoo version the checks target (single source of truth) ----------------
 
 

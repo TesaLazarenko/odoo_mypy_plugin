@@ -150,3 +150,15 @@ def test_write_config_namespace_odoo_uses_explicit_package_bases(tmp_path: Path)
 
     assert "explicit_package_bases = true" not in config(18)
     assert "explicit_package_bases = true" in config(19)
+
+
+def test_write_config_adds_plugin_options_only_with_plugin(tmp_path: Path) -> None:
+    context = bench.BenchContext(
+        "python", tmp_path, tmp_path, 1.0, options=("literal_selection = true",)
+    )
+
+    with_plugin = bench.write_config(context, with_plugin=True).read_text()
+    without = bench.write_config(context, with_plugin=False).read_text()
+
+    assert with_plugin.endswith("addons_path = []\nliteral_selection = true\n")
+    assert "literal_selection" not in without

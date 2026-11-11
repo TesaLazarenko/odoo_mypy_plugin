@@ -109,6 +109,7 @@ from mypy.types import (
 from mypy.checker import TypeChecker
 from mypy.maptype import map_instance_to_supertype
 from mypy.semanal import SemanticAnalyzer
+from mypy.typeops import make_simplified_union
 
 from odoo_typing.classes import (
     Lookup,
@@ -156,8 +157,8 @@ from odoo_typing.references import (
     resolve_path,
 )
 from odoo_typing.registry import MissingParent, Registry
-from odoo_typing.scanner import LOG_ACCESS_USERS, POSITIONAL_PARAMETERS, Contribution
-from odoo_typing.vals import ValsChecker, ValsTarget, vals_dicts
+from odoo_typing.scanner import LOG_ACCESS_USERS, POSITIONAL_PARAMETERS, Contribution, FieldInfo
+from odoo_typing.vals import ValsChecker, ValsTarget, stored, vals_dicts
 
 __all__ = ["ODOO_MODEL", "ODOO_MODEL_DEPENDS", "OdooPlugin", "plugin"]
 
@@ -170,6 +171,8 @@ ODOO_MODEL_DEPENDS = ErrorCode(
 )
 
 DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
+# Field classes whose reading ``_value_get`` types (``Image`` is a ``Binary``).
+VALUE_KINDS = frozenset({"Binary", "Reference", "Selection"})
 # Methods whose first argument is ``vals`` (``create``: also a list of them;
 # ``copy``: its ``default``).
 VALS_METHODS = frozenset({"create", "write", "copy"})
@@ -866,7 +869,7 @@ class OdooPlugin(Plugin):
         relational = self._profile.relational_base
         base = next((item for item in mro if item.fullname == relational), None)
         if base is None:
-            return signature
+            return self._value_get(descriptor, signature, ctx)
         records = _record_type(ctx)
         if isinstance(records, NoneType):
             # Model.field: the field (Odoo 19 declares ``records: BaseModel``, not None).
@@ -879,6 +882,78 @@ class OdooPlugin(Plugin):
         owner = records.type if isinstance(records, Instance) else None
         resolved = self._comodel_at_use_site(comodel, owner, ctx.api)
         return signature.copy_modified(ret_type=resolved or comodel)
+
+    def _value_get(
+        self, descriptor: Instance, signature: CallableType, ctx: MethodSigContext
+    ) -> FunctionLike:
+        """Type reading the fields that Odoo leaves untyped or types too loosely.
+
+        ``Binary`` / ``Image`` (``Field`` without a value type, so ``Any``) read as
+        ``bytes | Literal[False]``; ``Reference`` reads as a record of one of the models
+        of a literal ``selection`` (``BaseModel`` otherwise), not as Selection's ``str``;
+        with ``literal_selection``, a ``Selection`` with literal keys reads as
+        ``Literal[<keys>] | Literal[False]``.
+        """
+        kind = next(
+            (
+                item.name
+                for item in descriptor.type.mro
+                if item.name in VALUE_KINDS and self._profile.is_field_class(item.fullname)
+            ),
+            None,
+        )
+        records = _record_type(ctx)
+        if kind is None or not isinstance(records, Instance):
+            return signature
+        checker = _checker(ctx.api)
+        false = LiteralType(False, checker.named_type("builtins.bool"))
+        info = self._read_field(records, ctx)
+        if kind == "Binary":
+            if not isinstance(get_proper_type(signature.ret_type), AnyType):
+                return signature  # Odoo 20 types it (BinaryValue)
+            if info is None or not stored(info):
+                return signature  # a computed Binary holds any value (widget data)
+            value: Type = make_simplified_union([checker.named_type("builtins.bytes"), false])
+            return signature.copy_modified(ret_type=value)
+        if kind == "Reference":
+            models = self._reference_types(info, records, ctx.api)
+            return signature.copy_modified(ret_type=make_simplified_union([*models, false]))
+        if not self._settings.literal_selection or info is None or not info.selection:
+            return signature
+        if "selection" in info.dynamic:
+            return signature
+        keys = [LiteralType(key, checker.named_type("builtins.str")) for key in info.selection]
+        return signature.copy_modified(ret_type=make_simplified_union([*keys, false]))
+
+    def _read_field(self, records: Instance, ctx: MethodSigContext) -> FieldInfo | None:
+        """The field read by ``record.name`` (``ctx.context``), as the reading addon sees it."""
+        member = ctx.context
+        model = self._model_of(records.type)
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if not isinstance(member, MemberExpr) or model is None or addon_name is None:
+            return None
+        return self.registry.fields(model, addon_name).get(member.name)
+
+    def _reference_types(
+        self, info: FieldInfo | None, records: Instance, api: CheckerPluginInterface
+    ) -> list[Type]:
+        """The record types a ``Reference`` field holds: its selection's models."""
+        found_base = next(
+            (item for item in records.type.mro if item.fullname == self._profile.base_model), None
+        )
+        base: Type = (
+            instance_of(found_base) if found_base is not None else AnyType(TypeOfAny.special_form)
+        )
+        addon_name = self.registry.addon_name_for_path(api.path)
+        if info is None or not info.selection or "selection" in info.dynamic or not addon_name:
+            return [base]
+        found: list[Type] = []
+        for model in info.selection:
+            view = self._view_type(model, addon_name, api)
+            if not isinstance(view, Instance):
+                return [base]
+            found.append(view)
+        return found
 
     def _comodel_at_use_site(
         self, comodel: Instance, owner: TypeInfo | None, api: CheckerPluginInterface

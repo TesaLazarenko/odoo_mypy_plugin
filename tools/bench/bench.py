@@ -155,6 +155,7 @@ class BenchContext:
     bench_dir: Path
     timeout: float
     odoo_version: int = DEFAULT_ODOO_VERSION
+    options: tuple[str, ...] = ()  # ``key = value`` lines added to [tool.odoo_typing]
 
     @property
     def config_dir(self) -> Path:
@@ -190,6 +191,7 @@ def write_config(context: BenchContext, with_plugin: bool) -> Path:
             odoo_version=context.odoo_version,
             package_bases=_package_bases(context.odoo_version),
         )
+        + "".join(f"{option}\n" for option in context.options if with_plugin)
     )
     return path
 
@@ -553,6 +555,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument("--python", default=sys.executable, help="interpreter with mypy")
     parser.add_argument("--jobs", type=int, default=1, help="addons measured at once")
+    parser.add_argument(
+        "--option",
+        action="append",
+        default=[],
+        help='a plugin option as a TOML line (--option "literal_selection = true")',
+    )
     parser.add_argument("--timeout", type=float, default=1800, help="seconds per mypy run")
     args = parser.parse_args(argv)
     if bool(args.label) == bool(args.compare_only):
@@ -583,6 +591,7 @@ def run(args: argparse.Namespace) -> Report:
         bench_dir=args.bench_dir.absolute(),
         timeout=args.timeout,
         odoo_version=args.odoo_version,
+        options=tuple(args.option),
     )
     if not (context.odoo_root / "odoo" / "release.py").is_file():
         raise BenchError(f"{context.odoo_root} does not contain odoo/release.py")
