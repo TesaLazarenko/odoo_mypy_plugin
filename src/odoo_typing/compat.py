@@ -32,6 +32,8 @@ class OdooProfile:
             (no ``__init__.py``): mypy then names files by their package bases only
             with ``explicit_package_bases``.
         base_model: Full name of ``BaseModel``.
+        new_id: Full name of ``NewId`` (the ids of new records: ``record.id`` is
+            ``int | NewId``).
         env_getitem: Full name of ``Environment.__getitem__``.
         env_records: Full names of ``Environment`` attributes that are records
             (``env.user``), each with its model.
@@ -51,6 +53,7 @@ class OdooProfile:
     min_python: tuple[int, int]
     namespace_odoo: bool
     base_model: str
+    new_id: str
     env_getitem: str
     env_records: Mapping[str, str]
     relational_classes: frozenset[str]
@@ -79,6 +82,7 @@ ODOO_18 = OdooProfile(
     min_python=(3, 10),
     namespace_odoo=False,
     base_model="odoo.models.BaseModel",
+    new_id="odoo.api.NewId",
     env_getitem="odoo.api.Environment.__getitem__",
     env_records=_env_records("odoo.api.Environment"),
     relational_classes=frozenset(
@@ -117,6 +121,7 @@ ODOO_19 = OdooProfile(
     min_python=(3, 10),
     namespace_odoo=True,
     base_model="odoo.orm.models.BaseModel",
+    new_id="odoo.orm.identifiers.NewId",
     env_getitem="odoo.orm.environments.Environment.__getitem__",
     env_records=_env_records("odoo.orm.environments.Environment"),
     relational_classes=frozenset(

@@ -185,3 +185,33 @@ def test_scan_fields_constants_imported_from_the_addon_and_concatenated(tmp_path
 
     assert _field(thing, "state").selection == ("draft", "extra")
     assert _field(thing, "level").dynamic == {"selection"}  # attribute of a module
+
+
+KINDS = """
+from odoo import models
+
+
+class Mixin(models.AbstractModel):
+    _name = "t.mixin"
+
+
+class Wizard(models.TransientModel):
+    _name = "t.wizard"
+
+
+class Explicit(models.AbstractModel):
+    _name = "t.explicit"
+    _abstract = False
+
+
+class Custom(SomeBase):
+    _name = "t.custom"
+"""
+
+
+def test_scan_abstract_from_base_class_or_attribute(tmp_path: Path) -> None:
+    registry = _build(tmp_path, base=BASE, addons={"t_core": ([], _files(KINDS))})
+
+    kinds = [_get(registry, f"t_core.m.{name}").abstract for name in ("Mixin", "Wizard")]
+    others = [_get(registry, f"t_core.m.{name}").abstract for name in ("Explicit", "Custom")]
+    assert (kinds, others) == ([True, False], [False, None])

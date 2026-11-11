@@ -157,3 +157,14 @@ def test_fields_delegation_cycle_terminates(tmp_path: Path) -> None:
     registry = _build(tmp_path, base=BASE, addons={"t_core": ([], _files(DELEGATION))})
 
     assert registry.fields("t.loop2", "t_core")["own"].related == "back_id.own"
+
+
+def test_concrete_models_but_not_mixins_or_unknown(tmp_path: Path) -> None:
+    source = _cls("Order", "t.order") + (
+        'class Mixin(models.AbstractModel):\n    _name = "t.mixin"\n'
+    )
+    registry = _build(tmp_path, base=BASE, addons={"t_core": ([], _files(source))})
+
+    assert registry.concrete("t.order", "t_core") is True
+    assert registry.concrete("t.mixin", "t_core") is False
+    assert registry.concrete("t.nothing", "t_core") is False

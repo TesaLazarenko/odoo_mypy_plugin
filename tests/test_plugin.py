@@ -281,6 +281,13 @@ def test_probe_fixture_reports_type_errors(run_mypy: RunMypy) -> None:
         '15: error: Unsupported operand types for + ("int" and "str")  [operator]',
         '15: note: Right operand is of type "str | Literal[False]"',
         '18: error: Unknown Odoo model "res.partnr"  [odoo-model]',
+        '20: error: Incompatible type for field "x_score" of Odoo model "res.partner" '
+        '(expression has type "str", Integer field takes "int | NewId | Literal[False] | None")  '
+        "[odoo-vals-type]",
+        '20: error: Odoo model "res.partner" has no field "nope"  [odoo-vals-key]',
+        '21: error: Incompatible type for field "x_parent_id" of Odoo model "res.partner" '
+        '(expression has type "str", Many2one field takes "int | NewId | BaseModel | '
+        'tuple[Any, ...] | Literal[False] | None")  [odoo-vals-type]',
     ]
 
 

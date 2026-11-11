@@ -29,6 +29,9 @@ What it does:
   return the receiver (:mod:`odoo_typing.methods`).
 * ``_inherits`` (and ``Many2one(delegate=True)``): the delegated models' fields, not
   their methods, are part of the child model's classes.
+* ``create({...})`` / ``write({...})``: the keys of a literal dict must be fields of the
+  model (``odoo-vals-key``) and the values must fit them (``odoo-vals-type``), see
+  :mod:`odoo_typing.vals`.
 
 * Incremental mode: each module's cache entry carries a digest of its addon closure
   (``report_config_data``, see :mod:`odoo_typing.fingerprint`); in the daemon, the
@@ -123,6 +126,7 @@ from odoo_typing.odoo_version import version_mismatch_warning
 from odoo_typing.records import RecordStore, load_index
 from odoo_typing.registry import MissingParent, Registry
 from odoo_typing.scanner import LOG_ACCESS_USERS, Contribution
+from odoo_typing.vals import ValsChecker, ValsTarget, vals_dicts
 
 __all__ = ["ODOO_MODEL", "ODOO_MODEL_DEPENDS", "OdooPlugin", "plugin"]
 
@@ -135,6 +139,8 @@ ODOO_MODEL_DEPENDS = ErrorCode(
 )
 
 DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
+# Methods whose first argument is ``vals`` (``create``: also a list of them).
+VALS_METHODS = frozenset({"create", "write"})
 
 
 class OdooPlugin(Plugin):
@@ -315,12 +321,46 @@ class OdooPlugin(Plugin):
     # -- type checking: env[...] and relational fields -------------------------------------
 
     def get_method_hook(self, fullname: str) -> Callable[[MethodContext], Type] | None:
-        """Type ``env["model.name"]`` and unannotated overrides of ``-> Self`` methods."""
+        """Type ``env["model.name"]`` and unannotated overrides of ``-> Self`` methods.
+
+        ``create`` and ``write`` also get their ``vals`` checked (one hook per name, so
+        the checks run in the same function).
+        """
         if fullname == self._profile.env_getitem:
             return self._env_getitem
+        name = fullname.rpartition(".")[2]
+        if name in VALS_METHODS:
+            return partial(self._check_vals, name)
         if is_self_method(fullname):
             return partial(keep_receiver, self._profile.base_model)
         return None
+
+    def _check_vals(self, method: str, ctx: MethodContext) -> Type:
+        """Check the literal ``vals`` of ``create`` / ``write`` (see :mod:`odoo_typing.vals`)."""
+        base_model = self._profile.base_model
+        receiver = get_proper_type(ctx.type)
+        argument = ctx.args[0][0] if ctx.args and ctx.args[0] else None
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        model = self._model_of(receiver.type) if isinstance(receiver, Instance) else None
+        if argument is not None and addon_name is not None and model is not None:
+            target = ValsTarget(
+                model,
+                self.registry.fields(model, addon_name),
+                check_keys=self.registry.concrete(model, addon_name),
+                ignore_keys=self._settings.vals_ignore_keys,
+            )
+            checker = ValsChecker(
+                _checker(ctx.api),
+                base_model,
+                self._profile.new_id,
+                self._model_of,
+                partial(self.registry.concrete, addon_name=addon_name),
+            )
+            for vals in vals_dicts(argument, many=method == "create"):
+                checker.check(target, vals)
+        if is_self_method(method):
+            return keep_receiver(base_model, ctx)
+        return ctx.default_return_type
 
     def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
         """Bind relational field constructors to their comodel; see through decorators."""

@@ -33,6 +33,8 @@ __all__ = [
 
 UNKNOWN: Final = object()  # value of an expression the scan cannot evaluate
 RELATIONAL_FIELDS = frozenset({"Many2one", "One2many", "Many2many"})
+# Bases of the classes of models that have a table (``_abstract = False``).
+CONCRETE_BASES: Final = frozenset({"Model", "TransientModel"})
 # Environment attributes that are records of a model (``self.env.user``).
 ENV_RECORDS: Final = {"user": "res.users", "company": "res.company", "companies": "res.company"}
 # Log-access fields that are res.users records (``record.create_uid``).
@@ -130,6 +132,9 @@ class Contribution:
         log_access: ``_log_access`` as the class body sets it, ``False`` if it only
             sets ``_auto = False`` (Odoo's default follows ``_auto``), ``None`` if
             neither is set.
+        abstract: Whether the class is abstract: ``_abstract`` of its body, else whether
+            it derives from ``AbstractModel`` rather than ``Model`` / ``TransientModel``;
+            ``None`` if neither tells.
     """
 
     addon: str
@@ -144,6 +149,7 @@ class Contribution:
     delegates: tuple[str, ...] = ()
     inherits: tuple[tuple[str, str], ...] = ()
     log_access: bool | None = None
+    abstract: bool | None = None
 
     @property
     def fullname(self) -> str:
@@ -371,6 +377,7 @@ class _ImportWalker:
                 delegates=_delegated_models(node, inherits),
                 inherits=_inherits_pairs(inherits),
                 log_access=_log_access(attrs),
+                abstract=_abstract(node, attrs),
             )
         )
 
@@ -379,6 +386,17 @@ def _log_access(attrs: dict[str, object]) -> bool | None:
     """``_log_access`` of a class body; MetaModel defaults it to ``_auto``."""
     value = attrs.get("_log_access", attrs.get("_auto"))
     return value if isinstance(value, bool) else None
+
+
+def _abstract(node: ast.ClassDef, attrs: dict[str, object]) -> bool | None:
+    """Whether a class is abstract (see :attr:`Contribution.abstract`)."""
+    value = attrs.get("_abstract")
+    if isinstance(value, bool):
+        return value
+    kinds = {_callee_name(base) for base in node.bases}
+    if kinds & CONCRETE_BASES:
+        return False
+    return True if "AbstractModel" in kinds else None
 
 
 def _declared_comodels(node: ast.ClassDef) -> tuple[str, ...]:

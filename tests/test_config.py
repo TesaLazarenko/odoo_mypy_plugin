@@ -307,3 +307,28 @@ def test_settings_option_data_changes_with_odoo_version(tmp_path: Path) -> None:
     v18 = load_settings(_options_config(tmp_path / "b", "odoo_version = 18\n"))
 
     assert v17.option_data() != v18.option_data()
+
+
+def test_load_settings_vals_ignore_keys_default_is_manual_fields(tmp_path: Path) -> None:
+    settings = load_settings(_options_config(tmp_path, ""))
+
+    assert settings.vals_ignore_keys == ("x_*",)
+
+
+def test_load_settings_vals_ignore_keys_from_ini_list(tmp_path: Path) -> None:
+    options = "vals_ignore_keys = x_*,\n    sel_groups_*\n"
+    settings = load_settings(_options_config(tmp_path, options, "mypy.ini"))
+
+    assert settings.vals_ignore_keys == ("x_*", "sel_groups_*")
+
+
+def test_load_settings_vals_ignore_keys_not_a_list_raises_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="vals_ignore_keys must be a list of strings"):
+        load_settings(_options_config(tmp_path, 'vals_ignore_keys = "x_*"\n'))
+
+
+def test_settings_option_data_changes_with_vals_ignore_keys(tmp_path: Path) -> None:
+    default = load_settings(_options_config(tmp_path / "a", ""))
+    empty = load_settings(_options_config(tmp_path / "b", "vals_ignore_keys = []\n"))
+
+    assert default.option_data() != empty.option_data()

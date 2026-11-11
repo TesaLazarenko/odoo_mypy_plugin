@@ -545,6 +545,15 @@ class Registry:
             self._fields[key] = self._compute_fields(model, addon_name)
         return self._fields[key]
 
+    def concrete(self, model: str, addon_name: str) -> bool:
+        """Whether the class that defines a model (as the addon sees it) is not abstract.
+
+        ``False`` for mixins and ``base``, whose methods run on records of models with
+        more fields, and when the scan cannot tell (a custom base class).
+        """
+        definition = self.definition(model, addon_name)
+        return definition is not None and definition.abstract is False
+
     def methods(self, model: str, addon_name: str) -> frozenset[str]:
         """Names of the methods the classes of a model's view define (not BaseModel's)."""
         view = self.view_class(model, addon_name)
