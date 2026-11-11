@@ -5,16 +5,14 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
-from conftest import RunMypy
+from conftest import OdooNames, RunMypy
 from pytest_mock import MockerFixture
 from test_harness import ENV_LOOKUP
 
 from odoo_typing import registry as registry_module
 
-PARTNER = "odoo.addons.base.models.res_partner.Partner"
 
-
-def test_env_getitem_known_model_reveals_model_class(run_mypy: RunMypy) -> None:
+def test_env_getitem_known_model_reveals_model_class(run_mypy: RunMypy, names: OdooNames) -> None:
     result = run_mypy(
         {
             "my_mod": {
@@ -32,7 +30,7 @@ def test_env_getitem_known_model_reveals_model_class(run_mypy: RunMypy) -> None:
         }
     )
     assert result.messages("models.py") == [
-        f'8: note: Revealed type is "{PARTNER}"',
+        f'8: note: Revealed type is "{names.partner}"',
         '9: note: Revealed type is "my_mod.models.Thing"',
     ]
 
@@ -128,7 +126,7 @@ def test_env_getitem_includes_extensions_from_current_addon(run_mypy: RunMypy) -
     assert result.messages("models.py") == ['13: note: Revealed type is "int"']
 
 
-def test_relational_fields_are_bound_to_comodel(run_mypy: RunMypy) -> None:
+def test_relational_fields_are_bound_to_comodel(run_mypy: RunMypy, names: OdooNames) -> None:
     result = run_mypy(
         {
             "my_mod": {
@@ -159,10 +157,10 @@ def test_relational_fields_are_bound_to_comodel(run_mypy: RunMypy) -> None:
         }
     )
     assert result.messages("models.py") == [
-        f'12: note: Revealed type is "{PARTNER}"',
+        f'12: note: Revealed type is "{names.partner}"',
         '13: note: Revealed type is "str | Literal[False]"',
         '14: note: Revealed type is "my_mod.models.Line"',
-        '15: note: Revealed type is "odoo.addons.base.models.res_partner.PartnerCategory"',
+        f'15: note: Revealed type is "{names.partner_category}"',
         '16: error: "int" has no attribute "upper"  [attr-defined]',
     ]
 
@@ -295,13 +293,15 @@ def run(env: Environment) -> None:
 """
 
 
-def test_env_getitem_outside_addon_keeps_declared_type_unchecked(run_mypy: RunMypy) -> None:
+def test_env_getitem_outside_addon_keeps_declared_type_unchecked(
+    run_mypy: RunMypy, names: OdooNames
+) -> None:
     # Files outside any addon have no dependency view: nothing is resolved or checked there.
     result = run_mypy({"my_mod": {"models.py": ""}}, scripts={"tool.py": SCRIPT})
 
     assert result.messages("tool.py") == [
-        '5: note: Revealed type is "odoo.models.BaseModel"',
-        '6: note: Revealed type is "odoo.models.BaseModel"',
+        f'5: note: Revealed type is "{names.base_model}"',
+        f'6: note: Revealed type is "{names.base_model}"',
     ]
 
 

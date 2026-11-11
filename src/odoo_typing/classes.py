@@ -20,6 +20,9 @@ declared type ``plugin._normalize_meta_attributes`` rewrites during semantic ana
   with ``<subclass ``, which ``mypy.lookup.lookup_fully_qualified`` resolves even with
   dots in it.
 
+* Odoo 19+ declares relational fields as ``Field[BaseModel]``: the classes listed in
+  the profile get a type variable for the comodel, as Odoo 18 declares them.
+
 Each Odoo class records its Python-only MRO (``metadata["odoo_typing"]``), so later
 merges respect what Python itself guarantees about it.
 """
@@ -40,7 +43,7 @@ from mypy.nodes import (
     TypeInfo,
     Var,
 )
-from mypy.types import Instance
+from mypy.types import AnyType, Instance, TypeOfAny, TypeVarId, TypeVarType
 from mypy.typestate import type_state
 from mypy.typevars import fill_typevars_with_any
 
@@ -55,6 +58,7 @@ __all__ = [
     "create_view_class",
     "install_mro",
     "instance_of",
+    "make_comodel_generic",
     "merge_mro",
     "record_python_mro",
     "view_class_name",
@@ -231,3 +235,36 @@ def add_log_access_fields(info: TypeInfo, field_types: dict[str, Instance]) -> N
         var._fullname = f"{info.fullname}.{name}"
         var.is_initialized_in_class = True
         info.names[name] = SymbolTableNode(MDEF, var, plugin_generated=True)
+
+
+def make_comodel_generic(
+    defn: ClassDef, upper_bound: Instance, is_field_class: Callable[[str], bool]
+) -> None:
+    """Make a field class generic in its comodel: ``Many2one`` becomes ``Many2one[M]``.
+
+    Its field-class bases with one type variable get ``M`` as argument
+    (``Field[BaseModel]`` becomes ``Field[M]``, ``_Relational`` becomes
+    ``_Relational[M]``), so that the comodel reaches ``Field.__get__``. Runs each time
+    mypy computes the class's MRO (it resets the type variables before).
+    """
+    info = defn.info
+    if not defn.type_vars:
+        defn.type_vars = [
+            TypeVarType(
+                "M",
+                f"{info.fullname}.M",
+                id=TypeVarId(1),
+                values=[],
+                upper_bound=upper_bound,
+                default=AnyType(TypeOfAny.from_omitted_generics),
+            )
+        ]
+        info.type_vars = []
+        info.add_type_vars()
+    comodel = defn.type_vars[0]
+    info.bases = [
+        base.copy_modified(args=[comodel])
+        if is_field_class(base.type.fullname) and len(base.type.type_vars) == 1
+        else base
+        for base in info.bases
+    ]

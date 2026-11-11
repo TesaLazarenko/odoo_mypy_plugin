@@ -75,7 +75,36 @@ def test_plugin_init_version_without_profile_exits_with_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with pytest.raises(SystemExit) as exit_info:
-        OdooPlugin(_plugin_options(tmp_path, "", version="odoo_version = 19\n"))
+        OdooPlugin(_plugin_options(tmp_path, "", version="odoo_version = 20\n"))
 
     assert exit_info.value.code == 2
-    assert "Odoo 19 is not supported yet" in capsys.readouterr().err
+    assert "Odoo 20 is not supported yet" in capsys.readouterr().err
+
+
+def _overlay_options(tmp_path: Path, version: int, explicit_package_bases: bool) -> Options:
+    options = _plugin_options(
+        tmp_path, "", version=f'odoo_version = {version}\noverlay_root = ".odoo-root"\n'
+    )
+    (tmp_path / ".odoo-root" / "odoo" / "addons").mkdir(parents=True)
+    (tmp_path / ".odoo-root" / ".odoo-typing-root").write_text("")
+    options.explicit_package_bases = explicit_package_bases
+    return options
+
+
+def test_plugin_init_odoo_19_overlay_without_explicit_package_bases_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    OdooPlugin(_overlay_options(tmp_path, 19, explicit_package_bases=False))
+
+    err = capsys.readouterr().err
+    assert "odoo-typing: warning:" in err
+    assert "explicit_package_bases = true" in err
+
+
+@pytest.mark.parametrize(("version", "explicit"), [(19, True), (18, False)])
+def test_plugin_init_overlay_package_bases_not_needed_or_set_prints_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], version: int, explicit: bool
+) -> None:
+    OdooPlugin(_overlay_options(tmp_path, version, explicit_package_bases=explicit))
+
+    assert capsys.readouterr().err == ""

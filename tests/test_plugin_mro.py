@@ -7,9 +7,7 @@ several unrelated extensions of one model are merged.
 
 from __future__ import annotations
 
-from conftest import RunMypy
-
-PARTNER = "odoo.addons.base.models.res_partner.Partner"
+from conftest import OdooNames, RunMypy
 
 
 def _revealed(lines: list[str]) -> list[str]:
@@ -451,7 +449,7 @@ def test_env_model_extended_by_unrelated_addons_merges_their_classes(run_mypy: R
     ]
 
 
-def test_env_single_complete_tip_is_the_real_class(run_mypy: RunMypy) -> None:
+def test_env_single_complete_tip_is_the_real_class(run_mypy: RunMypy, names: OdooNames) -> None:
     result = run_mypy(
         {
             "my_mod": {
@@ -468,7 +466,7 @@ def test_env_single_complete_tip_is_the_real_class(run_mypy: RunMypy) -> None:
         }
     )
 
-    assert result.messages("models.py") == [f'8: note: Revealed type is "{PARTNER}"']
+    assert result.messages("models.py") == [f'8: note: Revealed type is "{names.partner}"']
 
 
 def test_env_merged_class_survives_warm_cache(run_mypy: RunMypy) -> None:

@@ -7,8 +7,10 @@ regular package ``odoo/addons``, so the overlay is a copy of the ``odoo`` packag
 of symlinks::
 
     <overlay_root>/odoo/<entry>            -> <odoo_path>/<entry>   (all but addons/)
-    <overlay_root>/odoo/addons/__init__.py -> <odoo_path>/addons/__init__.py
+    <overlay_root>/odoo/addons/__init__.py -> <odoo_path>/addons/__init__.py  (Odoo < 19)
     <overlay_root>/odoo/addons/<name>      -> the addon's directory (core and addons_path)
+
+Odoo 19+ has no ``odoo/addons/__init__.py`` (a namespace package); its overlay has none.
 
 Usage: ``odoo-typing-root [--config pyproject.toml] [--output DIR]``. The settings
 come from the ``[tool.odoo_typing]`` table (``odoo_path``, ``addons_path``, and
@@ -24,11 +26,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from odoo_typing.addons import AddonIndex
+from odoo_typing.config import OVERLAY_MARKER as MARKER
 from odoo_typing.config import ConfigError, Settings, load_settings
 
 __all__ = ["MARKER", "OverlayError", "build_overlay", "main"]
 
-MARKER = ".odoo-typing-root"  # file that marks a directory this module generated
 SKIPPED = frozenset({"addons", "__pycache__"})
 
 
@@ -62,7 +64,8 @@ def build_overlay(settings: Settings, output: Path) -> int:
             (package / entry.name).symlink_to(entry)
     addons_dir = package / "addons"
     addons_dir.mkdir()
-    (addons_dir / "__init__.py").symlink_to(odoo / "addons" / "__init__.py")
+    if (odoo / "addons" / "__init__.py").is_file():
+        (addons_dir / "__init__.py").symlink_to(odoo / "addons" / "__init__.py")
     index = AddonIndex(odoo, settings.addons_paths)
     for addon in index.addons.values():
         (addons_dir / addon.name).symlink_to(addon.path, target_is_directory=True)

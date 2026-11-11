@@ -194,7 +194,7 @@ def test_load_settings_without_overlay_root_returns_none(tmp_path: Path) -> None
 def test_load_settings_generated_overlay_root_returns_resolved_path(tmp_path: Path) -> None:
     config = _overlay_config(tmp_path, ".odoo-root")
     (tmp_path / ".odoo-root" / "odoo" / "addons").mkdir(parents=True)
-    (tmp_path / ".odoo-root" / "odoo" / "addons" / "__init__.py").write_text("")
+    (tmp_path / ".odoo-root" / ".odoo-typing-root").write_text("")
 
     settings = load_settings(config)
 

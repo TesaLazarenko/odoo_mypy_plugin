@@ -1,8 +1,8 @@
 # odoo-typing
 
 mypy plugin that understands the Odoo ORM, for mypy 2.1-2.4. The target Odoo version is
-set in the config (`odoo_version`); supported: Odoo 18. Odoo 17, 19 and 20 are planned
-(see [ROADMAP.md](ROADMAP.md), «Версії Odoo»).
+set in the config (`odoo_version`); supported: Odoo 18 and 19. Odoo 17 and 20 are
+planned (see [ROADMAP.md](ROADMAP.md), «Версії Odoo»).
 
 Plain mypy treats `env["res.partner"]` as `BaseModel`. It cannot see fields that other
 modules add through `_inherit`, and it reads every relational field as `Any`. With this
@@ -75,6 +75,14 @@ names of Odoo's classes for its hooks from it (Odoo 19 moved the ORM to `odoo.or
 Odoo found at `odoo_path` is only compared with it, and a different major version gives
 a warning. Without `odoo_version`, or with a version that is not supported yet, mypy
 stops with a message (exit status 2).
+
+**Odoo 19+**: `odoo` and `odoo.addons` have no `__init__.py` (namespace packages), so
+mypy names a file inside them `odoo.addons.<name>...` only with
+`explicit_package_bases = true` in `[tool.mypy]`. Set it with `overlay_root` (the plugin
+warns if it is missing), and whenever you give mypy files under the Odoo tree. Odoo 19
+declares relational fields `Field[BaseModel]`; the plugin makes `Many2one`, `One2many`
+and `Many2many` generic in the comodel (`fields.Many2one[ResPartner]`), as Odoo 18
+declares them.
 
 Unknown keys in this table are a configuration error, so a typo such as `addon_path`
 does not go unnoticed. `dynamic_env = "base"` keeps plain mypy's `BaseModel` for

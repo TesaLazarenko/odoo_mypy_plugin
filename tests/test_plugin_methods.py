@@ -7,7 +7,8 @@ without annotations: the plugin keeps the receiver's model type through both.
 
 from __future__ import annotations
 
-from conftest import RunMypy
+import pytest
+from conftest import OdooNames, RunMypy
 
 THING = """
 from odoo import fields, models
@@ -37,7 +38,7 @@ def test_decorated_self_methods_keep_receiver_type(run_mypy: RunMypy) -> None:
                     def action(self) -> None:
                         reveal_type(self.sudo())
                         reveal_type(self.with_context(a=1).with_company(1).with_user(1))
-                        reveal_type(self.filtered(lambda r: r.size).sorted("size"))
+                        reveal_type(self.filtered(lambda r: r.size > 0).sorted("size"))
                         reveal_type(self.search([]))
                         reveal_type(self.exists().ensure_one())
                         reveal_type(self.copy())
@@ -78,13 +79,8 @@ def test_decorated_own_methods_keep_their_signature(run_mypy: RunMypy) -> None:
                     def _helper(self, count: int) -> int:
                         return count
 
-                    @api.returns("self")
-                    def _records(self) -> "Thing":
-                        return self
-
                     def action(self) -> None:
                         reveal_type(self._helper(1))
-                        reveal_type(self._records())
                         self._helper("x")
                 """
             }
@@ -92,14 +88,44 @@ def test_decorated_own_methods_keep_their_signature(run_mypy: RunMypy) -> None:
     )
 
     assert result.messages("models.py") == [
-        '19: note: Revealed type is "int"',
-        '20: note: Revealed type is "my_mod.models.Thing"',
-        '21: error: Argument 1 to "_helper" of "Thing" has incompatible type "str"; '
+        '15: note: Revealed type is "int"',
+        '16: error: Argument 1 to "_helper" of "Thing" has incompatible type "str"; '
         'expected "int"  [arg-type]',
     ]
 
 
-def test_unannotated_overrides_of_self_methods_keep_receiver_type(run_mypy: RunMypy) -> None:
+@pytest.mark.odoo(18)  # Odoo 19 has no api.returns
+def test_returns_decorated_method_keeps_its_signature(run_mypy: RunMypy) -> None:
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import api, models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    @api.returns("self")
+                    def _records(self) -> "Thing":
+                        return self
+
+                    def action(self) -> None:
+                        reveal_type(self._records())
+                """
+            }
+        }
+    )
+
+    assert result.messages("models.py") == ['12: note: Revealed type is "my_mod.models.Thing"']
+
+
+def test_unannotated_overrides_of_self_methods_keep_receiver_type(
+    run_mypy: RunMypy, names: OdooNames
+) -> None:
+    # Odoo 19 has no api.returns: a comment keeps the line numbers.
+    copy_decorator = '@api.returns("self", lambda value: value.id)'
+    if names.version >= 19:
+        copy_decorator = "# no api.returns in this Odoo"
     result = run_mypy(
         {
             "my_mod": {
@@ -116,7 +142,7 @@ def test_unannotated_overrides_of_self_methods_keep_receiver_type(run_mypy: RunM
                     def create(self, vals_list):
                         return super().create(vals_list)
 
-                    @api.returns("self", lambda value: value.id)
+                    COPY_DECORATOR
                     def copy(self, default=None):
                         return super().copy(default)
 
@@ -140,7 +166,7 @@ def test_unannotated_overrides_of_self_methods_keep_receiver_type(run_mypy: RunM
                         reveal_type(things.sudo())
                         reveal_type(things.search_count([]))
                         reveal_type(Other().create())
-                """
+                """.replace("COPY_DECORATOR", copy_decorator)
             }
         }
     )
@@ -150,7 +176,7 @@ def test_unannotated_overrides_of_self_methods_keep_receiver_type(run_mypy: RunM
         f'33: note: Revealed type is "{thing}"',
         f'34: note: Revealed type is "{thing}"',
         f'35: note: Revealed type is "{thing}"',
-        '36: note: Revealed type is "Any"',
+        '36: note: Revealed type is "Any"',  # unannotated, not a -> Self method
         '37: note: Revealed type is "Any"',
     ]
 
@@ -182,7 +208,8 @@ def test_create_accepts_one_dict_or_a_list_of_dicts(run_mypy: RunMypy) -> None:
     assert messages[0] == '10: note: Revealed type is "my_mod.models.Thing"'
     assert len(messages) == 2
     assert messages[1].startswith('13: error: Argument 1 to "create" of "BaseModel" has')
-    assert 'expected "dict[str, Any] | list[dict[str, Any]]"  [arg-type]' in messages[1]
+    expected = messages[1].partition("; expected ")[2].removesuffix("  [arg-type]")
+    assert set(expected.strip('"').split(" | ")) == {"dict[str, Any]", "list[dict[str, Any]]"}
 
 
 # -- [27] env.user / env.company / env.companies ---------------------------------------------
@@ -230,7 +257,7 @@ def test_env_user_and_company_are_records_seen_from_the_addon(run_mypy: RunMypy)
     assert 'has no attribute "x_levell"' in messages[4]
 
 
-def test_env_user_outside_addon_keeps_declared_type(run_mypy: RunMypy) -> None:
+def test_env_user_outside_addon_keeps_declared_type(run_mypy: RunMypy, names: OdooNames) -> None:
     result = run_mypy(
         {"my_mod": {"models.py": THING}},
         scripts={
@@ -243,7 +270,9 @@ def test_env_user_outside_addon_keeps_declared_type(run_mypy: RunMypy) -> None:
         },
     )
 
-    assert result.messages("tool.py") == ['5: note: Revealed type is "Any"']
+    # Odoo 18 does not annotate Environment.user; Odoo 19 declares -> BaseModel.
+    declared = "Any" if names.version < 19 else names.base_model
+    assert result.messages("tool.py") == [f'5: note: Revealed type is "{declared}"']
 
 
 # -- [12] Final model names in env[...] -------------------------------------------------------
@@ -351,27 +380,31 @@ def test_env_dynamic_name_default_is_any(run_mypy: RunMypy) -> None:
     assert result.messages("models.py") == ['9: note: Revealed type is "Any"']
 
 
-def test_env_dynamic_name_option_base_keeps_base_model(run_mypy: RunMypy) -> None:
+def test_env_dynamic_name_option_base_keeps_base_model(run_mypy: RunMypy, names: OdooNames) -> None:
     result = run_mypy({"my_mod": {"models.py": DYNAMIC_ENV}}, options='dynamic_env = "base"\n')
 
     assert result.messages("models.py") == [
-        '9: note: Revealed type is "odoo.models.BaseModel"',
+        f'9: note: Revealed type is "{names.base_model}"',
         '10: error: "BaseModel" has no attribute "partner_id"  [attr-defined]',
     ]
 
 
-def test_env_dynamic_name_option_change_invalidates_cache(run_mypy: RunMypy) -> None:
+def test_env_dynamic_name_option_change_invalidates_cache(
+    run_mypy: RunMypy, names: OdooNames
+) -> None:
     run_mypy({"my_mod": {"models.py": DYNAMIC_ENV}})
 
     result = run_mypy({"my_mod": {"models.py": DYNAMIC_ENV}}, options='dynamic_env = "base"\n')
 
-    assert '9: note: Revealed type is "odoo.models.BaseModel"' in result.messages("models.py")
+    assert f'9: note: Revealed type is "{names.base_model}"' in result.messages("models.py")
 
 
 # -- roadmap 4.4: super() in unannotated overrides -------------------------------------------
 
 
-def test_super_call_to_unannotated_override_keeps_self_type(run_mypy: RunMypy) -> None:
+def test_super_call_to_unannotated_override_keeps_self_type(
+    run_mypy: RunMypy, names: OdooNames
+) -> None:
     result = run_mypy(
         {
             "my_mod": {
@@ -412,11 +445,13 @@ def test_super_call_to_unannotated_override_keeps_self_type(run_mypy: RunMypy) -
         }
     )
 
+    # Odoo 18 leaves BaseModel.search_count untyped; Odoo 19 declares -> int.
+    count = "Any" if names.version < 19 else "int"
     # Inside the override ``self`` is ``Self`` (bound to ThingMore), so is super()'s result.
     messages = result.messages("models.py")
     assert messages == [
         '22: note: Revealed type is "Self"',
         '23: error: "Self" has no attribute "sizee"  [attr-defined]',
         '27: note: Revealed type is "Self"',
-        '31: note: Revealed type is "Any"',  # not a -> Self method: unchanged
+        f'31: note: Revealed type is "{count}"',  # not a -> Self method: unchanged
     ]

@@ -55,6 +55,35 @@ def odoo_version(odoo_path: Path) -> int:
     return detected[0]
 
 
+@dataclass(frozen=True)
+class OdooNames:
+    """Full names that e2e expectations print and that differ between Odoo versions."""
+
+    version: int
+    partner: str  # model res.partner
+    partner_category: str  # model res.partner.category
+    base_model: str
+    many2one: str
+
+
+@pytest.fixture(scope="session")
+def names(odoo_version: int) -> OdooNames:
+    """Names to expect in mypy output for the targeted Odoo version."""
+    profile = profile_for(odoo_version)
+    if profile is None:
+        pytest.skip(f"the plugin has no profile for Odoo {odoo_version} yet")
+    # Odoo 19 names classes after their model (ResPartner, not Partner).
+    prefix = "Res" if odoo_version >= 19 else ""
+    module = "odoo.addons.base.models.res_partner"
+    return OdooNames(
+        version=odoo_version,
+        partner=f"{module}.{prefix}Partner",
+        partner_category=f"{module}.{prefix}PartnerCategory",
+        base_model=profile.base_model,
+        many2one=profile.many2one,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _only_for_marked_versions(request: pytest.FixtureRequest) -> None:
     """``@pytest.mark.odoo(18, 19)``: run the test only for those Odoo versions."""

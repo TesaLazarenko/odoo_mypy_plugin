@@ -23,6 +23,7 @@ PYPROJECT = """\
 [tool.mypy]
 plugins = ["odoo_typing.plugin"]
 mypy_path = ["{root}"]
+explicit_package_bases = {package_bases}
 check_untyped_defs = true
 show_error_codes = true
 show_error_context = false
@@ -116,7 +117,13 @@ def project(
     write_addon(root / "addons" / "ov_ext", OV_EXT)
     config = root / "pyproject.toml"
     config.write_text(
-        PYPROJECT.format(root=root / ".odoo-root", odoo_path=odoo_path, odoo_version=odoo_version)
+        PYPROJECT.format(
+            root=root / ".odoo-root",
+            odoo_path=odoo_path,
+            odoo_version=odoo_version,
+            # Odoo 19+: odoo.addons is a namespace package (the README says so).
+            package_bases=str(odoo_version >= 19).lower(),
+        )
     )
     build_overlay(load_settings(str(config), require_overlay=False), root / ".odoo-root")
     return Project(root=root, config=config)

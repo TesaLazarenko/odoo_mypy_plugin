@@ -101,6 +101,7 @@ from odoo_typing.classes import (
     create_view_class,
     install_mro,
     instance_of,
+    make_comodel_generic,
     merge_mro,
     record_python_mro,
     view_class_name,
@@ -149,6 +150,8 @@ class OdooPlugin(Plugin):
         self._settings = _settings_or_exit(options)
         self._profile = _profile_or_exit(self._settings)
         if warning := version_mismatch_warning(self._profile.version, self._settings.odoo_path):
+            print(warning, file=sys.stderr)
+        if warning := _package_bases_warning(self._profile, self._settings, options):
             print(warning, file=sys.stderr)
         self._store = RecordStore.for_cache_dir(options.cache_dir)
         self._inputs_checked = False
@@ -212,10 +215,17 @@ class OdooPlugin(Plugin):
         self, fullname: str
     ) -> Callable[[ClassDefContext], None] | None:
         """Give Odoo model classes the MRO of their registry class."""
+        if fullname in self._profile.comodel_generic:
+            return self._comodel_generic
         contribution = self.registry.contribution(fullname)
         if contribution is None:
             return None
         return partial(self._merge_bases, contribution)
+
+    def _comodel_generic(self, ctx: ClassDefContext) -> None:
+        # Bound ``object``: ``BaseModel`` may not be analyzed yet (an import cycle).
+        object_type = ctx.api.named_type("builtins.object")
+        make_comodel_generic(ctx.cls, object_type, self._profile.is_field_class)
 
     def _merge_bases(self, contribution: Contribution, ctx: ClassDefContext) -> None:
         """Replace a model class's MRO with the one Odoo's registry gives it.
@@ -452,7 +462,10 @@ class OdooPlugin(Plugin):
         comodel = _comodel_expression(ctx)
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
         if comodel is None or addon_name is None:
-            return ctx.default_return_type
+            # A redefinition (``fields.Many2one(ondelete=...)``) keeps the comodel of the
+            # earlier declaration; mypy cannot infer ``M`` from such a call.
+            unknown = AnyType(TypeOfAny.special_form)
+            return default.copy_modified(args=[unknown]) if default.args else default
         definition = self.registry.definition(comodel.value, addon_name)
         if definition is None:
             self._unknown_model(comodel.value, addon_name, comodel, ctx.api)
@@ -473,8 +486,11 @@ class OdooPlugin(Plugin):
             return signature
         records = _record_type(ctx)
         if isinstance(records, NoneType):
-            return signature.copy_modified(ret_type=descriptor)  # Model.field: the field
-        comodel = get_proper_type(map_instance_to_supertype(descriptor, base).args[0])
+            # Model.field: the field (Odoo 19 declares ``records: BaseModel``, not None).
+            arg_types = [records, *signature.arg_types[1:]] if signature.arg_types else []
+            return signature.copy_modified(arg_types=arg_types, ret_type=descriptor)
+        args = map_instance_to_supertype(descriptor, base).args
+        comodel = get_proper_type(args[0]) if args else None  # Odoo 19: not generic
         if not isinstance(comodel, Instance):
             return signature
         owner = records.type if isinstance(records, Instance) else None
@@ -535,6 +551,26 @@ def _settings_or_exit(options: Options) -> Settings:
     except ConfigError as exc:
         print(f"odoo-typing: error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
+
+
+def _package_bases_warning(
+    profile: OdooProfile, settings: Settings, options: Options
+) -> str | None:
+    """Warning text if overlay files would not get their ``odoo.addons.<name>`` names.
+
+    In Odoo 19+ ``odoo/addons`` has no ``__init__.py``; without
+    ``explicit_package_bases`` mypy names a file of the overlay root after its
+    directory alone (``my_addon.models``), so every module is found twice.
+    """
+    if not profile.namespace_odoo or settings.overlay_root is None:
+        return None
+    if options.explicit_package_bases:
+        return None
+    return (
+        f"odoo-typing: warning: Odoo {profile.version} has no odoo/addons/__init__.py: set "
+        "explicit_package_bases = true in [tool.mypy], or mypy does not name the files "
+        'of overlay_root "odoo.addons.<name>"'
+    )
 
 
 def _profile_or_exit(settings: Settings) -> OdooProfile:

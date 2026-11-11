@@ -9,7 +9,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
-from conftest import RunMypy
+from conftest import OdooNames, RunMypy
 
 T_PARTNER = """
 from odoo import fields, models
@@ -255,7 +255,7 @@ def test_symlinked_addon_with_other_name_and_openerp_manifest_see_dependency(
 # -- [42][44] missing dependency, _register = False -------------------------------------------
 
 
-def test_dependency_missing_from_disk_keeps_resolution(run_mypy: RunMypy) -> None:
+def test_dependency_missing_from_disk_keeps_resolution(run_mypy: RunMypy, names: OdooNames) -> None:
     result = run_mypy(
         {
             "my_mod": {
@@ -279,7 +279,7 @@ def test_dependency_missing_from_disk_keeps_resolution(run_mypy: RunMypy) -> Non
     )
 
     assert result.messages("models.py") == [
-        '12: note: Revealed type is "odoo.addons.base.models.res_partner.Partner"',
+        f'12: note: Revealed type is "{names.partner}"',
         '13: error: Unknown Odoo model "my.unregistered"  [odoo-model]',
     ]
 

@@ -144,11 +144,35 @@
     - Odoo 20 має `migrations/<версія>/pre-migrate.py` в `account`. Такі файли mypy
       бачить як дублікати модулів, тож бенчмарк має `exclude = "/migrations/"`, а README
       має порадити те саме.
-- [ ] **V3. Odoo 19.**
-  - Профіль з назвами `odoo.orm.*`. Хуки, які стали зайвими (`create_signature`, частина
-    identity-декораторів), вимикаються прапорцями профілю.
-  - Перевірити `@api.returns` і нові `Constraint`/`Index` у сканері.
-  - Python ≥ 3.10.
+- [x] **V3. Odoo 19** — ✅ зроблено.
+  - Профіль `ODOO_19` з назвами `odoo.orm.*` (`BaseModel` у `orm.models`, поля в
+    `orm.fields_*`, `Environment` в `orm.environments`).
+  - Relational-поля в 19 оголошені `_Relational(Field[BaseModel])`, без параметра.
+    Профіль має `comodel_generic`: хук MRO дає `_Relational`, `_RelationalMulti`,
+    `Many2one`, `One2many`, `Many2many` type var `M` і переписує бази
+    (`Field[M]`, `_Relational[M]`), тож решта логіки та сама, що для 18. Доступ через
+    клас (`Model.field`) приймає `None`, бо 19 оголошує `records: BaseModel`.
+  - Декоратори: `api.model`/`private`/... типізовані `C -> C`, хук не потрібен. Але
+    `depends`/`constrains`/`onchange`/`ondelete`/`depends_context` повертають
+    `Decorator`, тобто `Callable[[Any], Any]`, тож для них identity-factory хуки лишаються.
+    `@api.returns` в 19 немає. `create_signature` лишився: на 19 він нічого не змінює
+    (`model_create_multi` уже приймає `dict | list`).
+  - `explicit_package_bases`: плагін попереджає, якщо на 19+ задано `overlay_root` без
+    нього. `odoo-typing-root` не створює `odoo/addons/__init__.py`, коли в Odoo його
+    немає, а перевірку «згенеровано» тепер робить файл-маркер `.odoo-typing-root`.
+  - `Constraint`/`Index` сканер не плутає з полями (вони не з `orm.fields_*`).
+  - Переоголошення relational-поля без comodel (`fields.Many2one(ondelete="set null")`)
+    тепер `Many2one[Any]`, а не `Many2one[Never]` з `var-annotated`. Це стосується й 18:
+    там помилок менше на 5 / 15 / 31 (crm / sale / account), а помилки, які дає лише
+    плагін, ті самі.
+  - Бенчмарк 19 (crm / sale / account): без плагіна 2304 / 2319 / 11115, з плагіном
+    1360 / 1460 / 8310; лише з плагіном 21 / 38 / 165. Ці групи такі самі, як на 18:
+    значення полів `X | False`, моделі під guard, а також `filtered(lambda: <не bool>)`,
+    бо 19 сам оголошує `Callable[[Self], bool]`.
+  - Тести: фікстура `names` для назв, що різняться (`Partner`/`ResPartner`,
+    `odoo.models`/`odoo.orm.models`), версійні очікування там, де 19 типізує те, що 18
+    не типізує (`_order`, `env.user`, `search_count`), `@pytest.mark.odoo(18)` для
+    `api.returns`.
 - [ ] **V4. Odoo 20.**
   - Як 19 плюс синтаксис PEP 695. mypy запускати з `python_version >= 3.12`, тож потрібна
     перевірка в конфігу.

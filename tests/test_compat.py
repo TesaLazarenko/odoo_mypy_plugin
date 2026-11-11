@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from odoo_typing.compat import SUPPORTED_VERSIONS, profile_for
+from odoo_typing.compat import SUPPORTED_VERSIONS, OdooProfile, profile_for
+
+
+def _profile(version: int) -> OdooProfile:
+    profile = profile_for(version)
+    assert profile is not None
+    return profile
 
 
 def test_supported_versions_are_17_to_20() -> None:
@@ -12,7 +18,7 @@ def test_supported_versions_are_17_to_20() -> None:
 
 
 def test_profile_for_18_targets_odoo_18_modules() -> None:
-    profile = profile_for(18)
+    profile = _profile(18)
 
     assert profile.version == 18
     assert profile.base_model == "odoo.models.BaseModel"
@@ -24,6 +30,27 @@ def test_profile_for_18_targets_odoo_18_modules() -> None:
     assert not profile.is_field_class("odoo.models.Model")
 
 
-@pytest.mark.parametrize("version", [17, 19, 20])
+def test_profile_for_19_targets_odoo_orm_modules() -> None:
+    profile = _profile(19)
+
+    assert profile.version == 19
+    assert profile.base_model == "odoo.orm.models.BaseModel"
+    assert profile.env_getitem == "odoo.orm.environments.Environment.__getitem__"
+    assert "odoo.orm.fields_relational.Many2one" in profile.relational_classes
+    assert profile.is_field_class("odoo.orm.fields.Field")
+    assert profile.is_field_class("odoo.orm.fields_textual.Char")
+    assert not profile.is_field_class("odoo.orm.models.Model")
+
+
+def test_profile_for_19_hooks_only_decorator_factories() -> None:
+    # Odoo 19 types api.model... as ``C -> C``, but api.depends... as ``-> Decorator``.
+    profile = _profile(19)
+
+    assert profile.identity_decorators == frozenset()
+    assert "odoo.orm.decorators.depends" in profile.identity_factories
+    assert "odoo.orm.decorators.onchange" in profile.identity_factories
+
+
+@pytest.mark.parametrize("version", [17, 20])
 def test_profile_for_version_not_implemented_yet_returns_none(version: int) -> None:
     assert profile_for(version) is None

@@ -27,12 +27,17 @@ class OdooProfile:
 
     Attributes:
         version: Odoo major version.
+        namespace_odoo: Whether ``odoo`` and ``odoo.addons`` are namespace packages
+            (no ``__init__.py``): mypy then names files by their package bases only
+            with ``explicit_package_bases``.
         base_model: Full name of ``BaseModel``.
         env_getitem: Full name of ``Environment.__getitem__``.
         env_records: Full names of ``Environment`` attributes that are records
             (``env.user``), each with its model.
         relational_classes: Full names of ``Many2one``, ``One2many``, ``Many2many``.
         relational_base: Full name of their common base class.
+        comodel_generic: Field classes the plugin makes generic in the comodel, where
+            Odoo declares them ``Field[BaseModel]`` (Odoo 19+).
         field_modules: Prefixes of the full names of field classes (``fields.Char``).
         many2one: Full name of ``fields.Many2one``.
         datetime: Full name of ``fields.Datetime``.
@@ -42,11 +47,13 @@ class OdooProfile:
     """
 
     version: int
+    namespace_odoo: bool
     base_model: str
     env_getitem: str
     env_records: Mapping[str, str]
     relational_classes: frozenset[str]
     relational_base: str
+    comodel_generic: frozenset[str]
     field_modules: tuple[str, ...]
     many2one: str
     datetime: str
@@ -67,6 +74,7 @@ def _env_records(environment: str) -> Mapping[str, str]:
 # Odoo 18: the ORM lives in odoo/fields.py, odoo/models.py, odoo/api.py.
 ODOO_18 = OdooProfile(
     version=18,
+    namespace_odoo=False,
     base_model="odoo.models.BaseModel",
     env_getitem="odoo.api.Environment.__getitem__",
     env_records=_env_records("odoo.api.Environment"),
@@ -74,6 +82,7 @@ ODOO_18 = OdooProfile(
         {"odoo.fields.Many2one", "odoo.fields.One2many", "odoo.fields.Many2many"}
     ),
     relational_base="odoo.fields._Relational",
+    comodel_generic=frozenset(),  # Field[M] already
     field_modules=("odoo.fields.",),
     many2one="odoo.fields.Many2one",
     datetime="odoo.fields.Datetime",
@@ -96,7 +105,41 @@ ODOO_18 = OdooProfile(
     identity_template="odoo.api.model",
 )
 
-_PROFILES: Mapping[int, OdooProfile] = MappingProxyType({18: ODOO_18})
+# Odoo 19: the ORM lives in odoo/orm/*; odoo.fields / odoo.models / odoo.api re-export it.
+# ``api.model``, ``private``... are typed ``C -> C`` (``model_create_multi`` also accepts
+# one dict); the factories return ``Decorator``, an alias of ``Callable[[C], C]`` used
+# without an argument, that is ``Callable[[Any], Any]``.
+ODOO_19 = OdooProfile(
+    version=19,
+    namespace_odoo=True,
+    base_model="odoo.orm.models.BaseModel",
+    env_getitem="odoo.orm.environments.Environment.__getitem__",
+    env_records=_env_records("odoo.orm.environments.Environment"),
+    relational_classes=frozenset(
+        {
+            "odoo.orm.fields_relational.Many2one",
+            "odoo.orm.fields_relational.One2many",
+            "odoo.orm.fields_relational.Many2many",
+        }
+    ),
+    relational_base="odoo.orm.fields_relational._Relational",
+    comodel_generic=frozenset(
+        f"odoo.orm.fields_relational.{name}"
+        for name in ("_Relational", "_RelationalMulti", "Many2one", "One2many", "Many2many")
+    ),
+    # odoo/orm/fields.py (Field) and odoo/orm/fields_*.py (Char, Many2one...).
+    field_modules=("odoo.orm.fields.", "odoo.orm.fields_"),
+    many2one="odoo.orm.fields_relational.Many2one",
+    datetime="odoo.orm.fields_temporal.Datetime",
+    identity_decorators=frozenset(),
+    identity_factories=frozenset(
+        f"odoo.orm.decorators.{name}"
+        for name in ("constrains", "depends", "depends_context", "onchange", "ondelete")
+    ),
+    identity_template="odoo.orm.decorators.model",
+)
+
+_PROFILES: Mapping[int, OdooProfile] = MappingProxyType({18: ODOO_18, 19: ODOO_19})
 
 
 def profile_for(version: int) -> OdooProfile | None:

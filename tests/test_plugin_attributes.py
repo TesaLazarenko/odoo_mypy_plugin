@@ -6,13 +6,13 @@ Odoo model classes override private configuration attributes (``_rec_name``,
 
 from __future__ import annotations
 
-from conftest import RunMypy
+from conftest import OdooNames, RunMypy
 
 # -- [37] meta attributes keep BaseModel's declared type --------------------------------------
 
 
 def test_meta_attributes_rec_name_and_same_file_list_inherit_do_not_clash(
-    run_mypy: RunMypy,
+    run_mypy: RunMypy, names: OdooNames
 ) -> None:
     result = run_mypy(
         {
@@ -44,10 +44,12 @@ def test_meta_attributes_rec_name_and_same_file_list_inherit_do_not_clash(
         }
     )
 
+    # Odoo 18 does not annotate _order and _rec_name; Odoo 19 declares them.
+    order, rec_name = ("Any", "Any") if names.version < 19 else ("str", "str | None")
     assert result.messages("models.py") == [
         '16: note: Revealed type is "str | list[str] | tuple[str, ...]"',
-        '17: note: Revealed type is "Any"',
-        '18: note: Revealed type is "Any"',
+        f'17: note: Revealed type is "{order}"',
+        f'18: note: Revealed type is "{rec_name}"',
     ]
 
 

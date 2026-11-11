@@ -7,7 +7,7 @@ through a field declared upstream has every extension the reading addon can see.
 from __future__ import annotations
 
 import pytest
-from conftest import RunMypy
+from conftest import OdooNames, RunMypy
 
 DEP_PARTNER = """
 from odoo import fields, models
@@ -204,7 +204,9 @@ def test_relational_same_field_declared_in_two_views_is_compatible(run_mypy: Run
     assert result.messages("t_hr/models.py") == ['19: note: Revealed type is "int"']
 
 
-def test_relational_field_declaration_is_bound_to_the_defining_class(run_mypy: RunMypy) -> None:
+def test_relational_field_declaration_is_bound_to_the_defining_class(
+    run_mypy: RunMypy, names: OdooNames
+) -> None:
     result = run_mypy(
         {
             "rv_a": {"models.py": DEP_PARTNER},
@@ -227,9 +229,8 @@ def test_relational_field_declaration_is_bound_to_the_defining_class(run_mypy: R
         check=["rv_b"],
     )
 
-    partner = "odoo.addons.base.models.res_partner.Partner"
     assert result.messages("rv_b/models.py") == [
-        f'10: note: Revealed type is "odoo.fields.Many2one[{partner}]"',
+        f'10: note: Revealed type is "{names.many2one}[{names.partner}]"',
         '11: note: Revealed type is "int"',
     ]
 
@@ -333,13 +334,15 @@ def test_annotated_name_registers_model(run_mypy: RunMypy) -> None:
     assert result.messages("models.py") == ['8: note: Revealed type is "my_mod.models.Thing"']
 
 
-def test_custom_relational_subclass_reads_comodel(run_mypy: RunMypy) -> None:
+def test_custom_relational_subclass_reads_comodel(run_mypy: RunMypy, names: OdooNames) -> None:
+    # Odoo 19 declares Many2one without a type parameter; the plugin adds one.
+    partner_class = names.partner.rpartition(".")[2]
     result = run_mypy(
         {
             "my_mod": {
-                "models.py": """
+                "models.py": f"""
                 from odoo import fields, models
-                from odoo.addons.base.models.res_partner import Partner
+                from odoo.addons.base.models.res_partner import {partner_class} as Partner
 
                 class PartnerMany2one(fields.Many2one[Partner]):
                     pass
@@ -356,8 +359,7 @@ def test_custom_relational_subclass_reads_comodel(run_mypy: RunMypy) -> None:
         }
     )
 
-    partner = "odoo.addons.base.models.res_partner.Partner"
-    assert result.messages("models.py") == [f'14: note: Revealed type is "{partner}"']
+    assert result.messages("models.py") == [f'14: note: Revealed type is "{names.partner}"']
 
 
 def test_env_model_whose_classes_are_not_loaded_falls_back_to_any(run_mypy: RunMypy) -> None:
@@ -391,3 +393,24 @@ def test_env_model_whose_classes_are_not_loaded_falls_back_to_any(run_mypy: RunM
         '9: note: Revealed type is "str | Literal[False]"',
         '10: note: Revealed type is "Any"',
     ]
+
+
+def test_relational_redefinition_without_comodel_needs_no_annotation(run_mypy: RunMypy) -> None:
+    # crm.lead: ``campaign_id = fields.Many2one(ondelete="set null")`` keeps the comodel.
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import fields, models
+
+                class Partner(models.Model):
+                    _inherit = "res.partner"
+
+                    parent_id = fields.Many2one(ondelete="set null")
+                    child_ids = fields.One2many(string="Kids")
+                """
+            }
+        }
+    )
+
+    assert result.messages("models.py") == []

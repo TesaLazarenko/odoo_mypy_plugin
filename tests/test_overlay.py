@@ -92,6 +92,19 @@ def test_build_overlay_existing_overlay_is_rebuilt_and_targets_survive(
     assert (tmp_path / "addons" / "my_mod" / "__init__.py").is_file()
 
 
+def test_build_overlay_namespace_odoo_addons_gets_no_init(
+    tmp_path: Path, odoo: Path, settings: Settings
+) -> None:
+    # Odoo 19+: odoo.addons is a namespace package.
+    (odoo / "addons" / "__init__.py").unlink()
+    output = tmp_path / ".odoo-root"
+
+    build_overlay(settings, output)
+
+    assert not (output / "odoo" / "addons" / "__init__.py").exists()
+    assert (output / "odoo" / "addons" / "my_mod").is_symlink()
+
+
 def test_build_overlay_plain_odoo_symlink_is_replaced(
     tmp_path: Path, odoo: Path, settings: Settings
 ) -> None:
