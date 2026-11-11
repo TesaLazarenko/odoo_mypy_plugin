@@ -49,7 +49,12 @@ declaring addon's view of the model. The paths of `@api.depends(...)` are checke
 same way; `@api.constrains(...)` and `@api.onchange(...)` take field names of the model
 only (Odoo ignores a dotted name there). Not in abstract models, whose fields refer to
 the models that use them. A relational field declared only with `related=` gets the
-comodel of the path's last field.
+comodel of the path's last field. The string argument of `mapped("a.b")`,
+`filtered("a.b")`, `sorted(...)` and `grouped("a")` must name existing fields too
+(`grouped`, and `sorted` before Odoo 19, take one field name; `sorted` in 19+ takes an
+order such as `"name desc, id"`); `mapped("partner_id.name")` is then
+`list[str | Literal[False]]`, `mapped("line_ids")` the comodel's records, and
+`grouped("partner_id")` a `dict` from the field's values to records.
 
 `odoo-vals` covers the `vals` of `create()`, `write()` and `copy(default=...)`, the
 vals inside x2many commands (`Command.create({...})`, `Command.update(id, {...})`,

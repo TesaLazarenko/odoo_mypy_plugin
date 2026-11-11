@@ -52,6 +52,8 @@ class OdooProfile:
             each with its short name: their arguments name fields of the model.
         domain_operators: The operators of a domain term (``"="``, ``"child_of"``...).
         domain_class: Full name of the ``Domain`` class (Odoo 19+), ``None`` before.
+        sorted_order: Whether ``sorted("...")`` takes an order (``"name desc, id"``,
+            Odoo 19+) rather than one field name.
     """
 
     version: int
@@ -74,6 +76,7 @@ class OdooProfile:
     field_decorators: Mapping[str, str]
     domain_operators: frozenset[str]
     domain_class: str | None
+    sorted_order: bool
 
     def is_field_class(self, fullname: str) -> bool:
         """Whether a full name is that of a field class (``odoo.fields.Char``...)."""
@@ -145,6 +148,7 @@ ODOO_18 = OdooProfile(
     field_decorators=_field_decorators("odoo.api"),
     domain_operators=_OPERATORS_18,
     domain_class=None,
+    sorted_order=False,
 )
 
 # Odoo 19: the ORM lives in odoo/orm/*; odoo.fields / odoo.models / odoo.api re-export it.
@@ -185,6 +189,7 @@ ODOO_19 = OdooProfile(
     field_decorators=_field_decorators("odoo.orm.decorators"),
     domain_operators=_OPERATORS_19,
     domain_class="odoo.orm.domains.Domain",
+    sorted_order=True,
 )
 
 # Odoo 20: the same names as 19. The sources use PEP 695 type parameters

@@ -148,9 +148,11 @@ from odoo_typing.references import (
     KNOWN_CLASSES,
     METHOD_ARGUMENTS,
     ODOO_FIELD_REF,
+    RECORD_PATH_METHODS,
     decorator_problem,
     field_kind,
     missing_method_message,
+    record_paths,
     resolve_path,
 )
 from odoo_typing.registry import MissingParent, Registry
@@ -363,6 +365,8 @@ class OdooPlugin(Plugin):
             return partial(self._check_vals, name)
         if name in DOMAIN_METHODS:
             return partial(self._check_domain, name)
+        if name in RECORD_PATH_METHODS:
+            return partial(self._record_path, name)
         if is_self_method(fullname):
             return partial(keep_receiver, self._profile.base_model)
         return None
@@ -403,6 +407,69 @@ class OdooPlugin(Plugin):
         if is_self_method(method):
             return keep_receiver(self._profile.base_model, ctx)
         return ctx.default_return_type
+
+    def _record_path(self, method: str, ctx: MethodContext) -> Type:
+        """``mapped("a.b")``, ``filtered("a.b")``, ``sorted("a")``, ``grouped("a")``.
+
+        The fields of the string must exist (``odoo-field-ref``, on a concrete model);
+        ``mapped`` then returns the records of the last field's comodel, or a list of its
+        values, and ``grouped`` a dict from its values to records of the receiver.
+        """
+        result = (
+            keep_receiver(self._profile.base_model, ctx)
+            if is_self_method(method)
+            else ctx.default_return_type
+        )
+        receiver = get_proper_type(ctx.type)
+        argument = ctx.args[0][0] if ctx.args and ctx.args[0] else None
+        if not isinstance(receiver, Instance) or not isinstance(argument, StrExpr):
+            return result
+        if not argument.value or not self._check_record_paths(method, receiver, argument, ctx):
+            return result
+        if method not in {"mapped", "grouped"}:
+            return result
+        value = self._path_type(receiver, argument.value, ctx)
+        if value is None:
+            return result
+        checker = _checker(ctx.api)
+        if method == "grouped":
+            return checker.named_generic_type("builtins.dict", [value, receiver])
+        records = get_proper_type(value)
+        if isinstance(records, Instance) and records.type.has_base(self._profile.base_model):
+            return records
+        return checker.named_generic_type("builtins.list", [value])
+
+    def _check_record_paths(
+        self, method: str, receiver: Instance, argument: StrExpr, ctx: MethodContext
+    ) -> bool:
+        """Report the fields of a path argument that do not exist; whether all do."""
+        paths, problem = record_paths(method, argument.value, self._profile.sorted_order)
+        if problem is not None:
+            ctx.api.fail(problem, argument, code=ODOO_FIELD_REF)
+            return False
+        model = self._model_of(receiver.type)
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if model is None or addon_name is None or not self.registry.concrete(model, addon_name):
+            return True
+        fields_of = partial(self.registry.fields, addon_name=addon_name)
+        valid = True
+        for path in paths:
+            found = resolve_path(path, model, fields_of, f'{method}("{argument.value}")')
+            if found.problem is not None:
+                ctx.api.fail(found.problem, argument, code=ODOO_FIELD_REF)
+                valid = False
+        return valid
+
+    def _path_type(self, receiver: Instance, path: str, ctx: MethodContext) -> Type | None:
+        """The type of ``record.a.b`` for the path ``a.b``; ``None`` if it has errors."""
+        expression: Expression = TempNode(receiver, context=ctx.context)
+        for name in path.split("."):
+            expression = MemberExpr(expression, name)
+            expression.set_line(ctx.context)
+        checker = _checker(ctx.api)
+        with checker.msg.filter_errors() as errors:
+            value = checker.expr_checker.accept(expression)
+        return None if errors.has_new_errors() else value
 
     def _domain_checker(self, addon_name: str, api: CheckerPluginInterface) -> DomainChecker:
         return DomainChecker(

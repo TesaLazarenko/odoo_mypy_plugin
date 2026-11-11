@@ -27,11 +27,13 @@ __all__ = [
     "KNOWN_CLASSES",
     "METHOD_ARGUMENTS",
     "ODOO_FIELD_REF",
+    "RECORD_PATH_METHODS",
     "PathResult",
     "decorator_problem",
     "did_you_mean",
     "field_kind",
     "missing_method_message",
+    "record_paths",
     "resolve_path",
 ]
 
@@ -41,6 +43,8 @@ ODOO_FIELD_REF = ErrorCode(
 
 # Field arguments that name a method of the model (``selection`` only as a string).
 METHOD_ARGUMENTS: Final = ("compute", "inverse", "search", "selection")
+# Recordset methods that take a field path (or name) as a string.
+RECORD_PATH_METHODS: Final = frozenset({"mapped", "filtered", "sorted", "grouped"})
 RELATIONAL: Final = frozenset({"Many2one", "One2many", "Many2many"})
 REFERENCE: Final = frozenset({"Reference", "Many2oneReference"})
 # Odoo's own field classes (18-20); a custom subclass is not compared by class.
@@ -173,6 +177,26 @@ def decorator_problem(
     if decorator != "depends" and "." in name:
         return f"{argument} takes field names, not paths: Odoo ignores it"
     return resolve_path(name, model, fields_of, argument).problem
+
+
+def record_paths(method: str, argument: str, sorted_order: bool) -> tuple[list[str], str | None]:
+    """The field paths a string argument of ``mapped`` / ``filtered``... names.
+
+    ``mapped`` and ``filtered`` take a dotted path; ``grouped`` (and ``sorted`` before
+    Odoo 19) reads ``record[name]``, which takes one field name; ``sorted`` in 19+ takes
+    an order (``"partner_id.name desc, id"``), whose field parts are returned.
+
+    Returns:
+        The paths, and a problem if the argument is not of the form the method takes.
+    """
+    if method in {"mapped", "filtered"}:
+        return [argument], None
+    if method == "sorted" and sorted_order:
+        parts = [part.split() for part in argument.split(",")]
+        return [part[0].split(".")[0] for part in parts if part], None
+    if "." in argument or " " in argument.strip():
+        return [], f'{method}("{argument}") takes a field name'
+    return [argument.strip()], None
 
 
 def did_you_mean(name: str, candidates: Collection[str]) -> str:

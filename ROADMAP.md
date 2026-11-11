@@ -396,7 +396,7 @@
 шляху. Всі пункти цього етапу спираються на індекс з етапу 1 і на comodel у місці
 використання (WP3).
 
-**Стан (2026-11-11): 3.1–3.4 зроблено.**
+**Стан (2026-11-11): етап 3 зроблено (3.1–3.5).**
 - [x] **3.1.** Function hook на кожен клас поля (`profile.is_field_class`, для
   relational — у тій самій функції, що й `_relational_field`): рядок у `compute=`,
   `inverse=`, `search=`, `selection=` (для Selection/Reference, також позиційний) має
@@ -435,6 +435,18 @@
     виведення типу присвоєння немає. Обхід для користувача — анотація
     `d: list[Any] = [...]`. На 19+ Odoo сам типізує домен як
     `list[str | tuple[str, str, Any]]`, і `(1, "=", 1)` дає `list-item` від mypy.
+- [x] **3.5.** Method hook на `mapped`/`filtered`/`sorted`/`grouped` з рядком
+  (`_record_path`): поля шляху мають існувати (`odoo-field-ref`, на concrete-моделі).
+  `mapped` повертає recordset comodel або `list[<тип поля>]`; тип береться з
+  синтетичного `record.a.b` (`MemberExpr` на `TempNode`), тож збігається з типом читання
+  поля. `grouped` повертає `dict[<тип поля>, <receiver>]`. `grouped("a.b")` і в 18
+  `sorted("a.b")` — помилка (`record[name]` бере лише назву поля); у 19+ `sorted` бере
+  порядок (`"partner_id.name desc, id"`, `profile.sorted_order`), перевіряється перше
+  поле кожної частини. Лямбди не чіпаються. Тип `Reference` при читанні — пункт 4.2.
+  - Бенчмарк: помилок у шляхах 0; нових помилок типів 8 / 3 / 12 (crm / sale /
+    account). Усі з групи «значення полів `X | False`»: раніше `mapped` давав Any, тепер
+    `list[str | Literal[False]]`, і `", ".join(records.mapped("name"))`,
+    `dict.get(partner.lang)` з ключами `str` дають `arg-type`. Час без змін.
 - Код `odoo-field-ref` (модуль `references.py`). В абстрактних моделях не
   перевіряється: їхні поля посилаються на поля і методи моделей, що їх використовують.
 - Бенчмарк (Odoo 18, crm/sale/account): нових помилок 0; холодний запуск +2–7 %. Після
