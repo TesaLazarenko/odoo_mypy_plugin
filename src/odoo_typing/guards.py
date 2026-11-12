@@ -61,7 +61,7 @@ def is_guarded(guards: Iterable[Guard], model: str, line: int) -> bool:
 
 
 def model_guards(nodes: Iterable[ast.AST]) -> tuple[Guard, ...]:
-    """The guards in a file, from its inner nodes (see ``scanner._inner_nodes``)."""
+    """The guards in a file, from its inner nodes (see ``scanner.syntax.inner_nodes``)."""
     guards: list[Guard] = []
     for node in nodes:
         if isinstance(node, ast.IfExp):

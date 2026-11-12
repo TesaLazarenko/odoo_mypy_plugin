@@ -343,7 +343,7 @@ For a git checkout, use the checkout root. Then run `mypy addons/my_addon`.
 
 ## How it works
 
-- **Registry** ([registry/](src/odoo_typing/registry/__init__.py), [scanner.py](src/odoo_typing/scanner.py)):
+- **Registry** ([registry/](src/odoo_typing/registry/__init__.py), [scanner/](src/odoo_typing/scanner/__init__.py)):
   a static AST scan that never imports Odoo or touches a database. It mirrors Odoo 18's
   loading rules:
   - addons are directories with a `__manifest__.py` (or the deprecated `__openerp__.py`),
