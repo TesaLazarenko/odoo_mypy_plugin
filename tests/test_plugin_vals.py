@@ -402,3 +402,28 @@ class Order(models.Model):
 
 def test_vals_odoo_idioms_accepted(run_mypy: RunMypy) -> None:
     assert [line for line in _messages(run_mypy, IDIOMS) if "[odoo-vals" in line] == []
+
+
+CONTEXT_DEFAULTS = """
+from odoo import models
+
+class Line(models.Model):
+    _inherit = "t.line"
+
+    def check(self) -> None:
+        orders = self.env["t.order"]
+        orders.with_context(default_state="draft", default_count=2).create({})
+        orders.with_context(default_stat="draft", default_extract_state="x").create({})
+        orders.with_context({"default_count": "two", "active_test": False}).create({})
+        orders.with_context(default_stat="draft").search([])  # not the created model
+"""
+
+
+def test_vals_context_defaults_of_create_checked(run_mypy: RunMypy) -> None:
+    assert _messages(run_mypy, CONTEXT_DEFAULTS) == [
+        '10: error: Odoo model "t.order" has no field "stat" (default_stat in with_context); '
+        'did you mean "state"?  [odoo-vals-key]',
+        '11: error: Incompatible type for field "count" of Odoo model "t.order" (expression '
+        'has type "str", Integer field takes "int | NewId | Literal[False] | None")  '
+        "[odoo-vals-type]",
+    ]

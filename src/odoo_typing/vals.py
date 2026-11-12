@@ -29,7 +29,9 @@ from mypy.errorcodes import ErrorCode
 from mypy.lookup import lookup_fully_qualified
 from mypy.messages import format_type
 from mypy.nodes import (
+    ARG_POS,
     CallExpr,
+    Context,
     DictExpr,
     Expression,
     IntExpr,
@@ -68,8 +70,10 @@ __all__ = [
     "ODOO_VALS_TYPE",
     "RECORDS",
     "VALUE_TYPES",
+    "ContextDefault",
     "ValsChecker",
     "ValsTarget",
+    "context_defaults",
     "stored",
     "vals_dicts",
 ]
@@ -83,6 +87,8 @@ ODOO_VALS_TYPE = ErrorCode(
 )
 
 FALSE: Final = "Literal[False]"
+# Context keys that give a default to a field of the created records.
+DEFAULT_PREFIX: Final = "default_"
 NONE: Final = "None"
 RECORDS: Final = "records"  # a recordset (of the field's comodel, checked by model name)
 NEW_ID: Final = "NewId"  # an id of a new record: ``record.id`` is ``int | NewId``
@@ -183,16 +189,35 @@ class ValsChecker:
             if value_type is not None:
                 self.check_value(target.model, info, value, value_type)
 
-    def _unknown_key(self, target: ValsTarget, key: StrExpr) -> None:
+    def check_defaults(self, target: ValsTarget, defaults: Sequence[ContextDefault]) -> None:
+        """Report the ``default_<field>`` keys of a context that the created model lacks."""
+        for default in defaults:
+            info = target.fields.get(default.field)
+            if info is None:
+                # Odoo ignores a default of a field the model lacks, and code sets
+                # defaults for fields of optional addons on purpose: only a near miss
+                # of an existing field (a typo) is reported.
+                if get_close_matches(default.field, list(target.fields), n=1, cutoff=0.8):
+                    where = f" ({default.key} in with_context)"
+                    self._unknown_key(target, default.node, default.field, where)
+                continue
+            value_type = self.checker.lookup_type_or_none(default.value)
+            if value_type is not None:
+                self.check_value(target.model, info, default.value, value_type)
+
+    def _unknown_key(
+        self, target: ValsTarget, node: Context, name: str | None = None, where: str = ""
+    ) -> None:
+        name = name if name is not None else node.value if isinstance(node, StrExpr) else ""
         if not target.check_keys or not target.fields:
             return
-        if any(fnmatchcase(key.value, pattern) for pattern in target.ignore_keys):
+        if any(fnmatchcase(name, pattern) for pattern in target.ignore_keys):
             return
-        message = f'Odoo model "{target.model}" has no field "{key.value}"'
-        matches = get_close_matches(key.value, list(target.fields), n=1, cutoff=0.6)
+        message = f'Odoo model "{target.model}" has no field "{name}"{where}'
+        matches = get_close_matches(name, list(target.fields), n=1, cutoff=0.6)
         if matches:
             message += f'; did you mean "{matches[0]}"?'
-        self.checker.fail(message, key, code=ODOO_VALS_KEY)
+        self.checker.fail(message, node, code=ODOO_VALS_KEY)
 
     def check_value(self, model: str, info: FieldInfo, value: Expression, value_type: Type) -> None:
         """Report a value (of type ``value_type``) that a field of a model does not take."""
@@ -320,6 +345,47 @@ def _command_name(callee: Expression) -> str | None:
     ):
         return callee.name
     return None
+
+
+@dataclass(frozen=True, slots=True)
+class ContextDefault:
+    """A ``default_<field>`` entry of a context.
+
+    Attributes:
+        key: The context key (``default_partner_id``).
+        field: The field it gives a default to (``partner_id``).
+        value: The default value.
+        node: Where a message about the key points.
+    """
+
+    key: str
+    field: str
+    value: Expression
+    node: Context
+
+
+def context_defaults(receiver: Expression) -> list[ContextDefault]:
+    """The ``default_<field>`` entries of ``records.with_context(...)``, if it is that.
+
+    Keyword arguments and the keys of a literal dict (the positional argument) count.
+    """
+    if not (
+        isinstance(receiver, CallExpr)
+        and isinstance(receiver.callee, MemberExpr)
+        and receiver.callee.name == "with_context"
+    ):
+        return []
+    found: list[ContextDefault] = []
+    arguments = zip(receiver.arg_names, receiver.args, receiver.arg_kinds, strict=True)
+    for name, value, kind in arguments:
+        if name is not None and name.startswith(DEFAULT_PREFIX):
+            found.append(ContextDefault(name, name.removeprefix(DEFAULT_PREFIX), value, value))
+        elif name is None and kind == ARG_POS and isinstance(value, DictExpr):
+            for key, item in value.items:
+                if isinstance(key, StrExpr) and key.value.startswith(DEFAULT_PREFIX):
+                    field = key.value.removeprefix(DEFAULT_PREFIX)
+                    found.append(ContextDefault(key.value, field, item, key))
+    return found
 
 
 def stored(info: FieldInfo) -> bool:

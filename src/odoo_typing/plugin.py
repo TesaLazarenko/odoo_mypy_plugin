@@ -164,7 +164,7 @@ from odoo_typing.references import (
 )
 from odoo_typing.registry import MissingParent, Registry
 from odoo_typing.scanner import LOG_ACCESS_USERS, POSITIONAL_PARAMETERS, Contribution, FieldInfo
-from odoo_typing.vals import ValsChecker, ValsTarget, stored, vals_dicts
+from odoo_typing.vals import ValsChecker, ValsTarget, context_defaults, stored, vals_dicts
 from odoo_typing.xmlids import ODOO_XMLID, ODOO_XMLID_DEPENDS, automatic_model
 
 __all__ = ["ODOO_MODEL", "ODOO_MODEL_DEPENDS", "OdooPlugin", "plugin"]
@@ -401,6 +401,18 @@ class OdooPlugin(Plugin):
             checker = self._vals_checker(ctx.api, addon_name)
             for vals in vals_dicts(argument, many=method == "create"):
                 checker.check(target, vals)
+        call = ctx.context
+        if (
+            method == "create"
+            and addon_name is not None
+            and model is not None
+            and isinstance(call, CallExpr)
+            and isinstance(call.callee, MemberExpr)
+        ):
+            defaults = context_defaults(call.callee.expr)  # x.with_context(default_y=...).create
+            if defaults:
+                target = self._vals_target(model, addon_name)
+                self._vals_checker(ctx.api, addon_name).check_defaults(target, defaults)
         if is_self_method(method):
             return keep_receiver(base_model, ctx)
         return ctx.default_return_type

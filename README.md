@@ -70,7 +70,11 @@ vals inside x2many commands (`Command.create({...})`, `Command.update(id, {...})
 (`record.partner_id = "x"`): its sub-codes `odoo-vals-key`
 (a key that is not a field of the model, as the addon sees it: fields of later addons
 and of `_inherits` parents included) and `odoo-vals-type` (a value the field does not
-take). Only dict displays written in the call are checked (for `create`, also a list of
+take). The `default_<field>` keys of `records.with_context(...)` chained straight into
+`.create(...)` are checked the same way (keywords, or a literal dict); a key of a
+field the model lacks is reported only when it is a near miss of one (a typo), since
+Odoo ignores it and code passes defaults for fields of optional addons. Only dict
+displays written in the call are checked (for `create`, also a list of
 them); a `vals` variable, `dict(...)`, `**spread` and computed keys are not. In
 abstract models (mixins, `base`) keys are not checked, since their methods run on models
 with more fields. What each field class takes follows Odoo's `convert_to_cache`
@@ -471,11 +475,11 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
 
 ## Not yet supported
 
-- `vals` built in a variable or with `dict(...)`, and `default_<field>` keys of
-  `with_context`; a key guarded by `if "x" in self._fields:` is still reported
-- relational fields declared only with `related=` (no comodel argument)
-- domains, `@api.depends` paths
-- fields a delegated parent itself delegates (`_inherits` of an `_inherits` parent)
+- `vals` built in a variable or with `dict(...)`, and the `default_<field>` keys of a
+  context that is not passed straight to `.create(...)`; a key guarded by
+  `if "x" in self._fields:` is still reported
+- domains built in a variable or with `expression.AND(...)`, and string arguments of
+  `mapped()` / `filtered()` that are not literals
 - an unannotated override of a `-> Self` method (`create`, `copy`, `search`, `sudo`...)
   is typed `(self: Self, ...) -> Self`, so `super().create(...)` keeps the model type; in
   its body, returning a concrete class (`return self.env["account.account"].union(...)`)
