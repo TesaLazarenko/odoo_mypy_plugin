@@ -7,7 +7,7 @@ from pathlib import Path
 from pytest_mock import MockerFixture
 from test_fingerprint import MODEL, _odoo, _touch
 
-from odoo_typing.records import RecordStore, index_key, load_index
+from odoo_typing.records import RecordStore, index_key, load_index, package_source_hash
 from odoo_typing.registry import Registry
 from odoo_typing.registry import scans as registry_scans
 from odoo_typing.scan_store import ScanStore, decode, encode
@@ -68,3 +68,18 @@ def test_registry_reads_unchanged_scans_back_and_rescans_edited_addon(
 
     assert [call.args[0].name for call in scan.call_args_list] == ["my_mod"]
     assert third.view_class("x.my_mod2", "my_mod") is not None
+
+
+def test_package_source_hash_covers_subpackages(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    (package / "sub").mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "sub" / "module.py").write_text("A = 1\n")
+    before = package_source_hash(package)
+
+    (package / "sub" / "module.py").write_text("A = 2\n")
+    changed = package_source_hash(package)
+    (package / "sub" / "module.py").rename(package / "module.py")
+    moved = package_source_hash(package)
+
+    assert len({before, changed, moved}) == 3

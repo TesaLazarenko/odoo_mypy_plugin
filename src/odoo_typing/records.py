@@ -28,6 +28,7 @@ __all__ = [
     "index_key",
     "is_str_list",
     "load_index",
+    "package_source_hash",
     "parse_stamps",
     "source_digest",
 ]
@@ -83,10 +84,21 @@ class RecordStore:
 
 @cache
 def source_digest() -> str:
-    """Digest of the plugin's own source: a new plugin version invalidates everything."""
-    package = Path(__file__).parent
-    data = b"".join(path.read_bytes() for path in sorted(package.glob("*.py")))
-    return digest([FORMAT, hashlib.sha256(data).hexdigest()])
+    """Digest of the plugin's own source: a new plugin version invalidates everything.
+
+    Every module of the package counts, in its subpackages too (``hooks``, ``registry``,
+    ``scanner``), each with its path, so moving code between modules counts as well.
+    """
+    return digest([FORMAT, package_source_hash(Path(__file__).parent)])
+
+
+def package_source_hash(package: Path) -> str:
+    """SHA-256 of a package's Python files and their paths inside it."""
+    hashed = hashlib.sha256()
+    for path in sorted(package.rglob("*.py")):
+        hashed.update(path.relative_to(package).as_posix().encode() + b"\0")
+        hashed.update(path.read_bytes() + b"\0")
+    return hashed.hexdigest()
 
 
 def digest(value: object) -> str:
