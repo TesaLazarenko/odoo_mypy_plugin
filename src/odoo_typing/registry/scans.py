@@ -1,0 +1,283 @@
+"""What the registry reads from disk: the addon index, each addon's scan, its XML ids.
+
+The bottom layer of :class:`odoo_typing.registry.Registry`. The manifests are read on the
+first question, and an addon's files are scanned only when a question needs the addon.
+"""
+
+from __future__ import annotations
+
+import ast
+import sys
+from collections.abc import Callable, Mapping
+from functools import cached_property, partial
+from pathlib import Path
+from typing import Protocol
+
+from odoo_typing.addons import Addon, AddonIndex, LoadKey
+from odoo_typing.config import Settings
+from odoo_typing.guards import Guard, is_guarded, model_guards
+from odoo_typing.scanner import (
+    AddonScan,
+    Contribution,
+    ModuleScan,
+    SourceError,
+    parse_source,
+    referenced_models,
+    scan_addon,
+)
+from odoo_typing.stamps import Stamps, read_index, scan_stamps, unchanged
+
+__all__ = ["IndexLoader", "ScanCache", "ScannedAddons"]
+
+
+class ScanCache(Protocol):
+    """Addon scans kept between runs (see :class:`odoo_typing.scan_store.ScanStore`)."""
+
+    def load(self, addon_name: str, load_key: LoadKey) -> tuple[AddonScan, Stamps] | None:
+        """The stored scan and its stamps, if none of its files changed."""
+
+    def save(self, addon_name: str, load_key: LoadKey, scan: AddonScan, stamps: Stamps) -> None:
+        """Keep a scan with the stamps of the files it read."""
+
+
+IndexLoader = Callable[[], tuple[AddonIndex, Stamps]]
+
+
+class ScannedAddons:
+    """The addons on the addons paths and the scans of their files, read on demand."""
+
+    def __init__(
+        self, settings: Settings, index: IndexLoader | None = None, scans: ScanCache | None = None
+    ) -> None:
+        """Create a registry for the configured Odoo installation.
+
+        Nothing is read from disk yet: a fully cached mypy run never asks a question.
+
+        Args:
+            settings: Plugin settings.
+            index: Returns the addon index and the stamps of what it was built from
+                (default: :func:`odoo_typing.stamps.read_index`).
+            scans: Addon scans kept between runs (:mod:`odoo_typing.scan_store`); every
+                addon is scanned again without it.
+        """
+        self._settings = settings
+        self._scans = scans
+        self._index_loader = index or partial(
+            read_index, settings.odoo_path, settings.addons_paths, settings.custom_prefix
+        )
+        self._index_stamps: Stamps = {}
+        self._scan_results: dict[str, tuple[AddonScan, Stamps]] = {}
+        self._by_module: dict[str, ModuleScan] = {}
+        self._by_path: dict[Path, ModuleScan] = {}
+        self._by_class: dict[str, Contribution] = {}
+        self._by_model: dict[str, dict[str, list[Contribution]]] = {}
+        self._guards: dict[Path, tuple[Guard, ...]] = {}
+        self._xml_ids: dict[str, Mapping[str, str]] = {}
+        self._misnamed: set[str] = set()  # addons warned about by misnamed()
+
+    @cached_property
+    def addons(self) -> AddonIndex:
+        """Index of all addons, built (manifests read) on first use."""
+        index, self._index_stamps = self._index_loader()
+        return index
+
+    def index_stamps(self) -> Stamps:
+        """The stamps of the files the addon index describes (roots, entries, manifests)."""
+        self.addons  # noqa: B018 - built on first use
+        return self._index_stamps
+
+    def scan_result(self, addon_name: str) -> tuple[AddonScan, Stamps]:
+        """Scan an addon (once); return the scan and the stamps of the files it read."""
+        self._models_of(addon_name)
+        return self._scan_results[addon_name]
+
+    def inputs_changed(self) -> bool:
+        """Whether a file the registry has read so far changed on disk since.
+
+        A long-lived plugin (the mypy daemon) must then start over with a new registry:
+        any answer may depend on the changed file.
+        """
+        if "addons" not in self.__dict__:
+            return False  # nothing read yet
+        if not unchanged(self._index_stamps):
+            return True
+        return not all(unchanged(stamps) for _, stamps in self._scan_results.values())
+
+    def _models_of(self, addon_name: str) -> dict[str, list[Contribution]]:
+        """Scan an addon once; return its contributions by model name."""
+        if addon_name not in self._by_model:
+            models = self._by_model[addon_name] = {}
+            addon = self.addons.addons[addon_name]
+            load_key = self.addons.load_key(addon_name)
+            stored = self._scans.load(addon_name, load_key) if self._scans else None
+            if stored is None:
+                result = scan_addon(addon, load_key)
+                stored = (result, scan_stamps(addon, result))
+                if self._scans is not None:
+                    self._scans.save(addon_name, load_key, *stored)
+            result = stored[0]
+            self._scan_results[addon_name] = stored
+            for error in result.errors:
+                _warn_unparsable(error)
+            for scan in result.modules:
+                self._index(scan, models)
+        return self._by_model[addon_name]
+
+    def _index(self, scan: ModuleScan, models: dict[str, list[Contribution]]) -> None:
+        self._by_module[scan.module] = scan
+        self._by_path[scan.path] = scan
+        for contribution in scan.contributions:
+            self._by_class[contribution.fullname] = contribution
+            models.setdefault(contribution.model, []).append(contribution)
+
+    def module_scan(self, module: str) -> ModuleScan | None:
+        """Return the scan of a Python module, if it belongs to a known addon.
+
+        Either spelling of an ``addons_path`` addon's package is accepted (see
+        :meth:`AddonIndex.resolve_module`); the scan is named in the configured one.
+        """
+        found = self.addons.resolve_module(module)
+        if found is None:
+            return None
+        self._models_of(found[0].name)
+        return self._by_module.get(found[1])
+
+    def contribution(self, class_fullname: str) -> Contribution | None:
+        """Return the model contribution defined by a class, if any (either spelling)."""
+        found = self.addons.resolve_module(class_fullname)
+        if found is None:
+            return None
+        self._models_of(found[0].name)
+        return self._by_class.get(found[1])
+
+    def misnamed(self, module: str) -> bool:
+        """Whether mypy names an addon's module in the spelling this configuration does not use.
+
+        That happens when mypy is given an addon's real directory although the overlay
+        root names it ``odoo.addons.<name>`` (or the reverse): the file is then likely
+        analyzed under both names. Warns once per addon.
+        """
+        found = self.addons.resolve_module(module)
+        if found is None or found[1] == module:
+            return False
+        addon = found[0]
+        if addon.name not in self._misnamed:
+            self._misnamed.add(addon.name)
+            _warn_misnamed(module, addon)
+        return True
+
+    def referenced_models(self, path: str | Path) -> frozenset[str]:
+        """Model names a source file refers to, also for files the addon does not import.
+
+        A file the scanner reached is answered from its scan, whatever path spelling
+        mypy uses for it (relative, or through a symlink). Other files, such as tests
+        that ``__init__.py`` does not import, are parsed once here.
+        """
+        addon = self.addons.addon_for_path(path)
+        if addon is not None:
+            self._models_of(addon.name)
+        resolved = self.addons.real_path(path)
+        scan = self._by_path.get(resolved)
+        if scan is not None:
+            return scan.referenced_models
+        try:
+            tree = parse_source(resolved)
+        except SourceError:
+            return frozenset()  # mypy reports unparsable files it checks itself
+        return frozenset(referenced_models(tree))
+
+    def guarded(self, path: str | Path, model: str, line: int) -> bool:
+        """Whether a line of a source file runs only when a model is installed.
+
+        See :mod:`odoo_typing.guards`; a file the addon scan did not reach is parsed
+        once here.
+        """
+        addon = self.addons.addon_for_path(path)
+        if addon is not None:
+            self._models_of(addon.name)  # scans the addon
+        resolved = self.addons.real_path(path)
+        scan = self._by_path.get(resolved)
+        if scan is not None:
+            guards = scan.guards
+        elif resolved in self._guards:
+            guards = self._guards[resolved]
+        else:
+            try:
+                tree = parse_source(resolved)
+            except SourceError:
+                tree = None
+            guards = self._guards[resolved] = (
+                model_guards(ast.walk(tree)) if tree is not None else ()
+            )
+        return is_guarded(guards, model, line)
+
+    def addon_name_for_path(self, path: str | Path) -> str | None:
+        """Return the name of the addon a source file belongs to."""
+        addon = self.addons.addon_for_path(path)
+        return addon.name if addon else None
+
+    def _scans_of(self, addon_name: str) -> list[ModuleScan]:
+        self._models_of(addon_name)
+        prefix = self.addons.addons[addon_name].module_prefix
+        return [
+            scan
+            for name, scan in self._by_module.items()
+            if name == prefix or name.startswith(prefix + ".")
+        ]
+
+    def _module_addon(self, module: str) -> str:
+        addon = self.addons.addon_for_module(module)
+        return addon.name if addon else ""
+
+    def _module_path(self, module: str) -> Path | None:
+        scan = self.module_scan(module)
+        return scan.path if scan else None
+
+    def xml_ids(self, addon_name: str) -> Mapping[str, str]:
+        """The XML ids the data files of an addon's closure create, with their models.
+
+        A later addon of the load order that writes a record of the same id keeps the
+        model of the first (an override changes the record, not its model).
+        """
+        if addon_name not in self._xml_ids:
+            found: dict[str, str] = {}
+            for name in sorted(self.addons.closure(addon_name), key=self.addons.load_key):
+                scan, _ = self.scan_result(name)
+                for item in scan.data.xml_ids:
+                    found.setdefault(item.name, item.model)
+            self._xml_ids[addon_name] = found
+        return self._xml_ids[addon_name]
+
+    def xml_id_outside(self, xml_id: str, addon_name: str) -> str | None:
+        """The addon outside an addon's closure whose data files create an XML id.
+
+        Only the addon the id is named after is read (``sale.x`` is ``sale``'s).
+        """
+        module = xml_id.partition(".")[0]
+        if module not in self.addons.addons or module in self.addons.closure(addon_name):
+            return None
+        return module if xml_id in self.xml_ids(module) else None
+
+
+def _warn_unparsable(error: SourceError) -> None:
+    """Tell the user why the models of a file are missing (once per file and run)."""
+    print(
+        f"odoo-typing: warning: cannot parse {error.path}: {error.reason}; "
+        "the Odoo models it defines are ignored",
+        file=sys.stderr,
+    )
+
+
+def _warn_misnamed(module: str, addon: Addon) -> None:
+    """Tell the user that mypy uses another module name than the plugin for an addon."""
+    prefix = addon.module_prefix
+    if prefix.startswith("odoo.addons."):
+        hint = f'check the addon as "{prefix}" (mypy -p {prefix}, or its path under overlay_root)'
+    else:
+        hint = 'set overlay_root (see odoo-typing-root) to use "odoo.addons.<name>" names'
+    print(
+        f'odoo-typing: warning: mypy names module "{module}" of addon "{addon.name}", '
+        f'but this configuration names the addon "{prefix}"; its files are probably '
+        f"analyzed twice, and the plugin adds no dependencies for them: {hint}",
+        file=sys.stderr,
+    )

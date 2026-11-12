@@ -7,9 +7,9 @@ from pathlib import Path
 from pytest_mock import MockerFixture
 from test_fingerprint import MODEL, _odoo, _touch
 
-from odoo_typing import registry as registry_module
 from odoo_typing.records import RecordStore, index_key, load_index
 from odoo_typing.registry import Registry
+from odoo_typing.registry import scans as registry_scans
 from odoo_typing.scan_store import ScanStore, decode, encode
 from odoo_typing.scanner import AddonScan, scan_addon
 
@@ -56,7 +56,7 @@ def test_registry_reads_unchanged_scans_back_and_rescans_edited_addon(
     store = RecordStore(tmp_path / "cache")
     first = _registry(settings, store)
     expected = first.fields("x.my_mod", "my_mod")
-    scan = mocker.spy(registry_module, "scan_addon")
+    scan = mocker.spy(registry_scans, "scan_addon")
 
     second = _registry(settings, store)
     assert second.fields("x.my_mod", "my_mod") == expected

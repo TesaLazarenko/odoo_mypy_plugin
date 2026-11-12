@@ -10,7 +10,7 @@ from conftest import OdooNames, RunMypy
 from pytest_mock import MockerFixture
 from test_harness import ENV_LOOKUP
 
-from odoo_typing import registry as registry_module
+from odoo_typing.registry import scans as registry_scans
 
 
 def test_env_getitem_known_model_reveals_model_class(run_mypy: RunMypy, names: OdooNames) -> None:
@@ -349,7 +349,7 @@ def test_cold_run_scans_only_addons_of_loaded_files(
 ) -> None:
     # Odoo core files (odoo/http.py, odoo/tests/common.py...) use env[...] too; they
     # must not make the plugin scan every installed addon.
-    scan = mocker.spy(registry_module, "scan_addon")
+    scan = mocker.spy(registry_scans, "scan_addon")
     # Odoo 20's odoo/tests/common.py imports odoo.addons.bus.tools: bus (and web, its
     # dependency) are addons of loaded files there.
     core = {"bus", "web"} if odoo_version >= 20 else set()
