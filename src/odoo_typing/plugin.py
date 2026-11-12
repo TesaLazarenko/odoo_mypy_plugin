@@ -164,6 +164,7 @@ from odoo_typing.references import (
 )
 from odoo_typing.registry import MissingParent, Registry
 from odoo_typing.scanner import LOG_ACCESS_USERS, POSITIONAL_PARAMETERS, Contribution, FieldInfo
+from odoo_typing.stamps import stamp
 from odoo_typing.vals import ValsChecker, ValsTarget, context_defaults, stored, vals_dicts
 from odoo_typing.xmlids import ODOO_XMLID, ODOO_XMLID_DEPENDS, automatic_model
 
@@ -205,6 +206,7 @@ class OdooPlugin(Plugin):
         if warning := _package_bases_warning(self._profile, self._settings, options):
             print(warning, file=sys.stderr)
         self._store = RecordStore.for_cache_dir(options.cache_dir)
+        self._config_stamp = stamp(options.config_file) if options.config_file else None
         self._inputs_checked = False
         self._request_typed = False
         self._new_registry()
@@ -239,8 +241,35 @@ class OdooPlugin(Plugin):
         if self._inputs_checked:
             return
         self._inputs_checked = True
-        if self.registry.inputs_changed():
+        if self._config_changed() or self.registry.inputs_changed():
             self._new_registry()
+
+    def _config_changed(self) -> bool:
+        """Reload the settings if mypy's config file changed (``dmypy`` keeps the plugin).
+
+        dmypy restarts itself when mypy's own options change, not ``[tool.odoo_typing]``.
+        A config that is now invalid is reported and the previous settings are kept.
+        """
+        config_file = self.options.config_file
+        current = stamp(config_file) if config_file else None
+        if current == self._config_stamp:
+            return False
+        self._config_stamp = current
+        try:
+            settings = load_settings(config_file, self.options.mypy_path)
+        except ConfigError as exc:
+            print(f"odoo-typing: error: {exc} (keeping the previous settings)", file=sys.stderr)
+            return False
+        profile = profile_for(settings.odoo_version) if settings.odoo_version else None
+        if profile is None:
+            print(
+                "odoo-typing: error: unsupported odoo_version (keeping the previous settings)",
+                file=sys.stderr,
+            )
+            return False
+        self._settings, self._profile = settings, profile
+        self._request_typed = False
+        return True
 
     # -- dependencies ----------------------------------------------------------------------
 

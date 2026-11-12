@@ -392,10 +392,12 @@ invalidates the whole cache.
 
 **dmypy:** the daemon keeps one plugin instance. Before the files of each update are
 processed, the plugin compares the stamps of everything its registry has read (addons
-roots, manifests, scanned files) with the disk and starts over with a fresh registry if
-any changed. The daemon only rechecks files whose source changed (and their
-dependents), and the plugin reads its settings once: after editing only a manifest, or
-the `[tool.odoo_typing]`/`[odoo_typing]` settings, run `dmypy restart`.
+roots, manifests, scanned and data files, and mypy's config file) with the disk and
+starts over with a fresh registry, and the settings read again, if any changed (an
+invalid config is reported and the previous settings kept). The daemon only rechecks
+the code that changed (and its dependents), so the new registry or settings show in
+what is checked again: after editing only a manifest or the `[tool.odoo_typing]` /
+`[odoo_typing]` settings, run `dmypy restart` to see their effect everywhere.
 
 ## Verification
 

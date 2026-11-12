@@ -133,3 +133,33 @@ def test_dmypy_new_model_extension_and_moved_module_follow_edits(
             'user.py:16: note: Revealed type is "int"',
         ],
     )
+
+
+KIND = """
+from odoo import fields
+
+
+class Kind(models.Model):
+    _name = "x.kind"
+
+    kind = fields.Selection([("a", "A"), ("b", "B")])
+
+    def show(self) -> None:
+        reveal_type(self.kind)
+"""
+
+
+def test_dmypy_plugin_settings_follow_config_edits(daemon: Daemon, tmp_path: Path) -> None:
+    root = tmp_path / "addons"
+    config = tmp_path / "pyproject.toml"
+    _append(root / "my_mod/user.py", KIND)
+    first = daemon.check()
+    config.write_text(config.read_text() + "literal_selection = true\n")
+    # dmypy rechecks only what changed: add a class.
+    _append(root / "my_mod/user.py", KIND.replace("Kind(", "Kind2(").replace("x.kind", "x.kind2"))
+    second = daemon.check()
+
+    assert first[1:] == ['user.py:19: note: Revealed type is "str | Literal[False]"']
+    assert second[-1] == (
+        "user.py:30: note: Revealed type is \"Literal['a'] | Literal['b'] | Literal[False]\""
+    )
