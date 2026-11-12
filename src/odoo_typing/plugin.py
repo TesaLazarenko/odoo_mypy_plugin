@@ -100,8 +100,11 @@ from mypy.types import (
     LiteralType,
     NoneType,
     ProperType,
+    TupleType,
     Type,
+    TypedDictType,
     TypeOfAny,
+    UnionType,
     get_proper_type,
 )
 
@@ -152,6 +155,7 @@ from odoo_typing.references import (
     ODOO_FIELD_REF,
     RECORD_PATH_METHODS,
     decorator_problem,
+    did_you_mean,
     field_kind,
     missing_method_message,
     record_paths,
@@ -370,6 +374,8 @@ class OdooPlugin(Plugin):
             return partial(self._check_vals, name)
         if name in DOMAIN_METHODS:
             return partial(self._check_domain, name)
+        if name == "read":
+            return partial(self._read_result, name)
         if name in RECORD_PATH_METHODS:
             return partial(self._record_path, name)
         if is_self_method(fullname):
@@ -409,9 +415,48 @@ class OdooPlugin(Plugin):
             and self.registry.concrete(model, addon_name)
         ):
             self._check_domain_expression(domain, model, addon_name, ctx.api)
+        if method == "search_read":
+            return self._read_result(method, ctx)
         if is_self_method(method):
             return keep_receiver(self._profile.base_model, ctx)
         return ctx.default_return_type
+
+    def _read_result(self, method: str, ctx: MethodContext) -> Type:
+        """``read(["a", "b"])`` / ``search_read(fields=[...])``: a list of TypedDicts.
+
+        Each dict has ``id`` and the literal field names, typed as ``convert_to_read``
+        returns them (:func:`_read_value`); a name that is not a field is reported
+        (Odoo raises ``ValueError``) on a concrete model.
+        """
+        receiver = get_proper_type(ctx.type)
+        names = _literal_strings_argument(ctx, "fields", 0 if method == "read" else 1)
+        ids_only = _ids_only(_argument(ctx, "load", 1 if method == "read" else -1))
+        if not isinstance(receiver, Instance) or names is None or ids_only is None:
+            return ctx.default_return_type
+        model = self._model_of(receiver.type)
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if model is None or addon_name is None:
+            return ctx.default_return_type
+        fields = self.registry.fields(model, addon_name)
+        checker = _checker(ctx.api)
+        items: dict[str, Type] = {"id": checker.named_type("builtins.int")}
+        for node in names:
+            info = fields.get(node.value)
+            if info is None:
+                if self.registry.concrete(model, addon_name):
+                    message = f'Odoo model "{model}" has no field "{node.value}" in {method}()'
+                    message += did_you_mean(node.value, fields)
+                    ctx.api.fail(message, node, code=ODOO_FIELD_REF)
+                return ctx.default_return_type
+            value = _read_value(info, ids_only, checker)
+            items[node.value] = (
+                value
+                or self._path_type(receiver, node.value, ctx)
+                or AnyType(TypeOfAny.special_form)
+            )
+        fallback = checker.named_type("typing._TypedDict")
+        row = TypedDictType(items, set(items), set(), fallback)
+        return checker.named_generic_type("builtins.list", [row])
 
     def _record_path(self, method: str, ctx: MethodContext) -> Type:
         """``mapped("a.b")``, ``filtered("a.b")``, ``sorted("a")``, ``grouped("a")``.
@@ -429,6 +474,8 @@ class OdooPlugin(Plugin):
         argument = ctx.args[0][0] if ctx.args and ctx.args[0] else None
         if not isinstance(receiver, Instance) or not isinstance(argument, StrExpr):
             return result
+        if self._model_of(receiver.type) is None:
+            return result  # a ``sorted`` / ``mapped`` method of another class
         if not argument.value or not self._check_record_paths(method, receiver, argument, ctx):
             return result
         if method not in {"mapped", "grouped"}:
@@ -1386,6 +1433,67 @@ def _field_arguments(call: CallExpr, field_class: str) -> list[tuple[str, Expres
                 found.append((positional[position], value))
             position += 1
     return found
+
+
+def _argument(ctx: MethodContext, name: str, position: int) -> Expression | None:
+    """The expression passed for a parameter, by name, else by position (``-1``: none)."""
+    if name in ctx.callee_arg_names:
+        index = ctx.callee_arg_names.index(name)
+    elif position >= 0:
+        index = position
+    else:
+        return None
+    return ctx.args[index][0] if len(ctx.args) > index and ctx.args[index] else None
+
+
+def _ids_only(load: Expression | None) -> bool | None:
+    """Whether ``read(load=...)`` gives ids only; ``None`` if ``load`` is not literal.
+
+    Odoo reads display names only for ``load="_classic_read"`` (the default).
+    """
+    if load is None:
+        return False
+    if isinstance(load, StrExpr):
+        return load.value != "_classic_read"
+    if isinstance(load, NameExpr) and load.name in {"None", "False"}:
+        return True
+    return None
+
+
+def _literal_strings_argument(ctx: MethodContext, name: str, position: int) -> list[StrExpr] | None:
+    """A literal list (or tuple) of strings passed for a parameter, if one is."""
+    value = _argument(ctx, name, position)
+    if not isinstance(value, (ListExpr, TupleExpr)) or not value.items:
+        return None
+    items = [item for item in value.items if isinstance(item, StrExpr)]
+    return items if len(items) == len(value.items) else None
+
+
+def _read_value(info: FieldInfo, ids_only: bool, checker: TypeChecker) -> Type | None:
+    """The type ``read()`` gives a field's value, if it differs from reading the field.
+
+    ``Many2one`` is ``(id, display_name)`` (an id with ``load=None``), x2many fields a list
+    of ids, ``Reference`` a ``"model,id"`` string; ``Json`` / ``Properties`` / custom
+    classes are ``Any``; ``None`` means the type of ``record.field``.
+    """
+    false = LiteralType(False, checker.named_type("builtins.bool"))
+    integer = checker.named_type("builtins.int")
+    if info.field_type == "Many2one":
+        if ids_only:
+            return UnionType([integer, false])  # simplifying would absorb False in int
+        pair = TupleType(
+            [integer, checker.named_type("builtins.str")], checker.named_type("builtins.tuple")
+        )
+        return make_simplified_union([pair, false])
+    if info.field_type in {"One2many", "Many2many"}:
+        return checker.named_generic_type("builtins.list", [integer])
+    if info.field_type == "Reference":
+        return make_simplified_union([checker.named_type("builtins.str"), false])
+    if info.field_type in {"Json", "Properties", "PropertiesDefinition"}:
+        return AnyType(TypeOfAny.special_form)
+    if info.field_type not in KNOWN_CLASSES:
+        return AnyType(TypeOfAny.special_form)
+    return None
 
 
 def _comodel_expression(ctx: FunctionContext) -> StrExpr | None:

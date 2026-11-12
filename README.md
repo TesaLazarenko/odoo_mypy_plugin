@@ -59,6 +59,10 @@ comodel of the path's last field. The string argument of `mapped("a.b")`,
 order such as `"name desc, id"`); `mapped("partner_id.name")` is then
 `list[str | Literal[False]]`, `mapped("line_ids")` the comodel's records, and
 `grouped("partner_id")` a `dict` from the field's values to records.
+`read(["name", "partner_id"])` and `search_read(domain, ["name"])` with a literal list
+return a list of `TypedDict`s with `id` and those fields, typed as `read()` gives them
+(`partner_id` is `tuple[int, str] | Literal[False]`, x2many fields `list[int]`); a
+name that is not a field is an `odoo-field-ref` error.
 
 `odoo-vals` covers the `vals` of `create()`, `write()` and `copy(default=...)`, the
 vals inside x2many commands (`Command.create({...})`, `Command.update(id, {...})`,

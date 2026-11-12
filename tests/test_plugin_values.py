@@ -84,3 +84,47 @@ def test_literal_selection_reads_keys_of_view(run_mypy: RunMypy) -> None:
         "14: note: Revealed type is \"Literal['draft'] | Literal['done'] | Literal['cancel'] | "
         'Literal[False]"'
     )
+
+
+READ = """
+from odoo import fields, models
+
+class Line(models.Model):
+    _inherit = "t.line"
+
+    order_id = fields.Many2one("t.order")
+    tag_ids = fields.Many2many("t.order")
+    count = fields.Integer()
+
+    def check(self) -> None:
+        rows = self.read(["label", "order_id", "tag_ids", "count"])
+        reveal_type(rows[0])
+        reveal_type(self.read(["order_id"], load="")[0]["order_id"])
+        reveal_type(self.search_read([("label", "!=", False)], ["count"])[0]["count"])
+        self.read(["lable"])
+        reveal_type(self.read())
+"""
+
+
+def test_read_returns_typed_dicts_of_literal_fields(run_mypy: RunMypy) -> None:
+    result = run_mypy(
+        {
+            "t_base": {"models.py": T_BASE},
+            "t_use": {"depends": ["t_base"], "models.py": READ},
+        },
+        check=["t_use"],
+    )
+    messages = result.messages("t_use/models.py")
+
+    assert messages[0] == (
+        "13: note: Revealed type is \"TypedDict({'id': int, 'label': str | Literal[False], "
+        "'order_id': tuple[int, str] | Literal[False], 'tag_ids': list[int], 'count': int})\""
+    )
+    assert messages[1:3] == [
+        '14: note: Revealed type is "int"',  # int | Literal[False]: False is an int
+        '15: note: Revealed type is "int"',
+    ]
+    assert messages[3].split(";")[0] == (
+        '16: error: Odoo model "t.line" has no field "lable" in read()'
+    )
+    assert messages[4] == '17: note: Revealed type is "list[dict[str, Any]]"'

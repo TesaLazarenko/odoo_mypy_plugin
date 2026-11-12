@@ -662,7 +662,18 @@
 - **Наскрізні вимоги.** XML-файли потребують stat-штампів у fingerprint і в
   `inputs_changed`.
 
-### 4.12 Результати читання
+### 4.12 Результати читання — ✅ зроблено
+- **Зроблено.** `read(["a", ...])` і `search_read(..., fields=[...])` з літеральним
+  списком назв повертають `list[TypedDict({"id": int, ...})]` за `convert_to_read`:
+  `Many2one` → `tuple[int, str] | Literal[False]` (з `load`, відмінним від
+  `"_classic_read"`, → id), x2many → `list[int]`, `Reference` → `str | Literal[False]`,
+  `Json`/`Properties`/власні класи → Any, решта — тип читання поля (`record.f`). Назва,
+  що не є полем, — `odoo-field-ref` на concrete-моделі (Odoo кидає `ValueError`), тоді
+  результат лишається `list[dict[str, Any]]`. Для `search_read` це в тому самому хуку,
+  що й перевірка домену (один хук на назву).
+- **Бенчмарк.** Нових помилок 9 / 2 / 0 (crm / sale / account), усі з групи
+  «значення полів `X | False`» (`row["date"].astimezone()`, `row["categ_id"][0]` без
+  перевірки на `False`). Час без змін.
 - **Як вирішити.** `read(fields=[...])` і `search_read(fields=[...])` з літералом
   повертають `list[TypedDict]`. Для Many2one значення має тип
   `tuple[int, str] | Literal[False]`, для x2many — `list[int]`.
