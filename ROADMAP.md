@@ -252,18 +252,28 @@
   `Registry.methods(model, addon)`.
   - Попутно виправлено: цикл `_inherits` (`a` ↔ `b`) валив mypy з `RecursionError` у
     `view_class`.
-- [~] **1c. Звірка з Odoo.** `tools/fields/dump_runtime.py` (інтерпретатором Odoo, без
+- [x] **1c. Звірка з Odoo.** ✅ `tools/fields/dump_runtime.py` (інтерпретатором Odoo, без
   бази) і `tools/fields/compare.py` порівнюють визначення класів. Odoo 18, 3749 класів,
   14864 поля: 18325 аргументів збігаються, розбіжностей 0; методи збігаються в усіх
   класах. Лишається 52 `selection` і 2 `selection_add`, які сканер не обчислює
   (константи з інших addons, comprehension-и, функції модуля), і поле
-  `IrRule.global` (`setattr` поза класом). Звірка злитого `env[model]._fields`:
-  `tools/fields/dump_registry.py` будує реєстр Odoo в пам'яті без бази (курсор-заглушка
-  без рядків, `Registry.load` у порядку Odoo, `setup_models`), `compare.py --merged`
-  порівнює його з `Registry.fields` плагіна (набір моделей і полів, клас, `comodel_name`,
-  `related`, `inverse_name`, `store`, `selection`; тести на синтетичному дампі). Не
-  зроблено: запуск дампу на справжньому Odoo — потребує дозволу власника запускати код
-  Odoo.
+  `IrRule.global` (`setattr` поза класом).
+  - **Злитий `env[model]._fields`:** `tools/fields/dump_registry.py` будує реєстр Odoo в
+    пам'яті без бази (курсор-заглушка без рядків, `Registry.load` у порядку Odoo,
+    `setup_models`), `compare.py --merged` порівнює з `Registry.fields`. Odoo 18, 9
+    верхніх addons (crm, sale_management, account, stock, purchase, mrp, project, hr,
+    website_sale), 2506 моделей, 42020 полів: 209410 аргументів збігаються, розбіжностей 0.
+  - **Виправлено за звіркою:** comodel реляційного поля лише з `related=` тепер в індексі,
+    і через ланцюжок таких полів (`account.move.line.company_currency_id`, 27 полів), не
+    залежно від порядку звертань; поля log access приходять від кожного неабстрактного
+    класу, що визначає модель у MRO (`res.device` з `_auto = False` бере їх від
+    `res.device.log`); порядок ключів `selection_add` — як `merge_sequences` в Odoo.
+  - **Свідомо інакше:** абстрактні моделі (mixin-и) мають у плагіна сервісні й делеговані
+    поля моделей, що їх використовують (3600 полів), — у Odoo їх немає в `_fields`
+    mixin-а. Не обчислює сканер: 90 `selection`, 1 `store` з `compute=lambda`,
+    `ir.rule.global`.
+  - **Бенчмарк** (crm / sale / account): помилки й час без змін, нових помилок лише від
+    плагіна 0.
 
 **Проблема.**
 - Зараз сканер збирає лише назви полів (`Contribution.fields`), comodel-і і делегування.

@@ -29,6 +29,7 @@ from odoo_typing.vals import stored
 
 DYNAMIC = "<dynamic>"
 EXAMPLES = int(os.environ.get("EXAMPLES", "3"))  # examples printed per kind
+WIDTH = 200  # longest example printed
 # Runtime argument name -> FieldInfo attribute.
 ATTRIBUTES = {"comodel_name": "comodel"}
 
@@ -68,7 +69,7 @@ class Report:
         """Count a finding of ``kind`` and keep ``text`` as an example."""
         self.counts[kind] += 1
         if len(self.examples[kind]) < EXAMPLES:
-            self.examples[kind].append(text)
+            self.examples[kind].append(text if len(text) <= WIDTH else text[: WIDTH - 3] + "...")
 
     def print(self) -> None:
         """Print the totals and the examples."""
@@ -125,7 +126,9 @@ def merged_value(info: FieldInfo, argument: str) -> object:
     if argument == "comodel_name":
         return DYNAMIC if "comodel" in info.dynamic else info.comodel
     if argument == "store":
-        return DYNAMIC if info.dynamic & {"store", "compute"} else stored(info)
+        if "store" in info.dynamic or (info.store is None and "compute" in info.dynamic):
+            return DYNAMIC
+        return stored(info)
     if argument == "selection":
         if "selection" in info.dynamic:
             return DYNAMIC
@@ -151,7 +154,9 @@ def compare_merged(dumps: Mapping[str, object], registry: Registry) -> Report:
                 report.note("model missing in plugin", f"{top}: {model}")
                 continue
             report.counts["models"] += 1
-            _compare_fields(report, f"{top}: {model}", fields, registry.fields(model, top))
+            abstract = not registry.concrete(model, top)
+            mine = registry.fields(model, top)
+            _compare_fields(report, f"{top}: {model}", fields, mine, abstract)
     return report
 
 
@@ -160,9 +165,12 @@ def _compare_fields(
     where: str,
     runtime: Mapping[str, Mapping[str, object]],
     mine: Mapping[str, FieldInfo],
+    abstract: bool,
 ) -> None:
+    # Deliberate: a mixin gets the service and delegated fields of the models using it.
+    only = "field only in plugin (abstract model)" if abstract else "field only in plugin"
     for name in sorted(set(mine) - set(runtime)):
-        report.note("field only in plugin", f"{where}.{name}")
+        report.note(only, f"{where}.{name}")
     for name, entry in sorted(runtime.items()):
         info = mine.get(name)
         if info is None:
@@ -181,6 +189,8 @@ def _compare_fields(
                 report.note(f"dynamic in plugin {argument}", f"{where}.{name}: {value!r}")
             elif own == value:
                 report.counts["arguments equal"] += 1
+            elif isinstance(own, list) and isinstance(value, list) and sorted(own) == sorted(value):
+                report.note(f"{argument} order differs", f"{where}.{name}")
             else:
                 report.note(f"{argument} differs", f"{where}.{name}: {own!r} != {value!r}")
 

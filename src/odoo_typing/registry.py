@@ -27,7 +27,7 @@ import os
 import re
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property, partial
 from pathlib import Path
 from typing import Protocol
@@ -43,6 +43,7 @@ from odoo_typing.model_fields import (
     merge_definitions,
     service_definitions,
 )
+from odoo_typing.references import RELATIONAL
 from odoo_typing.scanner import (
     AddonScan,
     Contribution,
@@ -166,6 +167,8 @@ class Registry:
         self._definition_index: dict[str, list[str]] | None = None
         self._misnamed: set[str] = set()  # addons warned about by misnamed()
         self._fields: dict[tuple[str, str], Mapping[str, FieldInfo]] = {}
+        self._unresolved_fields: dict[tuple[str, str], Mapping[str, FieldInfo]] = {}
+        self._related_comodels: dict[tuple[str, str, str], str | None] = {}
         self._methods: dict[tuple[str, str], frozenset[str]] = {}
 
     @cached_property
@@ -587,11 +590,13 @@ class Registry:
     def log_access(self, contribution: Contribution) -> bool:
         """Whether Odoo adds ``create_uid``/``create_date``/... to the model's class.
 
-        The most derived class of the same model that sets ``_log_access`` (or
-        ``_auto``) decides; ``_inherit`` parents are not followed, so a mixin itself
-        (an ``AbstractModel``, whose ``_auto`` is ``False``) gets the fields that every
-        model using it has. Default: on. Never for ``base``: its class is in the MRO of
-        every model, which would give the fields to models without them too.
+        For a concrete model, as Odoo: whether some class of its MRO that defines a
+        model (not abstract; also of an ``_inherit`` parent model) adds them, which it
+        does unless its body turns ``_log_access`` (or ``_auto``) off. For a mixin (an
+        ``AbstractModel``, whose ``_auto`` is ``False``) the most derived class of the
+        same model that sets ``_log_access`` decides, default on: the mixin itself gets
+        the fields that every model using it has. Never for ``base``: its class is in
+        the MRO of every model, which would give the fields to models without them too.
         """
         return _chain_log_access(self.linearization(contribution), contribution.model)
 
@@ -610,9 +615,45 @@ class Registry:
         """
         key = (model, addon_name)
         if key not in self._fields:
-            self._fields[key] = {}  # a model in a delegation cycle sees no fields there
-            self._fields[key] = self._compute_fields(model, addon_name)
+            fields = dict(self._merged_fields(model, addon_name))
+            for name, info in fields.items():
+                if _related_only(info):
+                    fields[name] = replace(info, comodel=self._comodel(model, name, addon_name))
+            self._fields[key] = fields
         return self._fields[key]
+
+    def _merged_fields(self, model: str, addon_name: str) -> Mapping[str, FieldInfo]:
+        """:meth:`fields` before the comodels of ``related=`` fields are known."""
+        key = (model, addon_name)
+        if key not in self._unresolved_fields:
+            self._unresolved_fields[key] = {}  # a model in a delegation cycle sees no fields there
+            self._unresolved_fields[key] = self._compute_fields(model, addon_name)
+        return self._unresolved_fields[key]
+
+    def _comodel(self, model: str, name: str, addon_name: str) -> str | None:
+        """The comodel of a field; of a relational ``related=`` field, its path's last field's.
+
+        As Odoo's ``_setup_related_full``; the steps of the path may be such fields too
+        (``company_id`` related to ``move_id.company_id``). Each field is resolved once,
+        whatever the order :meth:`fields` is called in; a path the scan cannot follow, or
+        one that leads back to the field, gives ``None``.
+        """
+        info = self._merged_fields(model, addon_name).get(name)
+        if info is None or "comodel" in info.dynamic:
+            return None
+        if not _related_only(info):
+            return info.comodel
+        key = (model, name, addon_name)
+        if key not in self._related_comodels:
+            self._related_comodels[key] = None  # a cycle of related fields
+            assert info.related is not None
+            current: str | None = model
+            for step in info.related.split("."):
+                if current is None:
+                    break
+                current = self._comodel(current, step, addon_name)
+            self._related_comodels[key] = current
+        return self._related_comodels[key]
 
     def concrete(self, model: str, addon_name: str) -> bool:
         """Whether the class that defines a model (as the addon sees it) is not abstract.
@@ -645,7 +686,7 @@ class Registry:
         inherited: dict[str, FieldInfo] = {}
         for delegate, field_name in delegation_fields(view.chain, fields).items():
             if delegate != model:
-                for name, info in self.fields(delegate, addon_name).items():
+                for name, info in self._merged_fields(delegate, addon_name).items():
                     inherited[name] = delegated_field(info, field_name)
         for name, info in inherited.items():
             fields.setdefault(name, info)
@@ -945,10 +986,29 @@ def _parents(contribution: Contribution) -> tuple[str, ...]:
     return (*contribution.parents, BASE)
 
 
+def _related_only(info: FieldInfo) -> bool:
+    """Whether a relational field takes its comodel from its ``related=`` path."""
+    return info.field_type in RELATIONAL and info.comodel is None and bool(info.related)
+
+
 def _chain_log_access(chain: Sequence[Contribution], model: str) -> bool:
-    """Whether a model's classes leave ``_log_access`` on (see :meth:`Registry.log_access`)."""
+    """Whether a model's classes leave ``_log_access`` on (see :meth:`Registry.log_access`).
+
+    As ``MetaModel`` does: each class that defines a model (of any model in the chain,
+    not abstract) adds the fields unless its body turns ``_log_access`` (or ``_auto``)
+    off, and the registry class gets those of every such class in its MRO. A model
+    that is abstract (or whose definition the scan cannot tell) gets the fields unless
+    its own most derived setting turns them off, like the models that use the mixin.
+    """
     if model == "base":
         return False
+    definition = next((item for item in chain if item.model == model and _defines(item)), None)
+    if definition is not None and definition.abstract is False:
+        return any(
+            item.log_access is not False
+            for item in chain
+            if _defines(item) and item.model != BASE and item.abstract is not True
+        )
     for item in chain:
         if item.model == model and item.log_access is not None:
             return item.log_access

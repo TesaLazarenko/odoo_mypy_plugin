@@ -7,6 +7,7 @@ from pathlib import Path
 from test_registry_mro import BASE, _cls, _files
 from test_registry_semantics import _build
 
+from odoo_typing.model_fields import merge_keys
 from odoo_typing.registry import Registry
 from odoo_typing.scanner import FieldInfo
 
@@ -25,7 +26,11 @@ CORE = (
             "    def _compute_x(self):\n        pass\n"
         ),
     )
-    + _cls("Mixin", "t.mixin", body="    mixed = fields.Integer()\n")
+    + _cls("Mixin", "t.mixin", body="    mixed = fields.Integer()\n").replace(
+        "models.Model", "models.AbstractModel"
+    )
+    + _cls("Log", "t.log", body="    seen = fields.Datetime()\n")
+    + _cls("View", "t.view", inherit=["t.log"], body="    _auto = False\n")
     + _cls("Uses", "t.uses", inherit=["t.mixin"], body="    _log_access = False\n")
 )
 EXTENSION = _cls(
@@ -78,11 +83,12 @@ def test_fields_selection_add_extends_per_view(tmp_path: Path) -> None:
 
     assert registry.fields("t.order", "t_core")["state"].selection == ("draft", "done")
     assert registry.fields("t.order", "t_ext")["state"].selection == ("draft", "done", "sent")
+    # As Odoo's merge_sequences: "done" in the selection_add anchors "cancel" before it.
     assert registry.fields("t.order", "t_later")["state"].selection == (
         "draft",
+        "cancel",
         "done",
         "sent",
-        "cancel",
     )
 
 
@@ -101,6 +107,26 @@ def test_fields_service_fields_follow_log_access(tmp_path: Path) -> None:
     assert list(order)[: len(SERVICE)] == list(SERVICE)
     assert order["create_uid"] == FieldInfo("create_uid", "Many2one", "res.users", readonly=True)
     assert list(uses) == ["id", "display_name", "mixed"]  # mixin fields, no log access
+
+
+def test_fields_log_access_fields_come_from_inherited_model_class(tmp_path: Path) -> None:
+    registry = _registry(tmp_path)
+
+    # Like res.device (_auto = False) _inherit res.device.log: the fields of t.log's class.
+    assert set(SERVICE) <= set(registry.fields("t.view", "t_core"))
+    assert "create_date" not in registry.fields("t.uses", "t_core")
+
+
+def test_merge_keys_follows_each_sequence_order() -> None:
+    assert merge_keys(["A", "B", "C"], ["Z"], ["Y", "C"], ["A", "X", "Y"]) == (
+        "A",
+        "B",
+        "X",
+        "Y",
+        "C",
+        "Z",
+    )
+    assert merge_keys(["a", "b"], ["c", "b", "d"]) == ("a", "c", "b", "d")
 
 
 def test_fields_unknown_model_is_empty_and_methods_are_merged(tmp_path: Path) -> None:

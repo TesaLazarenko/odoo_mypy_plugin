@@ -32,6 +32,7 @@ __all__ = [
     "delegated_field",
     "delegation_fields",
     "merge_definitions",
+    "merge_keys",
     "service_definitions",
 ]
 
@@ -113,6 +114,35 @@ def _compatible(field_type: str, base_type: str) -> bool:
     return field_type == base_type
 
 
+def merge_keys(*sequences: Sequence[str]) -> tuple[str, ...]:
+    """Odoo's ``merge_sequences``: the union, in the partial order each sequence gives.
+
+    A key that ``selection_add`` repeats is an anchor: the new keys before it go before
+    it (``[("a", ...), ("old", ...)]`` puts ``a`` right before ``old``), the others last.
+    """
+    before: dict[str, list[str]] = {}  # key -> the keys that precede it in a sequence
+    for sequence in sequences:
+        previous: str | None = None
+        for key in sequence:
+            before.setdefault(key, [])
+            if previous is not None:
+                before[key].append(previous)
+            previous = key
+    result: list[str] = []
+    visited: set[str] = set()
+
+    def visit(key: str) -> None:
+        if key not in visited:
+            visited.add(key)
+            for earlier in before[key]:
+                visit(earlier)
+            result.append(key)
+
+    for key in before:
+        visit(key)
+    return tuple(result)
+
+
 def _override(merged: FieldInfo | None, definition: FieldInfo) -> FieldInfo:
     """``merged`` with the arguments ``definition`` passes."""
     if merged is None:
@@ -129,7 +159,7 @@ def _override(merged: FieldInfo | None, definition: FieldInfo) -> FieldInfo:
         selection, method = definition.selection, definition.selection_method
         dynamic = (dynamic - {"selection"}) | (definition.dynamic & {"selection"})
     if definition.selection_add is not None and selection is not None:
-        selection += tuple(key for key in definition.selection_add if key not in selection)
+        selection = merge_keys(selection, definition.selection_add)
     elif definition.selection_add is not None or "selection_add" in definition.dynamic:
         selection = None  # added to a selection the scan does not know
         dynamic |= {"selection"}

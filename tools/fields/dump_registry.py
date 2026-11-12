@@ -37,14 +37,11 @@ DYNAMIC = "<dynamic>"
 DATABASE = "odoo_typing_stub"
 
 
-class StubCursor:
+class StubCursor(sql_db.BaseCursor):
     """A cursor of an empty database: every query succeeds and returns no rows."""
 
     rowcount = 0
     dbname = DATABASE
-
-    def __init__(self) -> None:
-        self.transaction: object = None
 
     def execute(self, *args: object, **kwargs: object) -> None:
         """Run nothing."""
