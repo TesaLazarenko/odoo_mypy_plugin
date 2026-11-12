@@ -32,6 +32,7 @@ from mypy.nodes import (
     MemberExpr,
     NameExpr,
     OperatorAssignmentStmt,
+    ReturnStmt,
     Statement,
     SymbolNode,
     TryStmt,
@@ -106,6 +107,12 @@ class LocalValues:
         collector = _Collector()
         collector.block(function.body)
         self._events = collector.events
+        self.returns: tuple[ReturnStmt, ...] = tuple(collector.returns)
+
+    def bindings(self, name: NameExpr) -> list[Expression | None]:
+        """The values of every binding of a variable in the function (``None``: unknown)."""
+        events = self._events.get(_key(name), [])
+        return [event.value for event in events if isinstance(event, _Binding)]
 
     def built(self, name: NameExpr, line: int) -> Built:
         """What the variable ``name`` holds before ``line``."""
@@ -138,6 +145,7 @@ class _Collector:
 
     def __init__(self) -> None:
         self.events: dict[_Key, list[_Binding | Change]] = {}
+        self.returns: list[ReturnStmt] = []
 
     def block(self, block: Block | None) -> None:
         if block is None:
@@ -152,6 +160,8 @@ class _Collector:
             self._operator_assignment(statement)
         elif isinstance(statement, ExpressionStmt) and isinstance(statement.expr, CallExpr):
             self._call(statement.expr)
+        elif isinstance(statement, ReturnStmt):
+            self.returns.append(statement)
         elif isinstance(statement, (ForStmt, WhileStmt)):
             if isinstance(statement, ForStmt):
                 self._bind_targets(statement.index, statement.line)

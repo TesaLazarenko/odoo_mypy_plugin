@@ -992,7 +992,17 @@
   перевіряти треба на власних addons.
 - **Критерій готовності.** Обидві форми не дають помилки, перевизначений прапорець дає.
 
-### 6.7 Override `-> Self`, що повертає інший клас
+### 6.7 Override `-> Self`, що повертає інший клас — ✅ зроблено
+- **Зроблено.** `methods.returns_own_records(func)`: кожен `return` синтаксично дає записи
+  receiver-а — `self`, `super().<self-метод>(...)`, `x.<self-метод>(...)` на таких
+  записах, `self.env[self._name]`, `a | b` / `&` / `-` / `+`, умовний вираз, змінна, усі
+  прив'язки якої такі (`LocalValues.bindings`), глибина 3; голий `return` — ні. Інакше
+  `annotate_self_overrides` лишає метод неанотованим.
+- **Бенчмарк.** account 7254 → 7253: зникла `return-value` у
+  `account_account.py:998`; решта ті самі, час у межах шуму. Плагін-лічильник на account
+  (з залежностями): анотовано 130 override, неанотованими лишились 2 —
+  `AccountAccount.create` (той випадок) і `AccountPaymentMethod.create` (`return
+  self._auto_link_payment_methods(...)`, результат helper-а).
 - **Проблема.** Залишок 4.4: `return self.env["own.model"]...` у неанотованому override
   методу з `SELF_METHODS` дає `return-value` ("expected Self"), 1 випадок на account.
   Варіант `Self | <tip>` відхилено в 4.4.

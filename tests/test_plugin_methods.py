@@ -495,3 +495,37 @@ def test_super_call_to_unannotated_override_keeps_self_type(
         '27: note: Revealed type is "Self"',
         f'31: note: Revealed type is "{count}"',  # not a -> Self method: unchanged
     ]
+
+
+# -- roadmap 6.7: a -> Self override that returns other records --------------------------------
+
+OTHER_RECORDS_OVERRIDE = """
+from odoo import api, fields, models
+
+class Thing(models.Model):
+    _name = "t.thing"
+
+    size = fields.Integer()
+
+    def copy(self, default=None):
+        if default:
+            return self.env["t.thing"].browse(1)
+        return super().copy(default)
+
+    def with_company(self, company):
+        records = super().with_company(company)
+        return records.sudo() if company else records | self
+
+    def action(self) -> None:
+        reveal_type(self.copy())
+        reveal_type(self.with_company(1))
+"""
+
+
+def test_self_override_returning_other_records_stays_unannotated(run_mypy: RunMypy) -> None:
+    result = run_mypy({"my_mod": {"models.py": OTHER_RECORDS_OVERRIDE}})
+
+    assert result.messages("models.py") == [
+        '19: note: Revealed type is "my_mod.models.Thing"',
+        '20: note: Revealed type is "my_mod.models.Thing"',
+    ]

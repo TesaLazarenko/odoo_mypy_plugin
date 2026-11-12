@@ -12,7 +12,20 @@ from __future__ import annotations
 from typing import Final
 
 from mypy.lookup import lookup_fully_qualified
-from mypy.nodes import ARG_POS, Decorator, FuncDef, TypeInfo
+from mypy.nodes import (
+    ARG_POS,
+    CallExpr,
+    ConditionalExpr,
+    Decorator,
+    Expression,
+    FuncDef,
+    IndexExpr,
+    MemberExpr,
+    NameExpr,
+    OpExpr,
+    SuperExpr,
+    TypeInfo,
+)
 from mypy.plugin import ClassDefContext, FunctionContext, MethodContext, MethodSigContext
 from mypy.types import (
     AnyType,
@@ -32,6 +45,8 @@ from mypy.typevars import fill_typevars
 # After mypy.types: mypy.checker and mypy.types import each other at import time.
 from mypy.checker import TypeChecker
 
+from odoo_typing.local_values import MAX_DEPTH, LocalValues
+
 __all__ = [
     "SELF_METHODS",
     "annotate_self_overrides",
@@ -41,7 +56,11 @@ __all__ = [
     "is_create",
     "is_self_method",
     "keep_receiver",
+    "returns_own_records",
 ]
+
+# ``a | b``, ``a & b``, ``a - b``, ``a + b`` of records of one model are records of it.
+RECORD_SET_OPERATORS: Final = frozenset({"|", "&", "-", "+"})
 
 # BaseModel methods declared ``-> Self``: an unannotated override returns the receiver.
 SELF_METHODS: Final = frozenset(
@@ -175,6 +194,11 @@ def annotate_self_overrides(ctx: ClassDefContext) -> None:
     mypy calls no plugin hook for ``super()`` calls (the callee has no full name), so
     the overrides themselves get the type the ``BaseModel`` method declares: their
     arguments stay ``Any`` as in any unannotated def. Runs after the class body.
+
+    Only an override that returns its own records (:func:`returns_own_records`) is
+    annotated: ``return self.env["account.account"]...`` would be a ``return-value``
+    error against ``Self``. Another one stays unannotated; calls of it still keep the
+    receiver (:func:`keep_receiver`), only ``super()`` through it is ``Any``.
     """
     info = ctx.cls.info
     for statement in ctx.cls.defs.body:
@@ -183,7 +207,68 @@ def annotate_self_overrides(ctx: ClassDefContext) -> None:
             continue
         if func.is_static or func.is_class or not func.arg_names:
             continue
+        if not returns_own_records(func):
+            continue
         func.type = _self_signature(func, info, ctx.api.named_type("builtins.function"))
+
+
+def returns_own_records(func: FuncDef) -> bool:
+    """Whether every ``return`` of a method gives records of its receiver, by syntax.
+
+    ``self``, ``super().m(...)`` and ``x.m(...)`` of a ``-> Self`` method on such records,
+    ``self.env[self._name]``, ``a | b`` of such records, a conditional of them, and a
+    variable every binding of which is one of these. A bare ``return`` is not.
+    """
+    local = LocalValues(func)
+    receiver = func.arg_names[0]
+    return all(
+        statement.expr is not None and _own_records(statement.expr, receiver, local, 0)
+        for statement in local.returns
+    )
+
+
+def _own_records(node: Expression, receiver: str | None, local: LocalValues, depth: int) -> bool:
+    if depth > MAX_DEPTH:
+        return False
+    if isinstance(node, NameExpr):
+        if node.name == receiver:
+            return True
+        values = local.bindings(node)
+        return bool(values) and all(
+            value is not None and _own_records(value, receiver, local, depth + 1)
+            for value in values
+        )
+    if isinstance(node, CallExpr):
+        callee = node.callee
+        if isinstance(callee, SuperExpr):
+            return callee.name in SELF_METHODS
+        return (
+            isinstance(callee, MemberExpr)
+            and callee.name in SELF_METHODS
+            and _own_records(callee.expr, receiver, local, depth + 1)
+        )
+    if isinstance(node, OpExpr) and node.op in RECORD_SET_OPERATORS:
+        return _own_records(node.left, receiver, local, depth + 1) and _own_records(
+            node.right, receiver, local, depth + 1
+        )
+    if isinstance(node, ConditionalExpr):
+        return _own_records(node.if_expr, receiver, local, depth + 1) and _own_records(
+            node.else_expr, receiver, local, depth + 1
+        )
+    return _own_name_records(node, receiver)
+
+
+def _own_name_records(node: Expression, receiver: str | None) -> bool:
+    """``self.env[self._name]``."""
+    return (
+        isinstance(node, IndexExpr)
+        and isinstance(node.base, MemberExpr)
+        and node.base.name == "env"
+        and isinstance(node.index, MemberExpr)
+        and node.index.name == "_name"
+        and isinstance(node.index.expr, NameExpr)
+        and node.index.expr.name == receiver
+    )
 
 
 def _self_signature(func: FuncDef, info: TypeInfo, fallback: Instance) -> CallableType:

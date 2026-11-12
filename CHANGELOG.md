@@ -22,7 +22,8 @@ License: LGPL-3.0-or-later.
   `Reference` and log-access fields get real types; option `literal_selection`.
 - `env.ref("module.name")` is the record's model, from the XML ids of data files.
 - `mapped("a.b")`, `grouped("a")` and `read([...])` / `search_read` return real types.
-- Unannotated overrides of `-> Self` methods keep the model type through `super()`.
+- Unannotated overrides of `-> Self` methods that return their own records keep the
+  model type through `super()`.
 
 ### Checks
 

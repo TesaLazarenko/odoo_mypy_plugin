@@ -587,9 +587,11 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
   string arguments of `mapped()` / `filtered()` known only at run time (not a literal
   or a `Final` / `Literal` str)
 - an unannotated override of a `-> Self` method (`create`, `copy`, `search`, `sudo`...)
-  is typed `(self: Self, ...) -> Self`, so `super().create(...)` keeps the model type; in
-  its body, returning a concrete class (`return self.env["account.account"].union(...)`)
-  is a `return-value` error ("expected Self")
+  is typed `(self: Self, ...) -> Self` only when each `return` gives its own records by
+  syntax (`self`, `super().create(...)`, `records.sudo()`, `a | b`, a variable bound to
+  these); another one (`return self.env["account.account"].union(...)`, a helper's result)
+  stays unannotated: calls of it keep the receiver's type, but `super().create(...)`
+  through it in a later class is `Any`
 - `self` is the class being written, so inside a class `self` sees the earlier classes of
   its model, not later ones of the same addon (`env[...]` does see them). The classes of
   one model are distinct types: a variable that first holds `env["x"]` (or a relational
