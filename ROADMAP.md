@@ -657,7 +657,28 @@
     повертати Any.
   - Опція `dynamic_env = "any" | "base"`, за замовчуванням `"any"`.
 
-### 4.11 `env.ref("module.xml_id")`
+### 4.11 `env.ref("module.xml_id")` — ✅ зроблено
+- **Зроблено.** Модуль `xmlids.py`: `scan_data` читає файли `data`/`demo` маніфесту
+  (XML: `record`, `template`, `menuitem`, `act_window`, `report`, `asset`, вкладені теж;
+  CSV: колонка `id`, модель з назви файлу); id без модуля належить addon. Результат —
+  `AddonScan.data`: xml-id входять у `scan_digest` (зміна XML залежності перевіряє
+  залежні модулі заново), файли даних — у `scan_stamps` (`inputs_changed` для dmypy).
+  Скан дешевий: усі 658 addons Odoo 18 (3849 файлів, 77567 id) за 1,3 с, ~10 мс на
+  addon. `Registry.xml_ids(addon)` — id замикання (перший у порядку завантаження
+  визначає модель), `xml_id_outside` читає лише addon, названий у префіксі id.
+  Автоматичні `model_*`, `field_*__*`, `module_*` приймаються для модулів замикання.
+  Method hook на `Environment.ref`: тип моделі з view addon, `| None` з
+  `raise_if_not_found=False` (тоді невідомий id не помилка). Коди `odoo-xmlid` і
+  `odoo-xmlid-depends` (підкод). Id без модуля — помилка (Odoo кидає `ValueError`).
+  Guard `if env.ref("sale.x", raise_if_not_found=False):` прикриває всі id addon `sale`
+  (`guards.module_guard`). Невідомий id повідомляється лише для модуля замикання: id,
+  які створює код (`local_es.caba_0_tax` шаблону плану рахунків), у файлах даних немає.
+- **Бенчмарк.** Перший прогін: 4 хибні `odoo-xmlid-depends` (тест під guard-ом
+  `env.ref(..., raise_if_not_found=False)`) і 2 хибні `odoo-xmlid` (`local_es.*`) —
+  виправлено. Тепер помилок xml-id 0; нових помилок типів 0 / 1 / 15 (crm / sale /
+  account), бо `env.ref` більше не Any: `Command.link(record.id)` з `int | NewId` (12, у
+  тестах), `.id` на `View | None` без перевірки (2), значення `X | False`. Холодний
+  запуск +1–3 % (скан XML).
 - **Перевірено:** `Environment.ref` нетипізований, тож повертає Any (а не BaseModel) і
   ховає все, що далі в ланцюжку.
 - **Як вирішити.**

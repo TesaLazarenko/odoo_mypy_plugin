@@ -140,6 +140,7 @@ class Registry:
         self._comodels: dict[str, frozenset[str]] = {}
         self._covered: dict[str, frozenset[str]] = {}
         self._guards: dict[Path, tuple[Guard, ...]] = {}
+        self._xml_ids: dict[str, Mapping[str, str]] = {}
         self._edge_addon_memo: dict[str, frozenset[str]] = {}
         self._explored: dict[str, set[str]] = {}  # per addon: models classified for cycles
         self._cycles: dict[str, dict[str, frozenset[str]]] = {}
@@ -819,6 +820,33 @@ class Registry:
                 )
             )
         return tuple(problems)
+
+    # -- XML ids (env.ref) --------------------------------------------------------------------
+
+    def xml_ids(self, addon_name: str) -> Mapping[str, str]:
+        """The XML ids the data files of an addon's closure create, with their models.
+
+        A later addon of the load order that writes a record of the same id keeps the
+        model of the first (an override changes the record, not its model).
+        """
+        if addon_name not in self._xml_ids:
+            found: dict[str, str] = {}
+            for name in sorted(self.addons.closure(addon_name), key=self.addons.load_key):
+                scan, _ = self.scan_result(name)
+                for item in scan.data.xml_ids:
+                    found.setdefault(item.name, item.model)
+            self._xml_ids[addon_name] = found
+        return self._xml_ids[addon_name]
+
+    def xml_id_outside(self, xml_id: str, addon_name: str) -> str | None:
+        """The addon outside an addon's closure whose data files create an XML id.
+
+        Only the addon the id is named after is read (``sale.x`` is ``sale``'s).
+        """
+        module = xml_id.partition(".")[0]
+        if module not in self.addons.addons or module in self.addons.closure(addon_name):
+            return None
+        return module if xml_id in self.xml_ids(module) else None
 
     def addons_outside_defining(self, model: str, addon_name: str) -> tuple[str, ...]:
         """Addons outside an addon's dependency closure that define a model.

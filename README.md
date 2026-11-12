@@ -94,6 +94,20 @@ and a string value of a `Selection` field with literal keys. Logical operators o
 than `&`, `|`, `!` are errors. Terms built from variables, `(1, "=", 1)` and domains
 of abstract models are not checked.
 
+`odoo-xmlid` covers `env.ref("module.name")`: the XML id must be created by a data
+file (`data` / `demo` in a manifest: `<record>`, `<template>`, `<menuitem>`,
+`<act_window>`, `<report>`, the `id` column of `<model>.csv`) of an addon in the
+`depends` closure, or be one Odoo makes itself (`module.model_res_partner`,
+`module.field_res_partner__name`, `base.module_sale`); its sub-code
+`odoo-xmlid-depends` is an id that only an addon outside the closure creates. The
+result is the record's model as the addon sees it (`env.ref("base.main_company")` is a
+`res.company` record), `| None` with `raise_if_not_found=False`, which also turns off
+the check (the code expects the id may be missing), and so does a line under
+`if env.ref("sale.x", raise_if_not_found=False):` for every id of `sale`. An id whose
+module is not an addon of the closure is reported only when an addon outside it
+creates it: ids made by Python code (`local_es.x` of a chart template, hooks) are not
+in any data file.
+
 **Code outside any addon** (scripts, and Odoo's own `odoo/*.py` modules, which mypy always
 analyzes) has no `depends` closure, so the plugin leaves it alone: `env["..."]` keeps
 Odoo's declared type `BaseModel`, and model names are not checked there. This keeps such

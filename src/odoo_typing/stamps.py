@@ -92,7 +92,8 @@ def read_index(
 
 
 def scan_stamps(addon: Addon, scan: AddonScan) -> Stamps:
-    """Stamps of the files an addon scan read, of their directories and of the addon's."""
+    """Stamps of the files an addon scan read (data files too), of their directories."""
     files = [module.path for module in scan.modules] + [error.path for error in scan.errors]
     directories = {addon.path, *(path.parent for path in files)}
-    return {str(path): stamp(path) for path in [*files, *sorted(directories)]}
+    data = list(scan.data.files)  # listed by the manifest, whose stamp the index has
+    return {str(path): stamp(path) for path in [*files, *sorted(directories), *data]}

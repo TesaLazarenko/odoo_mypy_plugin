@@ -19,8 +19,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
-from odoo_typing.addons import Addon, LoadKey
+from odoo_typing.addons import Addon, LoadKey, find_manifest
 from odoo_typing.guards import Guard, model_guards
+from odoo_typing.xmlids import DataScan, scan_data
 
 __all__ = [
     "AddonScan",
@@ -33,6 +34,7 @@ __all__ = [
     "scan_addon",
 ]
 
+EMPTY_DATA: Final = DataScan((), ())
 UNKNOWN: Final = object()  # value of an expression the scan cannot evaluate
 RELATIONAL_FIELDS = frozenset({"Many2one", "One2many", "Many2many"})
 # Bases of the classes of models that have a table (``_abstract = False``).
@@ -209,10 +211,12 @@ class AddonScan:
     Attributes:
         modules: One entry per imported file, in import order.
         errors: Imported files that could not be parsed (their classes are missing).
+        data: The XML ids of the data files of the manifest (``odoo_typing.xmlids``).
     """
 
     modules: tuple[ModuleScan, ...]
     errors: tuple[SourceError, ...]
+    data: DataScan = EMPTY_DATA
 
 
 def parse_source(path: Path) -> ast.Module:
@@ -241,7 +245,7 @@ def parse_source(path: Path) -> ast.Module:
 
 
 def scan_addon(addon: Addon, load_key: LoadKey) -> AddonScan:
-    """Scan all Python files of an addon that its ``__init__.py`` imports.
+    """Scan all Python files of an addon that its ``__init__.py`` imports, and its data.
 
     Args:
         addon: Addon to scan.
@@ -253,7 +257,8 @@ def scan_addon(addon: Addon, load_key: LoadKey) -> AddonScan:
     """
     walker = _ImportWalker(addon, load_key)
     walker.visit_module(addon.module_prefix, addon.path)
-    return AddonScan(modules=tuple(walker.scans), errors=tuple(walker.errors))
+    data = scan_data(addon.name, addon.path, find_manifest(addon.path))
+    return AddonScan(modules=tuple(walker.scans), errors=tuple(walker.errors), data=data)
 
 
 @dataclass(slots=True)

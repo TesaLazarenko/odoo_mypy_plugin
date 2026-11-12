@@ -53,7 +53,8 @@ __all__ = ["Fingerprints", "scan_digest"]
 def scan_digest(scan: AddonScan) -> str:
     """Digest of what an addon scan found (independent of hash randomization)."""
     errors = [[str(error.path), error.reason] for error in scan.errors]
-    return digest([[_canonical(module) for module in scan.modules], errors])
+    modules = [_canonical(module) for module in scan.modules]
+    return digest([modules, errors, _canonical(scan.data.xml_ids)])
 
 
 class Fingerprints:

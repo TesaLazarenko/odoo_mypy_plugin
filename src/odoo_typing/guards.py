@@ -22,7 +22,8 @@ records, for each file, the lines a guard covers:
 * the true branch of a conditional expression (``x if "m" in env else y``).
 
 ``env`` is ``self.env``, ``env``, ``env.registry`` / ``self.pool`` (and ``.models`` of
-them).
+them). ``env.ref("sale.x", raise_if_not_found=False)`` in a test guards the XML ids of
+the addon ``sale`` (:func:`module_guard`).
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
-__all__ = ["Guard", "is_guarded", "model_guards"]
+__all__ = ["Guard", "is_guarded", "model_guards", "module_guard"]
 
 TERMINATORS: Final = (ast.Return, ast.Raise, ast.Continue, ast.Break)
 REGISTRY_ATTRIBUTES: Final = frozenset({"registry", "pool", "models"})
@@ -125,7 +126,32 @@ def _test_models(test: ast.expr) -> tuple[set[str], set[str]]:
         name = _string(test.args[0])
         if name is not None:
             return {name}, set()
+    if isinstance(test, ast.Call) and _is_optional_ref(test):
+        name = _string(test.args[0])
+        if name is not None and "." in name:  # the id's addon is installed
+            return {module_guard(name.partition(".")[0])}, set()
     return set(), set()
+
+
+def module_guard(addon_name: str) -> str:
+    """The guard name of an installed addon (``env.ref("sale.x", ...)`` in a test)."""
+    return f"addon:{addon_name}"
+
+
+def _is_optional_ref(call: ast.Call) -> bool:
+    """``env.ref("module.name", raise_if_not_found=False)``."""
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "ref"
+        and _is_registry(call.func.value)
+        and bool(call.args)
+        and any(
+            keyword.arg == "raise_if_not_found"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is False
+            for keyword in call.keywords
+        )
+    )
 
 
 def _is_registry(node: ast.expr) -> bool:

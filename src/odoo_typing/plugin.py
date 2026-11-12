@@ -138,6 +138,7 @@ from odoo_typing.domains import (
     string_domain_paths,
 )
 from odoo_typing.fingerprint import Fingerprints
+from odoo_typing.guards import module_guard
 from odoo_typing.methods import (
     annotate_self_overrides,
     create_signature,
@@ -164,6 +165,7 @@ from odoo_typing.references import (
 from odoo_typing.registry import MissingParent, Registry
 from odoo_typing.scanner import LOG_ACCESS_USERS, POSITIONAL_PARAMETERS, Contribution, FieldInfo
 from odoo_typing.vals import ValsChecker, ValsTarget, stored, vals_dicts
+from odoo_typing.xmlids import ODOO_XMLID, ODOO_XMLID_DEPENDS, automatic_model
 
 __all__ = ["ODOO_MODEL", "ODOO_MODEL_DEPENDS", "OdooPlugin", "plugin"]
 
@@ -372,6 +374,8 @@ class OdooPlugin(Plugin):
         """
         if fullname == self._profile.env_getitem:
             return self._env_getitem
+        if fullname == f"{self._profile.environment}.ref":
+            return self._env_ref
         name = fullname.rpartition(".")[2]
         if name in VALS_METHODS:
             return partial(self._check_vals, name)
@@ -722,6 +726,59 @@ class OdooPlugin(Plugin):
             classes = self.registry.delegate_chain(delegate, addon_name)
             add_delegated_fields(merged, _field_sources(classes, checker.modules) or [])
         return instance_of(merged)
+
+    def _env_ref(self, ctx: MethodContext) -> Type:
+        """``env.ref("module.name")``: the records of the XML id's model.
+
+        The id must be created by the data files of the addon's closure (``odoo-xmlid``;
+        ``odoo-xmlid-depends`` when only an addon outside it creates it). With
+        ``raise_if_not_found=False`` the result may be ``None``, and an id that is not
+        found is not an error (the code expects it to be missing).
+        """
+        xml_id = _argument(ctx, "xml_id", 0)
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if not isinstance(xml_id, StrExpr) or addon_name is None:
+            return ctx.default_return_type
+        optional = _is_false(_argument(ctx, "raise_if_not_found", 1))
+        model = self._xml_id_model(xml_id, addon_name, optional, ctx.api)
+        if model is None:
+            return ctx.default_return_type
+        records = self._view_type(model, addon_name, ctx.api)
+        if not isinstance(records, Instance):
+            return ctx.default_return_type
+        return UnionType([records, NoneType()]) if optional else records
+
+    def _xml_id_model(
+        self, xml_id: StrExpr, addon_name: str, optional: bool, api: CheckerPluginInterface
+    ) -> str | None:
+        """The model of an XML id as an addon sees it; report it if it is not created."""
+        name = xml_id.value
+        module, _, local = name.partition(".")
+        if not local:
+            api.fail(f'XML id "{name}" has no module ("module.name")', xml_id, code=ODOO_XMLID)
+            return None
+        known = self.registry.xml_ids(addon_name)
+        if name in known:
+            return known[name]
+        closure = self.registry.addons.closure(addon_name)
+        if module in closure and (automatic := automatic_model(local)) is not None:
+            return automatic
+        if optional or self.registry.guarded(api.path, module_guard(module), xml_id.line):
+            return None
+        outside = self.registry.xml_id_outside(name, addon_name)
+        if outside is not None:
+            message = (
+                f'XML id "{name}" is created by addon "{outside}", which is not in the '
+                f'dependencies of "{addon_name}"'
+            )
+            api.fail(message, xml_id, code=ODOO_XMLID_DEPENDS)
+            return None
+        if module not in closure:
+            return None  # created by code (``local_es.x``), or by an addon not on disk
+        same_module = [item for item in known if item.startswith(f"{module}.")]
+        message = f'Unknown XML id "{name}"' + did_you_mean(name, same_module)
+        api.fail(message, xml_id, code=ODOO_XMLID)
+        return None
 
     def _env_getitem(self, ctx: MethodContext) -> Type:
         model = _model_name_argument(ctx)
@@ -1489,6 +1546,10 @@ def _argument(ctx: MethodContext, name: str, position: int) -> Expression | None
     else:
         return None
     return ctx.args[index][0] if len(ctx.args) > index and ctx.args[index] else None
+
+
+def _is_false(node: Expression | None) -> bool:
+    return isinstance(node, NameExpr) and node.name == "False"
 
 
 def _ids_only(load: Expression | None) -> bool | None:

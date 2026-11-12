@@ -239,7 +239,14 @@ def write_addon(path: Path, spec: dict[str, object]) -> None:
     depends = spec.get("depends", ["base"])
     manifest = spec.get("manifest", "__manifest__.py")
     assert isinstance(manifest, str)
-    (path / manifest).write_text(f"{{'name': '{path.name}', 'depends': {depends!r}}}\n")
+    data = spec.get("data", {})
+    assert isinstance(data, dict)
+    (path / manifest).write_text(
+        f"{{'name': '{path.name}', 'depends': {depends!r}, 'data': {list(data)!r}}}\n"
+    )
+    for name, content in data.items():
+        (path / name).parent.mkdir(parents=True, exist_ok=True)
+        (path / name).write_text(textwrap.dedent(content))
     files = {key: spec[key] for key in spec if key.endswith(".py")}
     if "__init__.py" not in files:
         top_level = [name.removesuffix(".py") for name in files if "/" not in name]

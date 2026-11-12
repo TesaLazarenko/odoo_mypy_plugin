@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import textwrap
 
-from odoo_typing.guards import Guard, is_guarded, model_guards
+from odoo_typing.guards import Guard, is_guarded, model_guards, module_guard
 
 SOURCE = """
 def action(self):
@@ -52,3 +52,11 @@ def test_is_guarded_checks_model_and_line() -> None:
     assert is_guarded(guards, "a.in", 4)
     assert not is_guarded(guards, "a.in", 6)
     assert not is_guarded(guards, "g.other", 21)
+
+
+def test_optional_env_ref_guards_the_ids_of_its_addon() -> None:
+    source = 'if self.env.ref("sale.group_x", raise_if_not_found=False):\n    y = 1\n'
+
+    guards = model_guards(ast.walk(ast.parse(source)))
+
+    assert guards == (Guard(module_guard("sale"), 2, 2),)
