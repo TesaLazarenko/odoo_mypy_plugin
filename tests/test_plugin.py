@@ -295,6 +295,31 @@ def test_probe_fixture_reports_type_errors(run_mypy: RunMypy) -> None:
     ]
 
 
+def test_second_probe_reports_each_seeded_error(run_mypy: RunMypy) -> None:
+    source = Path(__file__).parent / "fixtures/addons/probe2_mod/models/partner.py"
+    result = run_mypy({"probe2_mod": {"partner.py": source.read_text()}})
+
+    assert [line.split(";")[0] for line in result.messages("partner.py")] == [
+        '9: error: Odoo model "res.partner" has no field "citty" in related="x_parent_id.citty"',
+        '12: error: Odoo model "res.partner" has no field "nmae" in '
+        '@api.depends("x_parent_id.nmae")',
+        '18: error: Unknown XML id "base.main_compani"',
+        '19: error: Odoo model "res.partner" has no field "x_scroe" in '
+        'mapped("x_parent_id.x_scroe")',
+        '20: error: Unknown domain operator "=>"',
+        '21: error: Odoo model "res.partner" has no field "commnt" (default_commnt in '
+        "with_context)",
+        '22: error: "int" has no attribute "upper"  [attr-defined]',
+    ]
+
+
+def test_clean_module_reports_nothing(run_mypy: RunMypy) -> None:
+    source = Path(__file__).parent / "fixtures/addons/clean_mod/models/partner.py"
+    result = run_mypy({"clean_mod": {"partner.py": source.read_text()}})
+
+    assert result.messages("partner.py") == []
+
+
 SCRIPT = """
 from odoo.api import Environment
 
