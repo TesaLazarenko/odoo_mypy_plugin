@@ -45,7 +45,11 @@ codes. Code that runs only when the model is installed is not reported at all (w
 either code) and its records are `Any`: the body of `if "sale.order" in self.env:` (also
 `self.env.get("sale.order")`, `self.pool`, `env.registry`, inside `and`), the `else` of
 `not in`, the rest of the block after `if "sale.order" not in self.env: return` (or
-`raise` / `continue` / `break`), and `x if "sale.order" in self.env else y`.
+`raise` / `continue` / `break`), and `x if "sale.order" in self.env else y`. A field
+that another addon may add is guarded the same way by `"x_flag" in self._fields`,
+`self._fields.get("x_flag")` or `hasattr(record, "x_flag")`: there the name is not
+reported as an unknown key of `vals`, a domain field, or a field of `mapped()` /
+`filtered()` / `sorted()` / `grouped()` / `read()` (whatever the records are).
 
 `odoo-field-ref` covers the names in field definitions, which Odoo resolves when it loads
 the registry: each field of a `related="a.b.c"` path (followed through the comodels,
@@ -56,7 +60,8 @@ same way; `@api.constrains(...)` and `@api.onchange(...)` take field names of th
 only (Odoo ignores a dotted name there). Not in abstract models, whose fields refer to
 the models that use them. A relational field declared only with `related=` gets the
 comodel of the path's last field. The string argument of `mapped("a.b")`,
-`filtered("a.b")`, `sorted(...)` and `grouped("a")` must name existing fields too
+`filtered("a.b")`, `sorted(...)` and `grouped("a")` (a literal, or a `Final` /
+`Literal` str) must name existing fields too
 (`grouped`, and `sorted` before Odoo 19, take one field name; `sorted` in 19+ takes an
 order such as `"name desc, id"`); `mapped("partner_id.name")` is then
 `list[str | Literal[False]]`, `mapped("line_ids")` the comodel's records, and
@@ -129,7 +134,7 @@ Every check has its own error code; a sub-code is also disabled with its parent.
 | `odoo-model` | a model name that no addon on the addons path defines; `_inherit` defined later, `_inherit` cycles | a model of an addon that is not on the addons path (enterprise) | add the addon's directory to `addons_path`, or `# type: ignore[odoo-model]` |
 | ↳ `odoo-model-depends` | a model that only addons outside the `depends` closure define | optional-dependency code under a guard the plugin does not detect | a detected guard (`if "x" in self.env:`), or `disable_error_code = ["odoo-model-depends"]` |
 | `odoo-vals` | the `vals` of `create` / `write` / `copy(default=)`, commands, assignments | — | — |
-| ↳ `odoo-vals-key` | a key that is not a field of the model | a field created in the database (`x_*` is ignored by default) | `vals_ignore_keys = ["x_*", "studio_*"]` |
+| ↳ `odoo-vals-key` | a key that is not a field of the model | a field created in the database (`x_*` is ignored by default), or added by an optional addon | `vals_ignore_keys = ["x_*", "studio_*"]`, or a detected guard (`if "f" in self._fields:`) |
 | ↳ `odoo-vals-type` | a value the field does not take | a value of a dynamic type the plugin cannot narrow | `typing.cast`, or `# type: ignore[odoo-vals-type]` |
 | `odoo-field-ref` | names in field definitions, `@api.depends` / `constrains` / `onchange`, `mapped` / `filtered` / `sorted` / `grouped`, `read()` | a method or field added by a later addon the declaring addon does not depend on (Odoo would not load it either) | add the dependency |
 | `odoo-domain` | field paths, operators and selection values of literal domains | an operator added by a custom `@operator_optimization` (Odoo 19+) | `# type: ignore[odoo-domain]` |
@@ -564,10 +569,10 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
 ## Not yet supported
 
 - `vals` built in a variable or with `dict(...)`, and the `default_<field>` keys of a
-  context that is not passed straight to `.create(...)`; a key guarded by
-  `if "x" in self._fields:` is still reported
+  context that is not passed straight to `.create(...)`
 - domains built in a variable, with `expression.AND(...)` or as `[...] + [...]`, and
-  string arguments of `mapped()` / `filtered()` that are not literals
+  string arguments of `mapped()` / `filtered()` known only at run time (not a literal
+  or a `Final` / `Literal` str)
 - an unannotated override of a `-> Self` method (`create`, `copy`, `search`, `sudo`...)
   is typed `(self: Self, ...) -> Self`, so `super().create(...)` keeps the model type; in
   its body, returning a concrete class (`return self.env["account.account"].union(...)`)

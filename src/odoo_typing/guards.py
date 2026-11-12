@@ -24,6 +24,10 @@ records, for each file, the lines a guard covers:
 ``env`` is ``self.env``, ``env``, ``env.registry`` / ``self.pool`` (and ``.models`` of
 them). ``env.ref("sale.x", raise_if_not_found=False)`` in a test guards the XML ids of
 the addon ``sale`` (:func:`module_guard`).
+
+A field is guarded the same way, by ``"f" in records._fields``, ``records._fields.get("f")``
+or ``hasattr(records, "f")`` (:func:`field_guard`): code that writes a field another addon
+may add. The field name alone counts, whatever the records are.
 """
 
 from __future__ import annotations
@@ -33,7 +37,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
-__all__ = ["Guard", "is_guarded", "model_guards", "module_guard"]
+__all__ = ["Guard", "field_guard", "is_guarded", "model_guards", "module_guard"]
 
 TERMINATORS: Final = (ast.Return, ast.Raise, ast.Continue, ast.Break)
 REGISTRY_ATTRIBUTES: Final = frozenset({"registry", "pool", "models"})
@@ -110,8 +114,8 @@ def _test_models(test: ast.expr) -> tuple[set[str], set[str]]:
         if isinstance(test.op, ast.And):  # true: every part is true
             return set().union(*(true for true, _ in parts)), set()
         return set(), set().union(*(false for _, false in parts))  # false: every part false
-    if isinstance(test, ast.Compare) and len(test.ops) == 1 and _is_registry(test.comparators[0]):
-        name = _string(test.left)
+    if isinstance(test, ast.Compare) and len(test.ops) == 1:
+        name = _contained_name(test.left, test.comparators[0])
         if name is not None and isinstance(test.ops[0], ast.In):
             return {name}, set()
         if name is not None and isinstance(test.ops[0], ast.NotIn):
@@ -120,17 +124,42 @@ def _test_models(test: ast.expr) -> tuple[set[str], set[str]]:
         isinstance(test, ast.Call)
         and isinstance(test.func, ast.Attribute)
         and test.func.attr == "get"
-        and _is_registry(test.func.value)
         and test.args
     ):
-        name = _string(test.args[0])
+        name = _contained_name(test.args[0], test.func.value)
         if name is not None:
             return {name}, set()
+    if (
+        isinstance(test, ast.Call)
+        and isinstance(test.func, ast.Name)
+        and test.func.id == "hasattr"
+        and len(test.args) == 2
+    ):
+        name = _string(test.args[1])
+        if name is not None:
+            return {field_guard(name)}, set()
     if isinstance(test, ast.Call) and _is_optional_ref(test):
         name = _string(test.args[0])
         if name is not None and "." in name:  # the id's addon is installed
             return {module_guard(name.partition(".")[0])}, set()
     return set(), set()
+
+
+def _contained_name(key: ast.expr, container: ast.expr) -> str | None:
+    """The guard name of ``key in container``: a model of the registry, a field of ``_fields``."""
+    name = _string(key)
+    if name is None:
+        return None
+    if _is_registry(container):
+        return name
+    if isinstance(container, ast.Attribute) and container.attr == "_fields":
+        return field_guard(name)
+    return None
+
+
+def field_guard(field_name: str) -> str:
+    """The guard name of a field that may be missing (``if "f" in self._fields:``)."""
+    return f"field:{field_name}"
 
 
 def module_guard(addon_name: str) -> str:

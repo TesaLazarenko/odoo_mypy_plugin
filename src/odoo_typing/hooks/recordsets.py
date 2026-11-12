@@ -24,7 +24,12 @@ from mypy.checker import TypeChecker
 from mypy.typeops import make_simplified_union
 
 from odoo_typing.hooks.models import Hooks
-from odoo_typing.hooks.nodes import call_argument, literal_strings_argument, type_checker
+from odoo_typing.hooks.nodes import (
+    call_argument,
+    literal_string,
+    literal_strings_argument,
+    type_checker,
+)
 from odoo_typing.methods import is_self_method, keep_receiver
 from odoo_typing.references import (
     KNOWN_CLASSES,
@@ -63,7 +68,8 @@ class RecordsetHooks(Hooks):
         for node in names:
             info = fields.get(node.value)
             if info is None:
-                if self.registry.concrete(model, addon_name):
+                guarded = self._field_guarded(ctx.api.path)(node.value, node.line)
+                if self.registry.concrete(model, addon_name) and not guarded:
                     message = f'Odoo model "{model}" has no field "{node.value}" in {method}()'
                     message += did_you_mean(node.value, fields)
                     ctx.api.fail(message, node, code=ODOO_FIELD_REF)
@@ -81,6 +87,7 @@ class RecordsetHooks(Hooks):
     def record_path(self, method: str, ctx: MethodContext) -> Type:
         """``mapped("a.b")``, ``filtered("a.b")``, ``sorted("a")``, ``grouped("a")``.
 
+        The string is a literal or a ``Final`` / ``Literal`` str (:func:`literal_string`).
         The fields of the string must exist (``odoo-field-ref``, on a concrete model);
         ``mapped`` then returns the records of the last field's comodel, or a list of its
         values, and ``grouped`` a dict from its values to records of the receiver.
@@ -91,8 +98,12 @@ class RecordsetHooks(Hooks):
             else ctx.default_return_type
         )
         receiver = get_proper_type(ctx.type)
-        argument = ctx.args[0][0] if ctx.args and ctx.args[0] else None
-        if not isinstance(receiver, Instance) or not isinstance(argument, StrExpr):
+        argument = (
+            literal_string(ctx.args[0][0], ctx.arg_types[0][0])
+            if ctx.args and ctx.args[0]
+            else None
+        )
+        if not isinstance(receiver, Instance) or argument is None:
             return result
         if self._models.model_of(receiver.type) is None:
             return result  # a ``sorted`` / ``mapped`` method of another class
@@ -124,11 +135,13 @@ class RecordsetHooks(Hooks):
         if model is None or addon_name is None or not self.registry.concrete(model, addon_name):
             return True
         fields_of = partial(self.registry.fields, addon_name=addon_name)
+        guarded = self._field_guarded(ctx.api.path)
         valid = True
         for path in paths:
             found = resolve_path(path, model, fields_of, f'{method}("{argument.value}")')
             if found.problem is not None:
-                ctx.api.fail(found.problem, argument, code=ODOO_FIELD_REF)
+                if found.missing is None or not guarded(found.missing, argument.line):
+                    ctx.api.fail(found.problem, argument, code=ODOO_FIELD_REF)
                 valid = False
         return valid
 

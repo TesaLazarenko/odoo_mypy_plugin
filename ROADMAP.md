@@ -843,7 +843,15 @@
 без guard-ів полів дасть хибні помилки; 6.3 і 6.4 ділять трекінг змінної. Кожен пункт:
 тести на Odoo 17–20, бенчмарк (наскрізні 7 і 8), порівняння полів, рядок у README.
 
-### 6.1 Guard `"f" in self._fields`
+### 6.1 Guard `"f" in self._fields` — ✅ зроблено
+- **Зроблено.** `guards.field_guard(name)` (`field:<name>`) — ще одна назва в тих самих
+  `Guard`-діапазонах, тож формат скану не змінився: `"f" in x._fields` / `not in`,
+  `x._fields.get("f")`, `hasattr(x, "f")` у всіх формах 4.6. `PathResult.missing` —
+  назва кроку, якого немає; `ValsChecker`, `DomainChecker`, `mapped`/`filtered`/
+  `sorted`/`grouped` і `read()` не повідомляють про неї на рядку під guard-ом
+  (`Hooks._field_guarded`). Бенчмарк: account 7255 → 7254, зникла хибна
+  `odoo-vals-key` у `account/tests/test_tour.py:28` (`l10n_latam_use_documents` під
+  `in ..._fields`); решта ті самі, час у межах шуму.
 - **Проблема.** `if "studio_flag" in self._fields: self.write({"studio_flag": 1})` дає
   `odoo-vals-key`. Поле є лише тоді, коли встановлено інший addon, тож помилка хибна.
   У README: «a key guarded by `if "x" in self._fields:` is still reported».
@@ -862,7 +870,11 @@
 - **Критерій готовності.** Поле під guard-ом не дає помилки, те саме поле поза guard-ом
   дає; бенчмарк: помилок не більше.
 
-### 6.2 `mapped` / `filtered` / `sorted` / `grouped` з `Final` або `Literal`
+### 6.2 `mapped` / `filtered` / `sorted` / `grouped` з `Final` або `Literal` — ✅ зроблено
+- **Зроблено.** `hooks.nodes.literal_string(node, type)` — спільний для `env[...]` і
+  шляхів записів: літерал або `Final` / `Literal` str (новий `StrExpr` на місці
+  аргументу). Union кількох `Literal` не розбирається — лишається як був (Any або тип
+  Odoo). Бенчмарк: помилки ті самі.
 - **Проблема.** `env[...]` приймає `Final`-константу і `Literal` str
   (`hooks/env.py:_model_name_argument`), а `hooks/recordsets.py` — лише `StrExpr`:
   `FIELD: Final = "partner_id"; records.mapped(FIELD)` не перевіряється і дає Any.

@@ -100,12 +100,21 @@ class DomainChecker:
         fail: Reports an error at a node (with the ``odoo-domain`` code).
         fields_of: The fields of a model as the checked addon sees it.
         operators: The term operators of the Odoo version.
+        guarded: Whether a field name is guarded on a line of the checked file
+            (``if "f" in self._fields:``, :func:`odoo_typing.guards.field_guard`).
     """
 
-    def __init__(self, fail: Fail, fields_of: FieldsOf, operators: Collection[str]) -> None:
+    def __init__(
+        self,
+        fail: Fail,
+        fields_of: FieldsOf,
+        operators: Collection[str],
+        guarded: Callable[[str, int], bool],
+    ) -> None:
         self.fail = fail
         self.fields_of = fields_of
         self.operators = operators
+        self.guarded = guarded
 
     def check(self, model: str, items: Sequence[Expression]) -> None:
         """Check the items of a literal domain list of a model."""
@@ -129,7 +138,8 @@ class DomainChecker:
             self.fail(f'Unknown domain operator "{term.operator.value}"{suggestion}', term.operator)
         result = resolve_path(term.path.value, model, self.fields_of, "domain", DATE_PARTS)
         if result.problem is not None:
-            self.fail(result.problem, term.path)
+            if result.missing is None or not self.guarded(result.missing, term.path.line):
+                self.fail(result.problem, term.path)
             return
         field = result.field
         if field is None or operator is None or term.value is None:

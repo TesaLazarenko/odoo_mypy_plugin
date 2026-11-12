@@ -1,11 +1,11 @@
-"""Unit tests of the guards of optional dependencies (roadmap item 4.6)."""
+"""Unit tests of the guards of optional dependencies (roadmap items 4.6 and 6.1)."""
 
 from __future__ import annotations
 
 import ast
 import textwrap
 
-from odoo_typing.guards import Guard, is_guarded, model_guards, module_guard
+from odoo_typing.guards import Guard, field_guard, is_guarded, model_guards, module_guard
 
 SOURCE = """
 def action(self):
@@ -60,3 +60,30 @@ def test_optional_env_ref_guards_the_ids_of_its_addon() -> None:
     guards = model_guards(ast.walk(ast.parse(source)))
 
     assert guards == (Guard(module_guard("sale"), 2, 2),)
+
+
+FIELD_SOURCE = """
+def action(self, record):
+    if "x_in" in self._fields:
+        a = 1
+    if "x_not" not in record._fields:
+        return
+    b = 2
+    c = 3 if self._fields.get("x_get") else 4
+    if hasattr(record, "x_attr") and "sale.order" in self.env:
+        d = 5
+    if "x_other" in fields:
+        e = 6
+"""
+
+
+def test_field_guards_cover_branches_that_run_with_the_field() -> None:
+    guards = model_guards(ast.walk(ast.parse(textwrap.dedent(FIELD_SOURCE))))
+
+    assert set(guards) == {
+        Guard(field_guard("x_in"), 4, 4),
+        Guard(field_guard("x_not"), 7, 12),
+        Guard(field_guard("x_get"), 8, 8),
+        Guard(field_guard("x_attr"), 10, 10),
+        Guard("sale.order", 10, 10),
+    }

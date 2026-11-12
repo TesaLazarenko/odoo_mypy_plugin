@@ -8,7 +8,6 @@ from mypy.plugin import AttributeContext, CheckerPluginInterface, MethodContext
 from mypy.types import (
     AnyType,
     Instance,
-    LiteralType,
     NoneType,
     Type,
     TypeOfAny,
@@ -24,7 +23,7 @@ from odoo_typing.classes import instance_of
 from odoo_typing.compat import OdooProfile
 from odoo_typing.guards import module_guard
 from odoo_typing.hooks.models import Hooks
-from odoo_typing.hooks.nodes import call_argument, is_false
+from odoo_typing.hooks.nodes import call_argument, is_false, literal_string
 from odoo_typing.references import did_you_mean
 from odoo_typing.xmlids import ODOO_XMLID, ODOO_XMLID_DEPENDS, automatic_model
 
@@ -117,14 +116,8 @@ def _model_name_argument(ctx: MethodContext) -> str | None:
     """The model name in ``env[...]``: a string literal, or a ``Final`` / ``Literal`` str."""
     if not ctx.args or len(ctx.args[0]) != 1:
         return None
-    if isinstance(ctx.args[0][0], StrExpr):
-        return ctx.args[0][0].value
-    arg_type = get_proper_type(ctx.arg_types[0][0])
-    if isinstance(arg_type, Instance) and arg_type.last_known_value is not None:
-        arg_type = arg_type.last_known_value
-    if isinstance(arg_type, LiteralType) and isinstance(arg_type.value, str):
-        return arg_type.value
-    return None
+    found = literal_string(ctx.args[0][0], ctx.arg_types[0][0])
+    return None if found is None else found.value
 
 
 def request_env(environment: str, ctx: AttributeContext) -> Type:

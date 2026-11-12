@@ -427,3 +427,32 @@ def test_vals_context_defaults_of_create_checked(run_mypy: RunMypy) -> None:
         'has type "str", Integer field takes "int | NewId | Literal[False] | None")  '
         "[odoo-vals-type]",
     ]
+
+
+FIELD_GUARDS = """
+from odoo import models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self) -> None:
+        if "studio_flag" in self._fields:
+            self.write({"studio_flag": 1, "studio_typo": 2})
+            self.search([("studio_flag", "=", 1)])
+            self.mapped("studio_flag")
+            self.read(["studio_flag"])
+        self.write({"studio_flag": 1})
+        if not hasattr(self, "studio_note"):
+            return
+        self.create({"studio_note": "x"})
+        self.filtered("partner_id.studio_note")
+"""
+
+
+def test_field_guards_keep_optional_fields_unreported(run_mypy: RunMypy) -> None:
+    messages = [line.split(";")[0] for line in _messages(run_mypy, FIELD_GUARDS)]
+
+    assert messages == [
+        '9: error: Odoo model "t.order" has no field "studio_typo"  [odoo-vals-key]',
+        '13: error: Odoo model "t.order" has no field "studio_flag"  [odoo-vals-key]',
+    ]

@@ -84,6 +84,7 @@ class ValsHooks(Hooks):
             self._models.model_of,
             partial(self.registry.concrete, addon_name=addon_name),
             partial(self._vals_target, addon_name=addon_name),
+            self._field_guarded(api.path),
         )
 
     def _vals_target(self, model: str, addon_name: str) -> ValsTarget:

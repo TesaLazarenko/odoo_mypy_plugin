@@ -8,6 +8,7 @@ hooks is a :class:`Hooks` around it.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from functools import partial
 
 from mypy.errorcodes import ErrorCode
@@ -24,6 +25,7 @@ from odoo_typing.classes import (
 )
 from odoo_typing.compat import OdooProfile
 from odoo_typing.config import Settings
+from odoo_typing.guards import field_guard
 from odoo_typing.hooks.nodes import (
     class_infos,
     field_sources,
@@ -202,3 +204,7 @@ class Hooks:
     @property
     def _settings(self) -> Settings:
         return self._models.settings
+
+    def _field_guarded(self, path: str) -> Callable[[str, int], bool]:
+        """Whether a field name is guarded on a line of a file (``"f" in self._fields``)."""
+        return lambda name, line: self.registry.guarded(path, field_guard(name), line)

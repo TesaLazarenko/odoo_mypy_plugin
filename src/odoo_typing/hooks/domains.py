@@ -55,6 +55,7 @@ class DomainHooks(Hooks):
             partial(api.fail, code=ODOO_DOMAIN),
             partial(self.registry.fields, addon_name=addon_name),
             self._profile.domain_operators,
+            self._field_guarded(api.path),
         )
 
     def _check_domain_expression(

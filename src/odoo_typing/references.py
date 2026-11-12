@@ -91,11 +91,13 @@ class PathResult:
         field: The last field, if every step resolved.
         model: The model of the last field.
         problem: Why the path is wrong (a message), if it is.
+        missing: The name of the step that is not a field, if that is the problem.
     """
 
     field: FieldInfo | None = None
     model: str | None = None
     problem: str | None = None
+    missing: str | None = None
 
 
 def resolve_path(
@@ -128,7 +130,7 @@ def resolve_path(
         info = fields.get(name)
         if info is None:
             message = f'Odoo model "{model}" has no field "{name}" in {argument}'
-            return PathResult(problem=message + did_you_mean(name, fields))
+            return PathResult(problem=message + did_you_mean(name, fields), missing=name)
         if position == len(names) - 1:
             break
         if date_parts and info.field_type in DATE_CLASSES and position == len(names) - 2:

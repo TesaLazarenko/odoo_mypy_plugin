@@ -31,7 +31,9 @@ License: LGPL-3.0-or-later.
   x2many commands, field assignments, `default_<field>` of `with_context(...).create`.
 - `odoo-field-ref`: `related=`, `compute=`, `inverse=`, `search=`, `selection=`,
   `@api.depends` / `constrains` / `onchange`, paths of `mapped` / `filtered` / `sorted`
-  / `grouped`, fields of `read()`.
+  / `grouped` (literals and `Final` / `Literal` strings), fields of `read()`.
+- A field guarded by `"f" in self._fields`, `_fields.get("f")` or `hasattr(x, "f")` is
+  not reported as unknown in vals, domains and record paths under the guard.
 - `odoo-domain`: field paths, operators (per Odoo version) and selection values of
   literal domains, `domain=` of relational fields, `Domain(...)` on Odoo 19+.
 - `odoo-xmlid` / `odoo-xmlid-depends`: XML ids of `env.ref(...)`.

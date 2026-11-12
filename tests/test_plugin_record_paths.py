@@ -117,3 +117,38 @@ def test_sorted_order_checked_on_19(run_mypy: RunMypy, odoo_version: int) -> Non
         assert messages == [
             '9: error: Odoo model "t.order" has no field "amont" in sorted("name desc, amont")'
         ]
+
+
+CONSTANT_PATHS = """
+from typing import Final, Literal
+from odoo import models
+
+PARTNER_NAME: Final = "partner_id.name"
+TYPO: Final = "partner_id.nmae"
+NAME_TYPO: Final = "nmae"
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self, path: Literal["amount"], text: str) -> None:
+        reveal_type(self.mapped(PARTNER_NAME))
+        reveal_type(self.mapped(path))
+        reveal_type(self.grouped(path))
+        self.filtered(TYPO)
+        self.sorted(NAME_TYPO)
+        self.mapped(text)  # not known before run time: not checked
+"""
+
+
+def test_final_and_literal_paths_checked_like_literals(run_mypy: RunMypy) -> None:
+    messages = [line.split(";")[0] for line in _messages(run_mypy, CONSTANT_PATHS)]
+
+    assert messages[:2] == [
+        '13: note: Revealed type is "list[str | Literal[False]]"',
+        '14: note: Revealed type is "list[float]"',
+    ]
+    assert messages[2].startswith('15: note: Revealed type is "dict[float, t_use.models.Order')
+    assert messages[3:] == [
+        '16: error: Odoo model "res.partner" has no field "nmae" in filtered("partner_id.nmae")',
+        '17: error: Odoo model "t.order" has no field "nmae" in sorted("nmae")',
+    ]

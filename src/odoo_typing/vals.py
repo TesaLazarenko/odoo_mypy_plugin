@@ -167,6 +167,8 @@ class ValsChecker:
         model_of: The model of a model class, ``None`` if it is not one.
         concrete: Whether a model is not abstract (in the checking addon's view).
         target_for: The vals target of a model (for the vals of x2many commands).
+        guarded: Whether a field name is guarded on a line of the checked file
+            (``if "f" in self._fields:``, :func:`odoo_typing.guards.field_guard`).
     """
 
     checker: TypeChecker
@@ -175,6 +177,7 @@ class ValsChecker:
     model_of: Callable[[TypeInfo], str | None]
     concrete: Callable[[str], bool]
     target_for: Callable[[str], ValsTarget]
+    guarded: Callable[[str, int], bool]
 
     def check(self, target: ValsTarget, vals: DictExpr) -> None:
         """Report the problems of one dict display."""
@@ -212,6 +215,8 @@ class ValsChecker:
         if not target.check_keys or not target.fields:
             return
         if any(fnmatchcase(name, pattern) for pattern in target.ignore_keys):
+            return
+        if self.guarded(name, node.line):
             return
         message = f'Odoo model "{target.model}" has no field "{name}"{where}'
         matches = get_close_matches(name, list(target.fields), n=1, cutoff=0.6)

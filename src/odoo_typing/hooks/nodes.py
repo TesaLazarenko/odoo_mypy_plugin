@@ -19,7 +19,7 @@ from mypy.nodes import (
     TypeInfo,
 )
 from mypy.plugin import CheckerPluginInterface, ClassDefContext, MethodContext, MethodSigContext
-from mypy.types import ProperType, get_proper_type
+from mypy.types import Instance, LiteralType, ProperType, Type, get_proper_type
 
 # isort: split
 # After mypy.types: these modules import each other at import time.
@@ -38,6 +38,7 @@ __all__ = [
     "imported_view_class",
     "incomplete_modules",
     "is_false",
+    "literal_string",
     "literal_strings_argument",
     "lookup_class",
     "record_type",
@@ -220,3 +221,21 @@ def literal_strings_argument(ctx: MethodContext, name: str, position: int) -> li
         return None
     items = [item for item in value.items if isinstance(item, StrExpr)]
     return items if len(items) == len(value.items) else None
+
+
+def literal_string(node: Expression, node_type: Type) -> StrExpr | None:
+    """A string argument: a literal, or a ``Final`` / ``Literal`` str (``FIELD: Final = "a"``).
+
+    A string taken from the type is a new node placed on the argument, so messages about it
+    point there.
+    """
+    if isinstance(node, StrExpr):
+        return node
+    proper = get_proper_type(node_type)
+    if isinstance(proper, Instance) and proper.last_known_value is not None:
+        proper = proper.last_known_value
+    if not isinstance(proper, LiteralType) or not isinstance(proper.value, str):
+        return None
+    found = StrExpr(proper.value)
+    found.set_line(node)
+    return found
