@@ -1,0 +1,54 @@
+"""Unit tests of the guards of optional dependencies (roadmap item 4.6)."""
+
+from __future__ import annotations
+
+import ast
+import textwrap
+
+from odoo_typing.guards import Guard, is_guarded, model_guards
+
+SOURCE = """
+def action(self):
+    if "a.in" in self.env:
+        a = 1
+    else:
+        a = 2
+    if "b.not" not in self.env:
+        return
+    b = 3
+    c = 4 if self.env.get("c.get") else 5
+    if not ("d.or" in self.pool) or other:
+        return
+    d = 6
+    if "e.and" in env and "e.not" not in env.registry.models:
+        e = 7
+    if "f.else" not in self.env:
+        f = 8
+    else:
+        f = 9
+    if "g.other" in some_dict:
+        g = 10
+"""
+
+
+def _guards() -> tuple[Guard, ...]:
+    return model_guards(ast.walk(ast.parse(textwrap.dedent(SOURCE))))
+
+
+def test_model_guards_cover_branches_that_run_with_the_model() -> None:
+    assert set(_guards()) == {
+        Guard("a.in", 4, 4),
+        Guard("b.not", 9, 21),
+        Guard("c.get", 10, 10),
+        Guard("d.or", 13, 21),
+        Guard("e.and", 15, 15),
+        Guard("f.else", 19, 19),
+    }
+
+
+def test_is_guarded_checks_model_and_line() -> None:
+    guards = _guards()
+
+    assert is_guarded(guards, "a.in", 4)
+    assert not is_guarded(guards, "a.in", 6)
+    assert not is_guarded(guards, "g.other", 21)

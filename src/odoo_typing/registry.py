@@ -22,6 +22,7 @@ an addon's files are scanned only when a view that contains the addon is queried
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import sys
@@ -33,6 +34,7 @@ from pathlib import Path
 from odoo_typing.addons import BASE, Addon, AddonIndex
 from odoo_typing.config import Settings
 from odoo_typing.graphs import c3_merge, components_from
+from odoo_typing.guards import Guard, is_guarded, model_guards
 from odoo_typing.model_fields import (
     chain_definitions,
     delegated_field,
@@ -137,6 +139,7 @@ class Registry:
         self._view_modules: dict[tuple[str, str], frozenset[str]] = {}
         self._comodels: dict[str, frozenset[str]] = {}
         self._covered: dict[str, frozenset[str]] = {}
+        self._guards: dict[Path, tuple[Guard, ...]] = {}
         self._edge_addon_memo: dict[str, frozenset[str]] = {}
         self._explored: dict[str, set[str]] = {}  # per addon: models classified for cycles
         self._cycles: dict[str, dict[str, frozenset[str]]] = {}
@@ -249,6 +252,31 @@ class Registry:
         except SourceError:
             return frozenset()  # mypy reports unparsable files it checks itself
         return frozenset(referenced_models(tree))
+
+    def guarded(self, path: str | Path, model: str, line: int) -> bool:
+        """Whether a line of a source file runs only when a model is installed.
+
+        See :mod:`odoo_typing.guards`; a file the addon scan did not reach is parsed
+        once here.
+        """
+        addon = self.addons.addon_for_path(path)
+        if addon is not None:
+            self._models_of(addon.name)  # scans the addon
+        resolved = self.addons.real_path(path)
+        scan = self._by_path.get(resolved)
+        if scan is not None:
+            guards = scan.guards
+        elif resolved in self._guards:
+            guards = self._guards[resolved]
+        else:
+            try:
+                tree = parse_source(resolved)
+            except SourceError:
+                tree = None
+            guards = self._guards[resolved] = (
+                model_guards(ast.walk(tree)) if tree is not None else ()
+            )
+        return is_guarded(guards, model, line)
 
     def addon_name_for_path(self, path: str | Path) -> str | None:
         """Return the name of the addon a source file belongs to."""

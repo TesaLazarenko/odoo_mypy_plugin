@@ -21,7 +21,8 @@ What it does:
   sees it, like Odoo returns the final registry class.
 * A model name that only addons outside the ``depends`` closure define is an
   ``odoo-model-depends`` error (a sub-code of ``odoo-model``, so it can be disabled on
-  its own for code guarded by ``if "x" in self.env``); ``env[...]`` is then ``Any``.
+  its own); ``env[...]`` is then ``Any``. Lines that run only when the model is
+  installed (``if "x" in self.env:``, :mod:`odoo_typing.guards`) report neither code.
 * ``env.user`` / ``env.company`` / ``env.companies`` are ``res.users`` / ``res.company``
   records; ``env[NAME]`` accepts ``Final`` string constants.
 * Methods keep their signatures through ``@api.private`` / ``@api.returns(...)``, and
@@ -700,10 +701,16 @@ class OdooPlugin(Plugin):
     ) -> AnyType | None:
         """Report a model name that no addon in the view defines.
 
+        Not on a line that runs only when the model is installed (``if "m" in
+        self.env:``, :mod:`odoo_typing.guards`): the records are ``Any`` there.
+
         Returns:
             ``Any`` if an addon outside the dependencies defines it (reported with
-            :data:`ODOO_MODEL_DEPENDS`); ``None`` for a name nothing defines.
+            :data:`ODOO_MODEL_DEPENDS`) or the line is guarded; ``None`` for a name
+            nothing defines.
         """
+        if self.registry.guarded(api.path, model, context.line):
+            return AnyType(TypeOfAny.special_form)  # ``if "m" in self.env:``
         outside = self.registry.addons_outside_defining(model, addon_name)
         if outside:
             message = f'Odoo model "{model}" is defined in {_outside(outside, addon_name)}'

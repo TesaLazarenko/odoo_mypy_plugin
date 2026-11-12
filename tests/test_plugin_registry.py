@@ -497,3 +497,38 @@ def test_python_base_listed_in_inherit_keeps_all_inherit_bases(run_mypy: RunMypy
         '17: note: Revealed type is "int"',
         '18: note: Revealed type is "bool"',
     ]
+
+
+# -- guards of optional dependencies (roadmap 4.6) --------------------------------------------
+
+
+def test_guarded_models_outside_depends_are_any(run_mypy: RunMypy) -> None:
+    result = run_mypy(
+        {
+            "t_base": {"models.py": T_PARTNER},
+            "t_nodep": {
+                "depends": ["base"],
+                "models.py": """
+                from odoo import models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    def action(self) -> None:
+                        if "t.partner" in self.env:
+                            reveal_type(self.env["t.partner"])
+                        if "ee.only" not in self.env:
+                            return
+                        self.env["ee.only"].search([])
+                        self.env["t.partner"]
+                """,
+            },
+        },
+        check=["t_nodep"],
+    )
+
+    assert result.messages("t_nodep/models.py") == [
+        '9: note: Revealed type is "Any"',
+        '13: error: Odoo model "t.partner" is defined in addon "t_base", which is not in '
+        'the dependencies of "t_nodep"  [odoo-model-depends]',
+    ]

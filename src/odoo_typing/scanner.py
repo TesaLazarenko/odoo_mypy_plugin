@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Final
 
 from odoo_typing.addons import Addon, LoadKey
+from odoo_typing.guards import Guard, model_guards
 
 __all__ = [
     "AddonScan",
@@ -175,12 +176,16 @@ class ModuleScan:
         contributions: Model classes defined in the file, in source order.
         referenced_models: Model names used as string literals in ``env[...]``
             and as relational field comodels.
+        guards: Lines where a model is checked to be installed (``odoo_typing.guards``).
     """
 
     module: str
     path: Path
     contributions: tuple[Contribution, ...]
     referenced_models: frozenset[str]
+    # Only the file's own checks read it, so a shifted line must not change the
+    # fingerprint of the addons that depend on this one (see fingerprint._canonical).
+    guards: tuple[Guard, ...] = field(default=(), metadata={"fingerprint": False})
 
 
 class SourceError(Exception):
@@ -297,6 +302,7 @@ class _ImportWalker:
         except SourceError as error:
             self.errors.append(error)
             return
+        nodes = _inner_nodes(tree)
         file = _File(module=module, package=package)
         self._names[module] = file.names
         self._walk(tree.body, file)
@@ -305,7 +311,8 @@ class _ImportWalker:
                 module=module,
                 path=path,
                 contributions=tuple(file.contributions),
-                referenced_models=frozenset(referenced_models(tree)),
+                referenced_models=frozenset(referenced_models(tree, nodes)),
+                guards=model_guards(nodes),
             )
         )
 
@@ -768,7 +775,7 @@ def _as_names(value: object) -> tuple[str, ...]:
     return ()
 
 
-def referenced_models(tree: ast.Module) -> set[str]:
+def referenced_models(tree: ast.Module, nodes: list[ast.AST] | None = None) -> set[str]:
     """Model names a file uses: literals in ``env[...]`` and relational field comodels.
 
     ``env[NAME]`` counts when ``NAME`` is a module-level string constant, and
@@ -780,7 +787,7 @@ def referenced_models(tree: ast.Module) -> set[str]:
     """
     constants = _string_constants(tree)
     models: set[str] = set()
-    for node in _inner_nodes(tree):
+    for node in _inner_nodes(tree) if nodes is None else nodes:
         if isinstance(node, ast.Subscript):
             key = node.slice
             name = constants.get(key.id) if isinstance(key, ast.Name) else _string(key)

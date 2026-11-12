@@ -580,7 +580,18 @@
     README.
 - **Критерій готовності.** `request.env["res.partnr"]` у контролері дає `odoo-model`.
 
-### 4.6 Guard-и опціональних залежностей
+### 4.6 Guard-и опціональних залежностей — ✅ зроблено
+- **Зроблено.** Модуль `guards.py`: сканер (`ModuleScan.guards`, з тих самих внутрішніх
+  вузлів, що й `referenced_models`) записує діапазони рядків, де модель напевно є: тіло
+  `if "m" in self.env` / `env.get("m")` / `self.pool` / `env.registry(.models)`, також
+  в `and`; `else` від `not in`; решта блоку після `if "m" not in env: return` (`raise`,
+  `continue`, `break`, також з `or`); гілка тернарного виразу. `_unknown_model` на такому
+  рядку не дає ні `odoo-model-depends`, ні `odoo-model` і повертає Any (класи моделі
+  можуть бути відсутні на диску). Guard-и виключені з `scan_digest`
+  (`metadata={"fingerprint": False}`): зсув рядків не інвалідує залежні addons.
+  `hasattr` і `in self._fields` не стосуються моделей, `env.ref(...,
+  raise_if_not_found=False)` — пункт 4.11. Бенчмарк: помилки ті самі (у core-addons
+  depends повні), холодний запуск +1–2 % (обхід guard-ів у сканері).
 - **Проблема.** `if "sale.order" in self.env:` усе одно дає `odoo-model-depends`.
 - **Як вирішити.**
   - Сканер знаходить guard-и: `in self.env`, `in self._fields`, `hasattr`,

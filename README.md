@@ -36,10 +36,14 @@ Models are resolved **per addon**: a module sees only the models of the addons i
 typo), an `_inherit` defined only after the class, an `_inherit` cycle.
 `odoo-model-depends` (a sub-code of `odoo-model`): the model exists, but only in addons
 outside the `depends` closure. In an `_inherit` that is a real error (Odoo cannot load
-the class); in `env["..."]` or a comodel it is often optional-dependency code guarded by
-`if "sale.order" in self.env:`, so it can be disabled on its own with
-`disable_error_code = ["odoo-model-depends"]` (typos are still reported); `env[...]`
-is `Any` there. `# type: ignore[odoo-model]` covers both codes.
+the class); in `env["..."]` or a comodel it may be optional-dependency code, so it can
+be disabled on its own with `disable_error_code = ["odoo-model-depends"]` (typos are
+still reported); `env[...]` is `Any` there. `# type: ignore[odoo-model]` covers both
+codes. Code that runs only when the model is installed is not reported at all (with
+either code) and its records are `Any`: the body of `if "sale.order" in self.env:` (also
+`self.env.get("sale.order")`, `self.pool`, `env.registry`, inside `and`), the `else` of
+`not in`, the rest of the block after `if "sale.order" not in self.env: return` (or
+`raise` / `continue` / `break`), and `x if "sale.order" in self.env else y`.
 
 `odoo-field-ref` covers the names in field definitions, which Odoo resolves when it loads
 the registry: each field of a `related="a.b.c"` path (followed through the comodels,
@@ -462,9 +466,8 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
   assigned `self` of an earlier class of `x` (an `assignment` error)
 - `request.env` in controllers is `Any` (the `odoo.http.request` proxy is untyped), so
   model names there are not checked
-- guards are not detected: `if "sale.order" in self.env:` does not silence the
-  `odoo-model-depends` error in its body (disable that code instead), and a guarded name
-  that no addon on disk defines stays an `odoo-model` error
+- only the guard forms listed above are detected (a guard in a helper function, or a
+  flag computed earlier, is not)
 - `env[name]` with a name only known at run time is `Any` (option `dynamic_env`), so
   code on it is not checked
 - the generated overlay root is not checked against the addons: rerun `odoo-typing-root`

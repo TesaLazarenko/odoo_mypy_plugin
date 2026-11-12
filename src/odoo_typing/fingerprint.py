@@ -229,9 +229,12 @@ def _stored_names(record: Record, stat: Callable[[str], Stamp | None]) -> dict[s
 
 
 def _canonical(value: object) -> object:
-    """A JSON value for a scan result: dataclass fields in order, sets sorted."""
+    """A JSON value for a scan result: dataclass fields in order, sets sorted.
+
+    A field with ``metadata={"fingerprint": False}`` is left out.
+    """
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        fields = dataclasses.fields(value)
+        fields = [f for f in dataclasses.fields(value) if f.metadata.get("fingerprint", True)]
         return [type(value).__name__, *(_canonical(getattr(value, f.name)) for f in fields)]
     if isinstance(value, frozenset | set):
         return sorted((_canonical(item) for item in value), key=json.dumps)

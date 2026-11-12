@@ -125,6 +125,20 @@ def test_addon_digest_method_body_edited_stays_equal(tmp_path: Path) -> None:
     assert _fingerprints(settings, store).addon_digest("my_mod") == expected
 
 
+GUARDED = '\n    def f(self):\n{}        if "x.other" in self.env:\n            return 1\n'
+
+
+def test_addon_digest_guard_moved_in_dependency_stays_equal(tmp_path: Path) -> None:
+    settings = _odoo(tmp_path)
+    store = RecordStore(tmp_path / "cache")
+    models = settings.odoo_path / "addons/base/models.py"
+    _touch(models, MODEL.replace("x.a", "x.base") + GUARDED.format(""))
+    expected = _fingerprints(settings, store).addon_digest("my_mod")
+    _touch(models, MODEL.replace("x.a", "x.base") + GUARDED.format("        pass\n"))
+
+    assert _fingerprints(settings, store).addon_digest("my_mod") == expected
+
+
 def test_addon_digest_method_added_in_dependency_changes(tmp_path: Path) -> None:
     # compute="f" and the like are checked against the methods of the model.
     settings = _odoo(tmp_path)
