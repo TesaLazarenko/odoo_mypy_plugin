@@ -15,7 +15,8 @@ License: LGPL-3.0-or-later.
   (`_inherit`, `base`, mixins), so fields and methods of earlier classes and of the
   dependencies are known on `self`; `_inherits` delegation, transitively.
 - `env["model.name"]` is the model's class as the addon sees it (also `Final` constants,
-  aliases of `env`, `request.env` in controllers); `env.user` / `env.company`.
+  aliases of `env`, `request.env` in controllers); `env[records._name]` the type of
+  `records`; `env.user` / `env.company`.
 - Relational fields are typed with their comodel (also from `related=`, through chains of
   related fields); `Binary`,
   `Reference` and log-access fields get real types; option `literal_selection`.

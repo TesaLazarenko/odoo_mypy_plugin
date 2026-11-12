@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from mypy.lookup import lookup_fully_qualified
-from mypy.nodes import MypyFile, StrExpr, TypeInfo, Var
+from mypy.nodes import MemberExpr, MypyFile, StrExpr, TypeInfo, Var
 from mypy.plugin import AttributeContext, CheckerPluginInterface, MethodContext
 from mypy.types import (
     AnyType,
@@ -11,6 +11,8 @@ from mypy.types import (
     NoneType,
     Type,
     TypeOfAny,
+    TypeType,
+    TypeVarType,
     UnionType,
     get_proper_type,
 )
@@ -23,7 +25,7 @@ from odoo_typing.classes import instance_of
 from odoo_typing.compat import OdooProfile
 from odoo_typing.guards import module_guard
 from odoo_typing.hooks.models import Hooks
-from odoo_typing.hooks.nodes import call_argument, is_false, literal_string
+from odoo_typing.hooks.nodes import call_argument, is_false, literal_string, type_checker
 from odoo_typing.references import did_you_mean
 from odoo_typing.xmlids import ODOO_XMLID, ODOO_XMLID_DEPENDS, automatic_model
 
@@ -40,6 +42,9 @@ class EnvHooks(Hooks):
         if addon_name is None:
             return ctx.default_return_type  # outside any addon: see odoo_typing.plugin
         if model is None:
+            own = self._records_of_name(ctx)
+            if own is not None:
+                return own
             # A name known only at run time: ``BaseModel`` would make every field read
             # an error, so ``Any`` unless the user asked for ``dynamic_env = "base"``.
             if self._settings.dynamic_env == "any":
@@ -49,6 +54,25 @@ class EnvHooks(Hooks):
             outside = self._models.unknown_model(model, addon_name, ctx.context, ctx.api)
             return outside or ctx.default_return_type
         return self._models.env_model(model, addon_name, ctx.api) or ctx.default_return_type
+
+    def _records_of_name(self, ctx: MethodContext) -> Type | None:
+        """``env[records._name]``: the type of ``records``, when they are records of a model.
+
+        In a mixin, ``self._name`` is the model that uses it at run time, so ``self``'s
+        type (also ``Self``, or the class of ``cls``) is the right one.
+        """
+        argument = ctx.args[0][0] if ctx.args and len(ctx.args[0]) == 1 else None
+        if not isinstance(argument, MemberExpr) or argument.name != "_name":
+            return None
+        owner = type_checker(ctx.api).lookup_type_or_none(argument.expr)
+        records = get_proper_type(owner)
+        if isinstance(records, TypeType):
+            records = records.item
+        bound = records.upper_bound if isinstance(records, TypeVarType) else records
+        bound = get_proper_type(bound)
+        if not isinstance(bound, Instance) or self._models.model_of(bound.type) is None:
+            return None
+        return records
 
     def ref(self, ctx: MethodContext) -> Type:
         """``env.ref("module.name")``: the records of the XML id's model.

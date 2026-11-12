@@ -246,6 +246,8 @@ Unknown keys in this table are a configuration error, so a typo such as `addon_p
 does not go unnoticed. `dynamic_env = "base"` keeps plain mypy's `BaseModel` for
 `env[name]` when `name` is not a literal (or a `Final`/`Literal` str): every field read
 on it is then an `attr-defined` error. The default `"any"` leaves such code unchecked.
+`env[records._name]` is not such a name: it has the type of `records` (`self` in a
+mixin is the model that uses it at run time).
 `vals_ignore_keys` lists glob patterns (case-sensitive) of `vals` keys that are not
 reported as unknown fields; the default `["x_*"]` covers fields created in the database
 (manual and Studio fields). Their values are still checked when the code declares them.

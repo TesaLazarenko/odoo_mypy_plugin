@@ -403,6 +403,42 @@ def test_env_dynamic_name_option_change_invalidates_cache(
     assert f'9: note: Revealed type is "{names.base_model}"' in result.messages("models.py")
 
 
+OWN_NAME_ENV = """
+from odoo import fields, models
+
+class Mixin(models.AbstractModel):
+    _name = "t.mixin"
+
+    def touch(self) -> None:
+        reveal_type(self.env[self._name])
+
+class Thing(models.Model):
+    _name = "t.thing"
+    _inherit = ["t.mixin"]
+
+    size = fields.Integer()
+
+    def action(self) -> None:
+        reveal_type(self.env[self._name].search([]).size)
+        self.env[self._name].sizes
+
+    def copy(self, default=None):
+        reveal_type(self.env[self._name])
+        return super().copy(default)
+"""
+
+
+def test_env_own_name_is_the_type_of_the_records(run_mypy: RunMypy) -> None:
+    result = run_mypy({"my_mod": {"models.py": OWN_NAME_ENV}})
+
+    assert result.messages("models.py") == [
+        '8: note: Revealed type is "my_mod.models.Mixin"',
+        '17: note: Revealed type is "int"',
+        '18: error: "Thing" has no attribute "sizes"; maybe "size"?  [attr-defined]',
+        '21: note: Revealed type is "Self"',
+    ]
+
+
 # -- roadmap 4.4: super() in unannotated overrides -------------------------------------------
 
 

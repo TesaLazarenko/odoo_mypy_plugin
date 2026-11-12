@@ -935,7 +935,12 @@
     поза межами з тієї ж причини, що в 6.3.
 - **Критерій готовності.** Як у 6.3.
 
-### 6.5 `env[self._name]`
+### 6.5 `env[self._name]` — ✅ зроблено
+- **Зроблено.** `EnvHooks._records_of_name`: аргумент `x._name`, де `x` — записи моделі
+  (`Instance` класу моделі, `Self` з такою межею, `type[X]` від `cls`), дає тип `x`;
+  інакше як раніше (`dynamic_env`). На Odoo 18 `other._name` для `other: models.Model`
+  дає ще й власну помилку mypy `index` (`_name: str | None`) — це поза плагіном.
+  Бенчмарк: помилки ті самі, час у межах шуму.
 - **Проблема.** `self.env[self._name]` (28 місць) — Any (`dynamic_env`), бо `_name` має
   тип `str`.
 - **Як вирішити.** У `EnvHooks.getitem`: аргумент `MemberExpr` з назвою `_name`, receiver
