@@ -38,16 +38,29 @@ may add. The field name alone counts, whatever the records are.
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final, TypeAlias
+
+from odoo_typing.node_index import NodeIndex
 
 __all__ = ["Guard", "field_guard", "is_guarded", "model_guards", "module_guard"]
 
 TERMINATORS: Final = (ast.Return, ast.Raise, ast.Continue, ast.Break)
 REGISTRY_ATTRIBUTES: Final = frozenset({"registry", "pool", "models"})
 BLOCK_FIELDS: Final = ("body", "orelse", "finalbody")
-FUNCTIONS: Final = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _node_classes(base: type[ast.AST] = ast.AST) -> Iterator[type[ast.AST]]:
+    for cls in base.__subclasses__():
+        yield cls
+        yield from _node_classes(cls)
+
+
+# Node classes that have statement blocks (``If``, ``For``, ``FunctionDef``, ``Try``...).
+BLOCK_TYPES: Final = frozenset(
+    cls for cls in _node_classes() if set(BLOCK_FIELDS) & set(getattr(cls, "_fields", ()))
+)
 
 # The guard names a test proves when it is true, and when it is false.
 Proves: TypeAlias = tuple[set[str], set[str]]
@@ -93,35 +106,47 @@ def is_guarded(guards: Iterable[Guard], model: str, line: int) -> bool:
     return any(guard.model == model and guard.first <= line <= guard.last for guard in guards)
 
 
-def model_guards(nodes: Iterable[ast.AST]) -> tuple[Guard, ...]:
-    """The guards in a file, from its inner nodes (see ``scanner.syntax.inner_nodes``)."""
-    nodes = list(nodes)
-    flags, helpers = _flag_scopes(nodes), _helper_scopes(nodes)
+def model_guards(nodes: Iterable[ast.AST] | NodeIndex) -> tuple[Guard, ...]:
+    """The guards in a file, from its inner nodes (see :func:`odoo_typing.node_index.index_nodes`).
+
+    Only the node classes a guard can come from are read: statement blocks, ``x if t
+    else y``, and the assignments, functions and classes that name a test.
+    """
+    index = nodes if isinstance(nodes, NodeIndex) else NodeIndex(nodes)
+    if_expressions = index.of(ast.IfExp)
+    assignments = index.of(ast.Assign)
+    functions: list[ast.FunctionDef | ast.AsyncFunctionDef] = [
+        *index.of(ast.FunctionDef),
+        *index.of(ast.AsyncFunctionDef),
+    ]
+    classes = index.of(ast.ClassDef)
+    blocks: list[list[ast.stmt]] = []
+    for kind in BLOCK_TYPES & index.classes():
+        for node in index.of(kind):
+            for name in BLOCK_FIELDS:
+                block = getattr(node, name, None)
+                if isinstance(block, list) and block and isinstance(block[0], ast.stmt):
+                    blocks.append(block)
+    flags = _flag_scopes(assignments, functions)
+    helpers = _helper_scopes(functions, classes)
     guards: list[Guard] = []
-    for node in nodes:
-        if isinstance(node, ast.IfExp):
-            known = _known_at(node.lineno, flags, helpers)
-            when_true, when_false = _test_models(node.test, known)
-            guards += _cover(when_true, [node.body])
-            guards += _cover(when_false, [node.orelse])
-            continue
-        for name in BLOCK_FIELDS:
-            block = getattr(node, name, None)
-            if isinstance(block, list) and block and isinstance(block[0], ast.stmt):
-                guards += _block_guards(block, _known_at(block[0].lineno, flags, helpers))
+    for expression in if_expressions:
+        known = _known_at(expression.lineno, flags, helpers)
+        when_true, when_false = _test_models(expression.test, known)
+        guards += _cover(when_true, [expression.body])
+        guards += _cover(when_false, [expression.orelse])
+    for block in blocks:
+        guards += _block_guards(block, _known_at(block[0].lineno, flags, helpers))
     return tuple(guards)
 
 
-def _flag_scopes(nodes: Sequence[ast.AST]) -> list[_Scope]:
+def _flag_scopes(
+    assignments: Sequence[ast.Assign], functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef]
+) -> list[_Scope]:
     """The functions that assign a guard test to a variable once (``has_sale = ... in env``)."""
-    functions = [node for node in nodes if isinstance(node, FUNCTIONS)]
     scopes: dict[int, _Scope] = {}
-    for node in nodes:
-        if not (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-        ):
+    for node in assignments:
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             continue
         proves = _test_models(node.value)
         if not proves[0] and not proves[1]:
@@ -134,12 +159,13 @@ def _flag_scopes(nodes: Sequence[ast.AST]) -> list[_Scope]:
     return list(scopes.values())
 
 
-def _helper_scopes(nodes: Sequence[ast.AST]) -> list[_Scope]:
+def _helper_scopes(
+    functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef], classes: Sequence[ast.ClassDef]
+) -> list[_Scope]:
     """The classes with a method whose body is ``return <guard test>``."""
-    classes = [node for node in nodes if isinstance(node, ast.ClassDef)]
     scopes: dict[int, _Scope] = {}
-    for node in nodes:
-        if not isinstance(node, FUNCTIONS) or node.args.args[1:] or node.args.posonlyargs:
+    for node in functions:
+        if node.args.args[1:] or node.args.posonlyargs:
             continue
         body = node.body[1:] if ast.get_docstring(node) is not None else node.body
         if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:

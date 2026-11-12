@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from functools import partial
 
 from mypy.nodes import MypyFile
@@ -140,6 +141,7 @@ class OdooPlugin(Plugin):
         if warning := package_bases_warning(profile, settings, options):
             print(warning, file=sys.stderr)
         self._store = RecordStore.for_cache_dir(options.cache_dir)
+        self._hooks = _HookCache()
         self._config_stamp = stamp(options.config_file) if options.config_file else None
         self._inputs_checked = False
         self._overlay_checked = False
@@ -189,6 +191,7 @@ class OdooPlugin(Plugin):
         models = self._models
         if self._config_changed() or models.registry.inputs_changed():
             models.registry = self._new_registry(models.settings)
+            self._hooks = _HookCache()  # hooks found with the old registry or settings
         if not self._overlay_checked:
             self._overlay_checked = True
             if warning := stale_overlay_warning(models.settings, models.registry):
@@ -241,9 +244,53 @@ class OdooPlugin(Plugin):
         modules.discard(file.fullname)
         return [(DEPENDENCY_PRIORITY, module, -1) for module in sorted(modules)]
 
-    # -- semantic analysis: _inherit -------------------------------------------------------
+    # -- hook lookup -----------------------------------------------------------------------
+    # mypy asks for a hook at every call, attribute and class (about 200,000 times on the
+    # account addon); the answer depends only on the name, the profile and the registry,
+    # so it is kept per name until either changes (:class:`_HookCache`).
 
     def get_customize_class_mro_hook(
+        self, fullname: str
+    ) -> Callable[[ClassDefContext], None] | None:
+        """Give Odoo model classes the MRO of their registry class."""
+        found = self._hooks.mro
+        if fullname not in found:
+            found[fullname] = self._find_customize_class_mro_hook(fullname)
+        return found[fullname]
+
+    def get_method_hook(self, fullname: str) -> Callable[[MethodContext], Type] | None:
+        """Type ``env[...]`` and recordset methods; check vals, domains and field paths."""
+        found = self._hooks.method
+        if fullname not in found:
+            found[fullname] = self._find_method_hook(fullname)
+        return found[fullname]
+
+    def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
+        """Bind relational field constructors to their comodel; see through decorators."""
+        found = self._hooks.function
+        if fullname not in found:
+            found[fullname] = self._find_function_hook(fullname)
+        return found[fullname]
+
+    def get_method_signature_hook(
+        self, fullname: str
+    ) -> Callable[[MethodSigContext], FunctionLike] | None:
+        """Type reading a relational field; check assigned values; let ``create`` take a dict."""
+        found = self._hooks.signature
+        if fullname not in found:
+            found[fullname] = self._find_method_signature_hook(fullname)
+        return found[fullname]
+
+    def get_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
+        """Resolve record-typed attributes of model classes from the reading addon."""
+        found = self._hooks.attribute
+        if fullname not in found:
+            found[fullname] = self._find_attribute_hook(fullname)
+        return found[fullname]
+
+    # -- semantic analysis: _inherit -------------------------------------------------------
+
+    def _find_customize_class_mro_hook(
         self, fullname: str
     ) -> Callable[[ClassDefContext], None] | None:
         """Give Odoo model classes the MRO of their registry class."""
@@ -260,7 +307,7 @@ class OdooPlugin(Plugin):
 
     # -- type checking: env[...] and relational fields -------------------------------------
 
-    def get_method_hook(self, fullname: str) -> Callable[[MethodContext], Type] | None:
+    def _find_method_hook(self, fullname: str) -> Callable[[MethodContext], Type] | None:
         """Type ``env["model.name"]`` and unannotated overrides of ``-> Self`` methods.
 
         ``create``, ``write`` and ``copy`` also get their ``vals`` checked (one hook per name, so
@@ -286,7 +333,7 @@ class OdooPlugin(Plugin):
             return partial(keep_receiver, profile.base_model)
         return None
 
-    def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
+    def _find_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
         """Bind relational field constructors to their comodel; see through decorators."""
         profile = self._models.profile
         fields = self._fields
@@ -305,7 +352,7 @@ class OdooPlugin(Plugin):
             return partial(fields.decorator_fields, profile.field_decorators[fullname], factory)
         return factory
 
-    def get_method_signature_hook(
+    def _find_method_signature_hook(
         self, fullname: str
     ) -> Callable[[MethodSigContext], FunctionLike] | None:
         """Type reading a relational field; check assigned values; let ``create`` take a dict."""
@@ -320,7 +367,7 @@ class OdooPlugin(Plugin):
         profile = self._models.profile
         return partial(create_signature, profile.base_model, untyped=profile.untyped_fields)
 
-    def get_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
+    def _find_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
         """Resolve record-typed attributes of model classes from the reading addon."""
         profile = self._models.profile
         registry = self._models.registry
@@ -335,6 +382,19 @@ class OdooPlugin(Plugin):
             # Declared as ``Many2one[Any]``: the res.users records the reading addon sees.
             return partial(self._env.record, "res.users")
         return self._values.record_attribute if registry.contribution(owner) else None
+
+
+@dataclass(slots=True)
+class _HookCache:
+    """The hooks found per full name, for one registry and one set of settings."""
+
+    mro: dict[str, Callable[[ClassDefContext], None] | None] = field(default_factory=dict)
+    method: dict[str, Callable[[MethodContext], Type] | None] = field(default_factory=dict)
+    function: dict[str, Callable[[FunctionContext], Type] | None] = field(default_factory=dict)
+    signature: dict[str, Callable[[MethodSigContext], FunctionLike] | None] = field(
+        default_factory=dict
+    )
+    attribute: dict[str, Callable[[AttributeContext], Type] | None] = field(default_factory=dict)
 
 
 def plugin(version: str) -> type[OdooPlugin]:

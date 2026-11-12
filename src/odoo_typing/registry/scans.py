@@ -6,9 +6,9 @@ first question, and an addon's files are scanned only when a question needs the 
 
 from __future__ import annotations
 
-import ast
 import sys
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from functools import cached_property, partial
 from pathlib import Path
 from typing import Protocol
@@ -16,6 +16,7 @@ from typing import Protocol
 from odoo_typing.addons import Addon, AddonIndex, LoadKey
 from odoo_typing.config import Settings
 from odoo_typing.guards import Guard, is_guarded, model_guards
+from odoo_typing.node_index import index_nodes
 from odoo_typing.scanner import (
     AddonScan,
     Contribution,
@@ -25,7 +26,7 @@ from odoo_typing.scanner import (
     referenced_models,
     scan_addon,
 )
-from odoo_typing.stamps import Stamps, read_index, scan_stamps, unchanged
+from odoo_typing.stamps import Stamp, Stamps, read_index, scan_stamps, stamp, unchanged
 
 __all__ = ["IndexLoader", "ScanCache", "ScannedAddons"]
 
@@ -41,6 +42,15 @@ class ScanCache(Protocol):
 
 
 IndexLoader = Callable[[], tuple[AddonIndex, Stamps]]
+
+
+@dataclass(frozen=True, slots=True)
+class _UnreachedFile:
+    """A file the addon scans did not reach, as it was when parsed (its stamp)."""
+
+    stamp: Stamp | None
+    referenced_models: frozenset[str]
+    guards: tuple[Guard, ...]
 
 
 class ScannedAddons:
@@ -71,7 +81,7 @@ class ScannedAddons:
         self._by_path: dict[Path, ModuleScan] = {}
         self._by_class: dict[str, Contribution] = {}
         self._by_model: dict[str, dict[str, list[Contribution]]] = {}
-        self._guards: dict[Path, tuple[Guard, ...]] = {}
+        self._unreached: dict[Path, _UnreachedFile] = {}  # files the addon scans miss
         self._xml_ids: dict[str, Mapping[str, str]] = {}
         self._misnamed: set[str] = set()  # addons warned about by misnamed()
 
@@ -171,7 +181,7 @@ class ScannedAddons:
 
         A file the scanner reached is answered from its scan, whatever path spelling
         mypy uses for it (relative, or through a symlink). Other files, such as tests
-        that ``__init__.py`` does not import, are parsed once here.
+        that ``__init__.py`` does not import, are parsed once here (:meth:`_unreached_file`).
         """
         addon = self.addons.addon_for_path(path)
         if addon is not None:
@@ -180,36 +190,43 @@ class ScannedAddons:
         scan = self._by_path.get(resolved)
         if scan is not None:
             return scan.referenced_models
-        try:
-            tree = parse_source(resolved)
-        except SourceError:
-            return frozenset()  # mypy reports unparsable files it checks itself
-        return frozenset(referenced_models(tree))
+        return self._unreached_file(resolved).referenced_models
 
     def guarded(self, path: str | Path, model: str, line: int) -> bool:
         """Whether a line of a source file runs only when a model is installed.
 
         See :mod:`odoo_typing.guards`; a file the addon scan did not reach is parsed
-        once here.
+        once (:meth:`_unreached_file`).
         """
         addon = self.addons.addon_for_path(path)
         if addon is not None:
             self._models_of(addon.name)  # scans the addon
         resolved = self.addons.real_path(path)
         scan = self._by_path.get(resolved)
-        if scan is not None:
-            guards = scan.guards
-        elif resolved in self._guards:
-            guards = self._guards[resolved]
-        else:
-            try:
-                tree = parse_source(resolved)
-            except SourceError:
-                tree = None
-            guards = self._guards[resolved] = (
-                model_guards(ast.walk(tree)) if tree is not None else ()
-            )
+        guards = scan.guards if scan is not None else self._unreached_file(resolved).guards
         return is_guarded(guards, model, line)
+
+    def _unreached_file(self, path: Path) -> _UnreachedFile:
+        """What a file the addon scans did not reach refers to; parsed once per version.
+
+        Its stamp is checked on each use: no addon scan records it, so a daemon update
+        that changes it (a test file) does not start a new registry.
+        """
+        current = stamp(path)
+        known = self._unreached.get(path)
+        if known is not None and known.stamp == current:
+            return known
+        try:
+            tree = parse_source(path)
+        except SourceError:  # mypy reports unparsable files it checks itself
+            found = _UnreachedFile(current, frozenset(), ())
+        else:
+            nodes = index_nodes(tree)
+            found = _UnreachedFile(
+                current, frozenset(referenced_models(tree, nodes)), model_guards(nodes)
+            )
+        self._unreached[path] = found
+        return found
 
     def addon_name_for_path(self, path: str | Path) -> str | None:
         """Return the name of the addon a source file belongs to."""

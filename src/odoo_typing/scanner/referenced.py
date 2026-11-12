@@ -6,11 +6,11 @@ import ast
 import re
 from typing import Final
 
+from odoo_typing.node_index import NodeIndex, index_nodes
 from odoo_typing.scanner.syntax import (
     RELATIONAL_FIELDS,
     callee_name,
     comodel_argument,
-    inner_nodes,
     single_target,
     string_literal,
 )
@@ -25,7 +25,7 @@ LOG_ACCESS_USERS: Final = frozenset({"create_uid", "write_uid"})
 MODEL_NAME: Final = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+")
 
 
-def referenced_models(tree: ast.Module, nodes: list[ast.AST] | None = None) -> set[str]:
+def referenced_models(tree: ast.Module, nodes: NodeIndex | None = None) -> set[str]:
     """Model names a file uses: literals in ``env[...]`` and relational field comodels.
 
     ``env[NAME]`` counts when ``NAME`` is a module-level string constant, and
@@ -36,23 +36,21 @@ def referenced_models(tree: ast.Module, nodes: list[ast.AST] | None = None) -> s
     no model only adds an edge to nothing.
     """
     constants = _string_constants(tree)
+    index = index_nodes(tree) if nodes is None else nodes
     models: set[str] = set()
-    for node in inner_nodes(tree) if nodes is None else nodes:
-        if isinstance(node, ast.Subscript):
-            key = node.slice
-            name = constants.get(key.id) if isinstance(key, ast.Name) else string_literal(key)
-            if name is None or not (_is_env(node.value) or MODEL_NAME.fullmatch(name)):
-                continue
-        elif isinstance(node, ast.Call) and callee_name(node.func) in RELATIONAL_FIELDS:
-            name = comodel_argument(node)
-        elif isinstance(node, ast.Attribute) and node.attr in ENV_RECORDS and _is_env(node.value):
-            name = ENV_RECORDS[node.attr]
-        elif isinstance(node, ast.Attribute) and node.attr in LOG_ACCESS_USERS:
-            name = "res.users"  # ``record.create_uid``: a res.users record
-        else:
-            continue
-        if name:
+    for subscript in index.of(ast.Subscript):
+        key = subscript.slice
+        name = constants.get(key.id) if isinstance(key, ast.Name) else string_literal(key)
+        if name and (_is_env(subscript.value) or MODEL_NAME.fullmatch(name)):
             models.add(name)
+    for call in index.of(ast.Call):
+        if callee_name(call.func) in RELATIONAL_FIELDS and (name := comodel_argument(call)):
+            models.add(name)
+    for attribute in index.of(ast.Attribute):
+        if attribute.attr in ENV_RECORDS and _is_env(attribute.value):
+            models.add(ENV_RECORDS[attribute.attr])
+        elif attribute.attr in LOG_ACCESS_USERS:
+            models.add("res.users")  # ``record.create_uid``: a res.users record
     return models
 
 

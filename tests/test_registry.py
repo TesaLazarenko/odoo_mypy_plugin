@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import textwrap
 from collections.abc import Mapping
 from pathlib import Path
@@ -182,6 +183,22 @@ def test_referenced_models_file_not_imported_by_addon_parses_it(tmp_path: Path) 
     models = registry.referenced_models(tmp_path / "addons" / "refs" / "tests" / "test_x.py")
 
     assert models == frozenset({"res.users"})
+
+
+def test_unreached_file_parsed_once_until_it_changes(tmp_path: Path, mocker: MockerFixture) -> None:
+    registry = _registry(tmp_path, {"refs": {"__init__.py": "", "tests/test_x.py": REFS}})
+    path = tmp_path / "addons" / "refs" / "tests" / "test_x.py"
+    registry.referenced_models(path)
+    parse = mocker.spy(ast, "parse")
+
+    registry.referenced_models(path)
+    guarded = registry.guarded(path, "sale.order", 1)
+    unchanged = parse.call_count
+    path.write_text('def f(env):\n    env["sale.order"]\n')
+    os.utime(path, ns=(10**18, 10**18))  # a new stamp even within the clock's resolution
+    changed = registry.referenced_models(path)
+
+    assert (unchanged, guarded, changed) == (0, False, frozenset({"sale.order"}))
 
 
 # -- repeated model_tips queries are answered from a cache ([20]) ---------------------------

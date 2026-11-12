@@ -15,23 +15,12 @@ __all__ = [
     "RELATIONAL_FIELDS",
     "callee_name",
     "comodel_argument",
-    "inner_nodes",
     "parse_source",
     "single_target",
     "string_literal",
 ]
 
 RELATIONAL_FIELDS = frozenset({"Many2one", "One2many", "Many2many"})
-
-# Concrete node classes that have no child nodes worth visiting (``ast.Load`` etc.).
-LEAF_NODES: frozenset[type] = frozenset(
-    {ast.Name, ast.Constant, ast.alias}
-    | {
-        cls
-        for base in (ast.expr_context, ast.operator, ast.boolop, ast.unaryop, ast.cmpop)
-        for cls in base.__subclasses__()
-    }
-)
 
 
 def parse_source(path: Path) -> ast.Module:
@@ -57,29 +46,6 @@ def parse_source(path: Path) -> ast.Module:
         raise SourceError(path, f"{exc.msg} (line {exc.lineno})") from exc
     except ValueError as exc:  # e.g. null bytes on older Python versions
         raise SourceError(path, str(exc)) from exc
-
-
-def inner_nodes(tree: ast.AST) -> list[ast.AST]:
-    """Return every node except the leaves (names, constants, contexts, operators).
-
-    This runs on every file mypy loads. ``ast.walk`` also visits the leaves, about
-    half of all nodes (each ``Name`` has its own ``Load()`` child), and its nested
-    generators cost more than the work itself; no leaf can be or contain a
-    subscript or a call. The checks are inlined on purpose (hot loop).
-    """
-    nodes: list[ast.AST] = []
-    stack: list[ast.AST] = [tree]
-    node_type, leaves = ast.AST, LEAF_NODES
-    while stack:
-        node = stack.pop()
-        nodes.append(node)
-        for name in node._fields:
-            value = getattr(node, name, None)
-            if isinstance(value, list):
-                stack += [x for x in value if isinstance(x, node_type) and type(x) not in leaves]
-            elif isinstance(value, node_type) and type(value) not in leaves:
-                stack.append(value)
-    return nodes
 
 
 def callee_name(node: ast.expr) -> str | None:

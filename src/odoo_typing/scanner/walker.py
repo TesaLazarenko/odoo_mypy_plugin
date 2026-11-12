@@ -14,6 +14,7 @@ from pathlib import Path
 
 from odoo_typing.addons import Addon, LoadKey, find_manifest
 from odoo_typing.guards import model_guards
+from odoo_typing.node_index import index_nodes
 from odoo_typing.scanner.class_bodies import (
     abstract,
     as_names,
@@ -28,7 +29,7 @@ from odoo_typing.scanner.evaluation import UNKNOWN, assign, class_attributes
 from odoo_typing.scanner.fields import declared_fields
 from odoo_typing.scanner.referenced import referenced_models
 from odoo_typing.scanner.results import AddonScan, Contribution, ModuleScan, SourceError
-from odoo_typing.scanner.syntax import inner_nodes, parse_source
+from odoo_typing.scanner.syntax import parse_source
 from odoo_typing.xmlids import scan_data
 
 __all__ = ["scan_addon"]
@@ -97,7 +98,7 @@ class _ImportWalker:
         except SourceError as error:
             self.errors.append(error)
             return
-        nodes = inner_nodes(tree)
+        nodes = index_nodes(tree)
         file = _File(module=module, package=package)
         self._names[module] = file.names
         self._walk(tree.body, file)
