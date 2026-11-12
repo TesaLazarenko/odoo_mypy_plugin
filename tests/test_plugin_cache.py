@@ -236,3 +236,16 @@ def test_cache_res_users_extension_added_types_env_user_field(run_mypy: RunMypy)
     result = run_mypy({"dep_mod": dep}, check=["my_mod"])
 
     assert result.messages("my_mod/user.py") == ['8: note: Revealed type is "int"']
+
+
+def test_cache_addon_outside_closure_added_turns_unknown_into_depends(run_mypy: RunMypy) -> None:
+    first = run_mypy({"my_mod": {"depends": ["base"], "user.py": ENV_USER}}, check=["my_mod"])
+    assert first.messages("my_mod/user.py")[0].startswith('8: error: Unknown Odoo model "x.thing"')
+
+    result = run_mypy({"dep_mod": _dep()}, check=["my_mod"])
+
+    assert result.messages("my_mod/user.py") == [
+        '8: error: Odoo model "x.thing" is defined in addon "dep_mod", which is not in'
+        ' the dependencies of "my_mod"  [odoo-model-depends]',
+        '8: note: Revealed type is "Any"',
+    ]

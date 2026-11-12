@@ -284,6 +284,13 @@ class Registry:
         addon = self.addons.addon_for_path(path)
         return addon.name if addon else None
 
+    def visible(self, model: str, addon_name: str) -> bool:
+        """Whether a class of an addon's closure defines a model (``view_class`` is not None).
+
+        Cheaper than :meth:`view_class`: no MRO is computed.
+        """
+        return bool(self._candidates(model, addon_name))
+
     def _candidates(self, model: str, addon_name: str) -> tuple[Contribution, ...]:
         """The classes of a model visible from an addon, in registration order.
 

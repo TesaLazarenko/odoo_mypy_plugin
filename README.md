@@ -384,10 +384,12 @@ list, but parses nothing.
 Limits: a structural change (a new class, `_inherit`, comodel or `env["..."]` literal) in
 an addon makes mypy recheck every module of the addons that depend on it, not only the
 ones that use the changed model. Whether an unknown name is reported as `odoo-model` or
-as `odoo-model-depends` ("defined in addon ..., which is not in the dependencies"), and
-the addon that message names, can stay outdated when an addon *outside* the closure is
-added or removed, until the file is checked again (that the name is not visible stays
-right). Switching `overlay_root` on or off changes every addon's module names and
+as `odoo-model-depends` ("defined in addon ..., which is not in the dependencies")
+follows an addon *outside* the closure being added or removed: the cache entry of a
+file of an `addons_path` addon that names such models depends on the list of addons
+(not for Odoo's own addons, whose files often name optional models). It can still lag when an
+existing outside addon starts or stops defining the model without a directory change
+(only its file was edited), until the file is checked again. Switching `overlay_root` on or off changes every addon's module names and
 invalidates the whole cache.
 
 **dmypy:** the daemon keeps one plugin instance. Before the files of each update are

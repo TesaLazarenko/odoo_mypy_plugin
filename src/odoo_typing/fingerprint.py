@@ -71,6 +71,8 @@ class Fingerprints:
         self._addon_digests: dict[str, str] = {}
         self._scan_digests: dict[str, str] = {}
         self._stamps: dict[str, Stamp | None] = {}
+        self._roots_digest = ""  # of the addons roots and entries, see _addon_names
+        self._odoo_path = settings.odoo_path
 
     def module_data(self, module: str, path: str) -> str | None:
         """The config data of a module: its addon's digest, if it is in one.
@@ -88,7 +90,55 @@ class Fingerprints:
             addon_name = addon.name if addon is not None else None
         if addon_name is None:
             return None
-        return f"{self.addon_digest(addon_name)}-{self._options}"
+        data = f"{self.addon_digest(addon_name)}-{self._options}"
+        if self._is_core(addon_name):
+            return data  # see _outside_definers
+        outside = self._outside_definers(addon_name, path)
+        return f"{data}-{outside}" if outside else data
+
+    def _is_core(self, addon_name: str) -> bool:
+        """Whether an addon is one of Odoo's own (in ``<odoo_path>/addons``).
+
+        By a stamp of its manifest there, not the addon index, which a warm run never
+        loads (a core addon wins over an ``addons_path`` one of the same name).
+        """
+        directory = self._odoo_path / "addons" / addon_name
+        return any(self._stat(directory / name) is not None for name in MANIFEST_NAMES)
+
+    def _outside_definers(self, addon_name: str, path: str) -> str:
+        """Digest for a file that names models its closure does not define.
+
+        Whether such a name is an ``odoo-model`` (nothing defines it) or an
+        ``odoo-model-depends`` error (an addon outside the closure does) depends on
+        addons the closure digest does not cover. Finding those addons would scan
+        addons outside the closure, so the digest takes the file's invisible models
+        with the addons roots (the names record's stamps) instead: adding or removing an
+        addon anywhere rechecks only the files that name such models. Stored per file,
+        valid while the file and the roots are unchanged; empty for the usual file.
+
+        Not for Odoo's own addons: their files name models of other addons (often
+        guarded), their errors are usually silenced (``follow_imports``), and making
+        them depend on the list of addons would recheck them whenever one is added.
+        """
+        key = f"outside-{digest([addon_name, path])[:16]}-{self._key}.json"
+        current = self._stat(path)
+        recorded = list(current) if current is not None else None
+        record = self._store.load(key)
+        if (
+            record is not None
+            and record.get("stamp") == recorded
+            and isinstance(models := record.get("models"), list)
+        ):
+            found = models
+        else:
+            registry = self._registry
+            found = sorted(
+                model
+                for model in registry.referenced_models(path)
+                if not registry.visible(model, addon_name)
+            )
+            self._store.save(key, {"stamp": recorded, "models": found})
+        return digest([found, self._roots_digest])[:16] if found else ""
 
     def addon_digest(self, addon_name: str) -> str:
         """Digest of everything the plugin may use for a file of the addon."""
@@ -110,6 +160,8 @@ class Fingerprints:
             key = f"names-{self._key}.json"
             record = self._store.load(key)
             self._names = _stored_names(record, self._stat) if record is not None else None
+            if self._names is not None and record is not None:
+                self._roots_digest = digest(record.get("stamps"))
         if self._names is None:
             index = self._registry.addons
             self._names = {name: addon.module_prefix for name, addon in index.addons.items()}
@@ -119,6 +171,7 @@ class Fingerprints:
                 if os.path.basename(path) not in MANIFEST_NAMES
             }
             self._store.save(f"names-{self._key}.json", {"stamps": stamps, "addons": self._names})
+            self._roots_digest = digest(stamps)  # as the stored record's: tuples dump as lists
         return self._names
 
     # -- addon views ---------------------------------------------------------------------
