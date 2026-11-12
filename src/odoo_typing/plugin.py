@@ -150,7 +150,7 @@ from odoo_typing.methods import (
 )
 from odoo_typing.odoo_version import version_mismatch_warning
 from odoo_typing.overlay import overlay_differences
-from odoo_typing.records import RecordStore, load_index
+from odoo_typing.records import RecordStore, index_key, load_index
 from odoo_typing.references import (
     KNOWN_CLASSES,
     METHOD_ARGUMENTS,
@@ -164,6 +164,7 @@ from odoo_typing.references import (
     resolve_path,
 )
 from odoo_typing.registry import MissingParent, Registry
+from odoo_typing.scan_store import ScanStore
 from odoo_typing.scanner import LOG_ACCESS_USERS, POSITIONAL_PARAMETERS, Contribution, FieldInfo
 from odoo_typing.stamps import stamp
 from odoo_typing.vals import ValsChecker, ValsTarget, context_defaults, stored, vals_dicts
@@ -215,7 +216,8 @@ class OdooPlugin(Plugin):
 
     def _new_registry(self) -> None:
         index = partial(load_index, self._settings, self._store)
-        self.registry = Registry(self._settings, index)
+        scans = ScanStore(self._store, index_key(self._settings))
+        self.registry = Registry(self._settings, index, scans)
         self._fingerprints = Fingerprints(self.registry, self._store, self._settings)
 
     # -- incremental mode and the daemon ---------------------------------------------------

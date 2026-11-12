@@ -439,6 +439,10 @@ existing outside addon starts or stops defining the model without a directory ch
 (only its file was edited), until the file is checked again. Switching `overlay_root` on or off changes every addon's module names and
 invalidates the whole cache.
 
+The plugin also keeps each addon's scan (classes, fields, XML ids) in the cache
+directory, valid while the files it read are unchanged: after an edit, only the edited
+addon is parsed again, not its whole dependency closure.
+
 **dmypy:** the daemon keeps one plugin instance. Before the files of each update are
 processed, the plugin compares the stamps of everything its registry has read (addons
 roots, manifests, scanned and data files, and mypy's config file) with the disk and

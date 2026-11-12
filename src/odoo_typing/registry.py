@@ -30,8 +30,9 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property, partial
 from pathlib import Path
+from typing import Protocol
 
-from odoo_typing.addons import BASE, Addon, AddonIndex
+from odoo_typing.addons import BASE, Addon, AddonIndex, LoadKey
 from odoo_typing.config import Settings
 from odoo_typing.graphs import c3_merge, components_from
 from odoo_typing.guards import Guard, is_guarded, model_guards
@@ -57,6 +58,18 @@ from odoo_typing.stamps import Stamps, read_index, scan_stamps, unchanged
 __all__ = ["MissingParent", "ModelView", "Registry"]
 
 TipsKey = tuple[str, str, str | None]
+
+
+class ScanCache(Protocol):
+    """Addon scans kept between runs (see :class:`odoo_typing.scan_store.ScanStore`)."""
+
+    def load(self, addon_name: str, load_key: LoadKey) -> tuple[AddonScan, Stamps] | None:
+        """The stored scan and its stamps, if none of its files changed."""
+
+    def save(self, addon_name: str, load_key: LoadKey, scan: AddonScan, stamps: Stamps) -> None:
+        """Keep a scan with the stamps of the files it read."""
+
+
 IndexLoader = Callable[[], tuple[AddonIndex, Stamps]]
 # A registry MRO: classes, and model names standing for a parent's registry class.
 Nodes = tuple["Contribution | str", ...]
@@ -110,7 +123,9 @@ class ModelView:
 class Registry:
     """Lazily scanned index of Odoo model classes."""
 
-    def __init__(self, settings: Settings, index: IndexLoader | None = None) -> None:
+    def __init__(
+        self, settings: Settings, index: IndexLoader | None = None, scans: ScanCache | None = None
+    ) -> None:
         """Create a registry for the configured Odoo installation.
 
         Nothing is read from disk yet: a fully cached mypy run never asks a question.
@@ -119,8 +134,11 @@ class Registry:
             settings: Plugin settings.
             index: Returns the addon index and the stamps of what it was built from
                 (default: :func:`odoo_typing.stamps.read_index`).
+            scans: Addon scans kept between runs (:mod:`odoo_typing.scan_store`); every
+                addon is scanned again without it.
         """
         self._settings = settings
+        self._scans = scans
         self._index_loader = index or partial(
             read_index, settings.odoo_path, settings.addons_paths, settings.custom_prefix
         )
@@ -183,8 +201,15 @@ class Registry:
         if addon_name not in self._by_model:
             models = self._by_model[addon_name] = {}
             addon = self.addons.addons[addon_name]
-            result = scan_addon(addon, self.addons.load_key(addon_name))
-            self._scan_results[addon_name] = (result, scan_stamps(addon, result))
+            load_key = self.addons.load_key(addon_name)
+            stored = self._scans.load(addon_name, load_key) if self._scans else None
+            if stored is None:
+                result = scan_addon(addon, load_key)
+                stored = (result, scan_stamps(addon, result))
+                if self._scans is not None:
+                    self._scans.save(addon_name, load_key, *stored)
+            result = stored[0]
+            self._scan_results[addon_name] = stored
             for error in result.errors:
                 _warn_unparsable(error)
             for scan in result.modules:
