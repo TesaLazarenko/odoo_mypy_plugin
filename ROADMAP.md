@@ -866,8 +866,12 @@
 - [x] **Тести залежать від Odoo на хості.** ✅ `ODOO_REQUIRED=1`: Odoo, якого не знайдено
   (або чию версію не прочитано), робить e2e-тести помилкою (`conftest._skip_or_fail`), а
   не пропуском. Описано в README (Development).
-- [ ] **Метадані пакета і випуск.** license, classifiers, `project.urls`, changelog,
-  PyPI через trusted publishing.
+- [~] **Метадані пакета і випуск.** ✅ classifiers, keywords, `py.typed` (пакет
+  `Typing :: Typed`), `CHANGELOG.md`, `.github/workflows/release.yml` (тег `v*` → збірка
+  → PyPI через trusted publishing, середовище `pypi`); `uv build` збирає wheel і sdist.
+  **Чекає рішення власника:** ліцензія (`license` і файл `LICENSE`) і `project.urls` (у
+  репозиторію немає remote), а також налаштування trusted publisher на PyPI — сам
+  випуск не робився.
 
 ---
 

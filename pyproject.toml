@@ -5,6 +5,20 @@ description = "mypy plugin that understands the Odoo ORM: models, _inherit, fiel
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["mypy>=2.1,<2.5"]  # internal mypy APIs: tested on 2.1 and 2.4
+keywords = ["odoo", "mypy", "mypy-plugin", "typing", "static-analysis"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: Odoo",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
 
 [project.scripts]
 odoo-typing-root = "odoo_typing.overlay:main"
