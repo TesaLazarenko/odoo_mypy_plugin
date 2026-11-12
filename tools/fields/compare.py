@@ -1,11 +1,16 @@
 """Compare the plugin's scan of field definitions and methods with a runtime dump.
 
     uv run python tools/fields/compare.py runtime.json /usr/lib/python3/dist-packages/odoo
+    uv run python tools/fields/compare.py --merged merged.json /usr/lib/python3/dist-packages/odoo
 
 ``runtime.json`` comes from ``tools/fields/dump_runtime.py`` run on the same Odoo. For
 every class both know, each argument the runtime gives a field is compared with the
 scan; an argument the scan marks dynamic (or the runtime cannot name, a lambda) is
 counted apart. Prints the totals and examples of each kind of difference.
+
+With ``--merged``, the dump comes from ``tools/fields/dump_registry.py``: the merged
+``_fields`` of every model of a top addon's registry, compared with the plugin's
+``Registry.fields`` as that addon sees it.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from pathlib import Path
 from odoo_typing.config import Settings
 from odoo_typing.registry import Registry
 from odoo_typing.scanner import Contribution, FieldInfo
+from odoo_typing.vals import stored
 
 DYNAMIC = "<dynamic>"
 EXAMPLES = int(os.environ.get("EXAMPLES", "3"))  # examples printed per kind
@@ -51,16 +57,31 @@ def scanned_value(info: FieldInfo, argument: str) -> object:
     return getattr(info, attribute)
 
 
+class Report:
+    """Counts of each kind of finding, with a few examples of each."""
+
+    def __init__(self) -> None:
+        self.counts: Counter[str] = Counter()
+        self.examples: defaultdict[str, list[str]] = defaultdict(list)
+
+    def note(self, kind: str, text: str) -> None:
+        """Count a finding of ``kind`` and keep ``text`` as an example."""
+        self.counts[kind] += 1
+        if len(self.examples[kind]) < EXAMPLES:
+            self.examples[kind].append(text)
+
+    def print(self) -> None:
+        """Print the totals and the examples."""
+        for kind, count in sorted(self.counts.items()):
+            print(f"{count:7}  {kind}")
+            for text in self.examples.get(kind, []):
+                print(f"         e.g. {text}")
+
+
 def compare(runtime: list[list[object]], classes: Mapping[str, Contribution]) -> None:
     """Print how the scan of each class differs from the runtime dump (totals, examples)."""
-    counts: Counter[str] = Counter()
-    examples: defaultdict[str, list[str]] = defaultdict(list)
-
-    def note(kind: str, text: str) -> None:
-        counts[kind] += 1
-        if len(examples[kind]) < EXAMPLES:
-            examples[kind].append(text)
-
+    report = Report()
+    counts, note = report.counts, report.note
     for module, qualname, fields, methods in runtime:
         fullname = f"{module}.{qualname}"
         item = classes.get(fullname)
@@ -96,10 +117,72 @@ def compare(runtime: list[list[object]], classes: Mapping[str, Contribution]) ->
             missing = sorted(set(methods) - set(item.methods))
             extra = sorted(set(item.methods) - set(methods))
             note("methods differ", f"{fullname}: missing {missing[:5]} extra {extra[:5]}")
-    for kind, count in sorted(counts.items()):
-        print(f"{count:7}  {kind}")
-        for text in examples.get(kind, []):
-            print(f"         e.g. {text}")
+    report.print()
+
+
+def merged_value(info: FieldInfo, argument: str) -> object:
+    """The plugin's value of an argument of a merged field, in the merged dump's format."""
+    if argument == "comodel_name":
+        return DYNAMIC if "comodel" in info.dynamic else info.comodel
+    if argument == "store":
+        return DYNAMIC if info.dynamic & {"store", "compute"} else stored(info)
+    if argument == "selection":
+        if "selection" in info.dynamic:
+            return DYNAMIC
+        return list(info.selection) if info.selection is not None else info.selection_method
+    return DYNAMIC if argument in info.dynamic else getattr(info, argument)
+
+
+MERGED_ARGUMENTS = ("comodel_name", "inverse_name", "related", "store", "selection")
+
+
+def compare_merged(dumps: Mapping[str, object], registry: Registry) -> Report:
+    """How the plugin's merged fields differ from a ``dump_registry.py`` dump."""
+    report = Report()
+    for top, dump in dumps.items():
+        assert isinstance(dump, dict)
+        runtime = dump["models"]
+        assert isinstance(runtime, dict)
+        known = set(registry.models(top))
+        for model in sorted(known - set(runtime)):
+            report.note("model only in plugin", f"{top}: {model}")
+        for model, fields in sorted(runtime.items()):
+            if model not in known:
+                report.note("model missing in plugin", f"{top}: {model}")
+                continue
+            report.counts["models"] += 1
+            _compare_fields(report, f"{top}: {model}", fields, registry.fields(model, top))
+    return report
+
+
+def _compare_fields(
+    report: Report,
+    where: str,
+    runtime: Mapping[str, Mapping[str, object]],
+    mine: Mapping[str, FieldInfo],
+) -> None:
+    for name in sorted(set(mine) - set(runtime)):
+        report.note("field only in plugin", f"{where}.{name}")
+    for name, entry in sorted(runtime.items()):
+        info = mine.get(name)
+        if info is None:
+            report.note("field missing in plugin", f"{where}.{name}")
+            continue
+        report.counts["fields"] += 1
+        if info.field_type != entry["type"]:
+            report.note(
+                "field class differs", f"{where}.{name}: {info.field_type} != {entry['type']}"
+            )
+        for argument in MERGED_ARGUMENTS:
+            value, own = entry.get(argument), merged_value(info, argument)
+            if value == DYNAMIC:
+                report.counts[f"dynamic at runtime {argument}"] += 1
+            elif own == DYNAMIC:
+                report.note(f"dynamic in plugin {argument}", f"{where}.{name}: {value!r}")
+            elif own == value:
+                report.counts["arguments equal"] += 1
+            else:
+                report.note(f"{argument} differs", f"{where}.{name}: {own!r} != {value!r}")
 
 
 def _scanned_arguments(info: FieldInfo) -> set[str]:
@@ -123,11 +206,16 @@ def _scanned_arguments(info: FieldInfo) -> set[str]:
 def main() -> None:
     """Compare a dump file with the scan of an Odoo directory."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--merged", action="store_true", help="a dump_registry.py dump")
     parser.add_argument("runtime", type=Path)
     parser.add_argument("odoo_path", type=Path)
     args = parser.parse_args()
-    runtime = json.loads(args.runtime.read_text())["classes"]
-    compare(runtime, scanned_classes(args.odoo_path))
+    dump = json.loads(args.runtime.read_text())
+    if args.merged:
+        registry = Registry(Settings(odoo_path=args.odoo_path, addons_paths=()))
+        compare_merged(dump, registry).print()
+    else:
+        compare(dump["classes"], scanned_classes(args.odoo_path))
 
 
 if __name__ == "__main__":

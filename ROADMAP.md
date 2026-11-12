@@ -257,8 +257,13 @@
   14864 поля: 18325 аргументів збігаються, розбіжностей 0; методи збігаються в усіх
   класах. Лишається 52 `selection` і 2 `selection_add`, які сканер не обчислює
   (константи з інших addons, comprehension-и, функції модуля), і поле
-  `IrRule.global` (`setattr` поза класом). Не зроблено: звірка злитого
-  `env[model]._fields` — потрібна база PostgreSQL.
+  `IrRule.global` (`setattr` поза класом). Звірка злитого `env[model]._fields`:
+  `tools/fields/dump_registry.py` будує реєстр Odoo в пам'яті без бази (курсор-заглушка
+  без рядків, `Registry.load` у порядку Odoo, `setup_models`), `compare.py --merged`
+  порівнює його з `Registry.fields` плагіна (набір моделей і полів, клас, `comodel_name`,
+  `related`, `inverse_name`, `store`, `selection`; тести на синтетичному дампі). Не
+  зроблено: запуск дампу на справжньому Odoo — потребує дозволу власника запускати код
+  Odoo.
 
 **Проблема.**
 - Зараз сканер збирає лише назви полів (`Contribution.fields`), comodel-і і делегування.
