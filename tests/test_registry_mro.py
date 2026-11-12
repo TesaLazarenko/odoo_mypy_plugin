@@ -235,3 +235,24 @@ def test_model_cycle_drops_cycle_edges_in_every_query_order(tmp_path: Path) -> N
         "t_mod.m.A",
         "t_mod.m.B",
     ]
+
+
+def test_dependency_modules_leave_out_addons_outside_the_closure(tmp_path: Path) -> None:
+    user = 'class User(models.Model):\n    _name = "t.user"\n\n    def f(self):\n'
+    user += '        self.env["t.thread"]\n        self.env["t.task"]\n'
+    registry = _build(
+        tmp_path,
+        base=BASE,
+        addons={
+            "t_mail": ([], _files(_cls("Thread", "t.thread"))),
+            "t_sms": (["t_mail"], _files(_cls("Thread", inherit=["t.thread"]))),
+            "t_project": ([], _files(_cls("Task", "t.task"))),
+            "t_user": (["t_mail"], _files(user)),
+        },
+    )
+    path = tmp_path / "addons/t_user/m.py"
+
+    modules = registry.dependency_modules("t_user.m", path)
+
+    assert "t_mail.m" in modules
+    assert {"t_sms.m", "t_project.m"}.isdisjoint(modules)  # not in t_user's closure
