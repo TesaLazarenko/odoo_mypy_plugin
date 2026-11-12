@@ -4,7 +4,8 @@ The registry (:mod:`odoo_typing.registry`) says which Odoo classes make up a mod
 which order. This module turns that into mypy ``TypeInfo`` state; it is the one place
 that writes class state (MROs, bases, symbol-table entries, metadata). The only other
 mypy nodes the plugin changes are the assignments of private class attributes, whose
-declared type ``plugin._normalize_meta_attributes`` rewrites during semantic analysis.
+declared type ``hooks.meta_attributes.normalize_meta_attributes`` rewrites during semantic
+analysis.
 
 * ``TypeInfo.mro`` is assigned directly. mypy derives an MRO from the direct bases with
   C3, but the bases of Odoo classes are computed per addon view, so their own MROs may

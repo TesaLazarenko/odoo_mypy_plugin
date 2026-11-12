@@ -6,7 +6,7 @@ import pytest
 from conftest import RunMypy
 from pytest_mock import MockerFixture
 
-from odoo_typing.plugin import OdooPlugin
+from odoo_typing.hooks.env import EnvHooks
 
 ENV_LOOKUP = {
     "my_mod": {
@@ -26,7 +26,7 @@ ENV_LOOKUP = {
 def test_run_mypy_hook_raises_fails_with_internal_error(
     run_mypy: RunMypy, mocker: MockerFixture
 ) -> None:
-    mocker.patch.object(OdooPlugin, "_env_getitem", side_effect=RuntimeError("boom in hook"))
+    mocker.patch.object(EnvHooks, "getitem", side_effect=RuntimeError("boom in hook"))
 
     with pytest.raises(AssertionError, match="INTERNAL ERROR"):
         run_mypy(ENV_LOOKUP)
