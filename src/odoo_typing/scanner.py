@@ -12,6 +12,7 @@ coding cookie is honoured.
 from __future__ import annotations
 
 import ast
+import re
 from collections import ChainMap
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field
@@ -53,6 +54,8 @@ POSITIONAL_PARAMETERS: Final = {
 METHOD_ARGUMENTS: Final = ("compute", "inverse", "search")
 FLAG_ARGUMENTS: Final = ("readonly", "required", "store", "delegate")
 # Concrete node classes that have no child nodes worth visiting (``ast.Load`` etc.).
+# The shape of a model name (``res.partner``), for subscripts of ``env`` aliases.
+MODEL_NAME: Final = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+")
 LEAF_NODES: frozenset[type] = frozenset(
     {ast.Name, ast.Constant, ast.alias}
     | {
@@ -771,13 +774,18 @@ def referenced_models(tree: ast.Module) -> set[str]:
     ``env[NAME]`` counts when ``NAME`` is a module-level string constant, and
     ``env.user`` / ``env.company`` / ``env.companies`` name ``res.users`` and
     ``res.company``, and so do ``.create_uid`` / ``.write_uid`` (``res.users``).
+    A subscript of any other expression counts when its key looks like a model name
+    (``ENV["res.partner"]``, ``environment[...]``: aliases of ``env``); a key that is
+    no model only adds an edge to nothing.
     """
     constants = _string_constants(tree)
     models: set[str] = set()
     for node in _inner_nodes(tree):
-        if isinstance(node, ast.Subscript) and _is_env(node.value):
+        if isinstance(node, ast.Subscript):
             key = node.slice
             name = constants.get(key.id) if isinstance(key, ast.Name) else _string(key)
+            if name is None or not (_is_env(node.value) or MODEL_NAME.fullmatch(name)):
+                continue
         elif isinstance(node, ast.Call) and _callee_name(node.func) in RELATIONAL_FIELDS:
             name = _comodel_argument(node)
         elif isinstance(node, ast.Attribute) and node.attr in ENV_RECORDS and _is_env(node.value):

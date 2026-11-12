@@ -78,3 +78,9 @@ def test_parse_source_invalid_file_raises_source_error(
 def test_parse_source_missing_file_raises_source_error(tmp_path: Path) -> None:
     with pytest.raises(SourceError, match="No such file"):
         parse_source(tmp_path / "missing.py")
+
+
+def test_referenced_models_subscript_of_env_alias_with_model_name_counts() -> None:
+    source = 'ENV["res.partner"]\nenvironment["sale.order.line"]\nvals["name"]\nrows["Not.Model"]\n'
+
+    assert referenced_models(ast.parse(source)) == {"res.partner", "sale.order.line"}

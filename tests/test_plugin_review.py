@@ -250,7 +250,7 @@ def test_relational_read_on_merged_records_of_other_addon_uses_their_view(
     assert result.messages("reader.py") == ['4: note: Revealed type is "int"']
 
 
-# -- env[...] through an alias of env is Any when its classes are not loaded ---------------
+# -- env[...] through an alias of env: the alias's model literal gives the edges (4.9) -------
 
 ENV_ALIAS = """
 from odoo import models
@@ -264,7 +264,7 @@ class Thing(models.Model):
 """
 
 
-def test_env_alias_of_model_without_edges_is_any(run_mypy: RunMypy) -> None:
+def test_env_alias_of_model_gets_edges_and_its_view_class(run_mypy: RunMypy) -> None:
     addons = {
         "dep_a": {"models.py": DEP_THING.split("class Thing")[0]},
         "dep_b": {"models.py": DEP_THING.split("class Thing")[0].replace("x_level", "y")},
@@ -273,4 +273,6 @@ def test_env_alias_of_model_without_edges_is_any(run_mypy: RunMypy) -> None:
 
     result = run_mypy(addons, check=["my_mod"])
 
-    assert result.messages("models.py") == ['9: note: Revealed type is "Any"']
+    assert result.messages("models.py") == [
+        '9: note: Revealed type is "my_mod.models.<subclass of "res.partner" seen from "my_mod">"'
+    ]
