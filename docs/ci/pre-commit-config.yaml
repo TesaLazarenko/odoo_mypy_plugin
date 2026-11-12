@@ -1,0 +1,21 @@
+# Example .pre-commit-config.yaml for an Odoo project. The hook runs mypy with the
+# plugin; the [tool.mypy] and [tool.odoo_typing] settings come from pyproject.toml
+# (plugins = ["odoo_typing.plugin"], odoo_path, odoo_version, addons_path...).
+# Odoo itself must be importable by the hook's environment or set as odoo_path.
+repos:
+  - repo: local
+    hooks:
+      - id: odoo-typing-root
+        name: odoo-typing-root --check
+        entry: odoo-typing-root --check
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: odoo-typing
+        name: mypy (odoo-typing)
+        entry: mypy
+        args: ["-p", "odoo.addons.my_addon"]
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true

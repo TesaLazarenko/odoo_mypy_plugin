@@ -1,0 +1,10 @@
+# A pre-commit hook that runs mypy with the plugin on the whole project: mypy needs the
+# whole addon graph, so the hook ignores the list of changed files.
+- id: odoo-typing
+  name: mypy (odoo-typing)
+  entry: mypy
+  language: python
+  additional_dependencies: []
+  types: [python]
+  pass_filenames: false
+  require_serial: true

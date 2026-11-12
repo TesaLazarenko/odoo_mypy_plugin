@@ -762,13 +762,18 @@
 - **Критерій готовності.** У PyCharm `self.env["res.partner"].` показує поля partner.
 
 ### 5.2 Інтеграція
-- [ ] Hook для pre-commit і приклад `.pre-commit-config.yaml`.
-- [ ] Шаблони CI. Odoo потрібен у середовищі, тож дати приклад Docker-образу.
-- [ ] Baseline-режим для поступового впровадження. mypy цього не вміє, тому зробити
-  обгортку: файл відомих помилок і звіт лише про нові. Ключ помилки має бути
-  `path:code:message` без номера рядка, бо рядки зсуваються.
-- [ ] Документація: таблиця кодів помилок (наскрізна вимога 5), як вимикати кожен код,
-  типові хибні спрацювання та обхідні шляхи.
+- [x] Hook для pre-commit (`.pre-commit-hooks.yaml`, id `odoo-typing`: mypy на весь
+  проєкт, `pass_filenames: false`) і приклад `docs/ci/pre-commit-config.yaml` (разом з
+  `odoo-typing-root --check`).
+- [x] Шаблони CI: `.github/workflows/ci.yml` (lint; тести на Odoo 18/19/20 × mypy 2.1.0
+  і 2.4.1, `ODOO_REQUIRED=1`, Odoo з `tools/odoo/fetch.sh` у кеші), `bench.yml` (пороги),
+  `release.yml`; Docker-образ з джерелами Odoo і плагіном — `docs/ci/Dockerfile`.
+  Workflow-и не запускались: у проєкту немає GitHub-remote.
+- [x] Baseline-режим: `odoo-typing-baseline record|check -- <аргументи mypy>`
+  (`baseline.py`): файл лічильників ключів `path:code:message` (без номера рядка),
+  `check` друкує лише помилки понад baseline і повертає 1.
+- [x] Документація: розділ README «Error codes» (таблиця кодів і підкодів, типові хибні
+  спрацювання, обхідні шляхи, як вимикати) і «Integration».
 
 ---
 
@@ -852,7 +857,8 @@
     полів.
   - **Як вирішити.** Модуль `compat.py`: fullname-и хуків, оператори доменів, назви
     декораторів залежно від `release.version_info`. Бенчмарк на кожній версії.
-- [ ] **Сумісність з mypy.**
+- [x] **Сумісність з mypy.** ✅ CI-матриця в `.github/workflows/ci.yml`: 2.1.0 і 2.4.1
+  на кожній версії Odoo.
   - Перевірено на 2.1.0 і 2.4.1. Поставити `mypy>=2.1,<2.5` — ✅ зроблено (крок 2).
   - CI-матриця: мінімальна і остання версія.
   - Внутрішні API в коді позначені коментарями: `calculate_mro`, `info.mro`,

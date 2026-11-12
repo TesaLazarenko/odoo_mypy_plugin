@@ -118,6 +118,49 @@ Odoo's declared type `BaseModel`, and model names are not checked there. This ke
 files free (resolving them would mean scanning every installed addon). Put the code in
 an addon to get real model types.
 
+## Error codes
+
+Every check has its own error code; a sub-code is also disabled with its parent.
+
+| Code | What it reports | Typical false positive | Workaround |
+|---|---|---|---|
+| `odoo-model` | a model name that no addon on the addons path defines; `_inherit` defined later, `_inherit` cycles | a model of an addon that is not on the addons path (enterprise) | add the addon's directory to `addons_path`, or `# type: ignore[odoo-model]` |
+| ↳ `odoo-model-depends` | a model that only addons outside the `depends` closure define | optional-dependency code under a guard the plugin does not detect | a detected guard (`if "x" in self.env:`), or `disable_error_code = ["odoo-model-depends"]` |
+| `odoo-vals` | the `vals` of `create` / `write` / `copy(default=)`, commands, assignments | — | — |
+| ↳ `odoo-vals-key` | a key that is not a field of the model | a field created in the database (`x_*` is ignored by default) | `vals_ignore_keys = ["x_*", "studio_*"]` |
+| ↳ `odoo-vals-type` | a value the field does not take | a value of a dynamic type the plugin cannot narrow | `typing.cast`, or `# type: ignore[odoo-vals-type]` |
+| `odoo-field-ref` | names in field definitions, `@api.depends` / `constrains` / `onchange`, `mapped` / `filtered` / `sorted` / `grouped`, `read()` | a method or field added by a later addon the declaring addon does not depend on (Odoo would not load it either) | add the dependency |
+| `odoo-domain` | field paths, operators and selection values of literal domains | an operator added by a custom `@operator_optimization` (Odoo 19+) | `# type: ignore[odoo-domain]` |
+| `odoo-xmlid` | an `env.ref(...)` id that no data file of the closure creates | an id created by Python code (hooks, `_create_xmlid`) in a closure addon | `raise_if_not_found=False`, or `# type: ignore[odoo-xmlid]` |
+| ↳ `odoo-xmlid-depends` | an id only an addon outside the closure creates | test code that runs only with that addon installed | guard it with `if env.ref("x.y", raise_if_not_found=False):` |
+
+Disable a code everywhere with `disable_error_code = ["odoo-domain"]` in `[tool.mypy]`,
+or for some modules in a `[[tool.mypy.overrides]]` table; silence one line with
+`# type: ignore[odoo-xmlid]`. Plain mypy codes the plugin makes appear more often, and
+how to deal with them:
+
+- `union-attr` / `arg-type` with `... | Literal[False]`: a field read as `str |
+  Literal[False]` (Odoo's own typing); check the value (`if record.name:`) first.
+- `arg-type` with `int | NewId` (`record.id` of possibly new records): pass `record.ids`
+  / `record._origin.id`, or check `isinstance(record.id, int)`.
+- `assignment` between two classes of the same model (`AccountMoveLine` of two addons):
+  use another variable name, or annotate it.
+
+## Integration
+
+- **pre-commit**: the repository provides the hook `odoo-typing` (mypy with the
+  plugin, on the whole project); see [docs/ci/pre-commit-config.yaml](docs/ci/pre-commit-config.yaml)
+  for an example that also runs `odoo-typing-root --check`.
+- **CI**: [docs/ci/Dockerfile](docs/ci/Dockerfile) builds an image with Odoo's sources
+  and the plugin; [.github/workflows/ci.yml](.github/workflows/ci.yml) is how this
+  project tests itself on Odoo 18, 19 and 20 with the oldest and newest supported mypy.
+- **Gradual adoption**: mypy has no baseline mode, so `odoo-typing-baseline` wraps it.
+  `odoo-typing-baseline record -- -p odoo.addons.my_addon` saves today's errors in
+  `odoo-typing-baseline.json` (`--baseline FILE`); `odoo-typing-baseline check -- ...`
+  prints only the errors that are not in it and exits 1 if there are any. Errors are
+  keyed `path:code:message` without the line number, which shifts with every edit
+  above it, and counted per key; run `record` again to drop fixed errors.
+
 ## Setup
 
 Odoo 18 makes an addon importable only as `odoo.addons.<name>`, and addons import each

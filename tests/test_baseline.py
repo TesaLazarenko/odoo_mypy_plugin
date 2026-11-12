@@ -1,0 +1,59 @@
+"""Unit tests of ``odoo-typing-baseline`` (roadmap 5.2)."""
+
+from __future__ import annotations
+
+import json
+from collections import Counter
+from pathlib import Path
+
+import pytest
+
+from odoo_typing.baseline import error_keys, main, new_errors
+
+OUTPUT = """\
+a/models.py:10: error: Unknown Odoo model "res.partnr"  [odoo-model]
+a/models.py:12: note: Revealed type is "int"
+a/models.py:20:5: error: Name "x" is not defined  [name-defined]
+b/views.py:3: error: Something without a code
+Found 3 errors in 2 files (checked 2 source files)
+"""
+
+
+def test_error_keys_drop_lines_and_notes() -> None:
+    assert [key for key, _ in error_keys(OUTPUT.splitlines())] == [
+        'a/models.py:odoo-model:Unknown Odoo model "res.partnr"',
+        'a/models.py:name-defined:Name "x" is not defined',
+        "b/views.py:-:Something without a code",
+    ]
+
+
+def test_new_errors_count_each_key() -> None:
+    shifted = OUTPUT.replace(":10:", ":14:") + (
+        'a/models.py:30: error: Unknown Odoo model "res.partnr"  [odoo-model]\n'
+    )
+    baseline = Counter(key for key, _ in error_keys(OUTPUT.splitlines()))
+
+    assert new_errors(shifted.splitlines(), baseline) == [
+        'a/models.py:30: error: Unknown Odoo model "res.partnr"  [odoo-model]'
+    ]
+
+
+def test_main_record_then_check(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    baseline = tmp_path / "baseline.json"
+    outputs = iter([(OUTPUT, "", 1), (OUTPUT, "", 1), (OUTPUT + OUTPUT.splitlines()[0], "", 1)])
+
+    def run(args: list[str]) -> tuple[str, str, int]:
+        assert args == ["-p", "my"]
+        return next(outputs)
+
+    assert main(["record", "--baseline", str(baseline), "--", "-p", "my"], run) == 0
+    assert len(json.loads(baseline.read_text())) == 3
+    assert main(["check", "--baseline", str(baseline), "--", "-p", "my"], run) == 0
+    assert main(["check", "--baseline", str(baseline), "--", "-p", "my"], run) == 1
+    assert "1 new errors (3 in the baseline)" in capsys.readouterr().out
+
+
+def test_main_check_without_baseline_returns_2(tmp_path: Path) -> None:
+    status = main(["check", "--baseline", str(tmp_path / "none.json")], lambda _: ("", "", 0))
+
+    assert status == 2

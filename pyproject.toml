@@ -8,6 +8,7 @@ dependencies = ["mypy>=2.1,<2.5"]  # internal mypy APIs: tested on 2.1 and 2.4
 
 [project.scripts]
 odoo-typing-root = "odoo_typing.overlay:main"
+odoo-typing-baseline = "odoo_typing.baseline:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-mock>=3.14", "ruff>=0.15"]
