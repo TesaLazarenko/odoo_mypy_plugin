@@ -6,7 +6,7 @@ All notable changes to this project. The format follows
 
 ## [Unreleased]
 
-First release: a mypy plugin for the Odoo ORM, Odoo 18, 19 and 20 (`odoo_version`).
+First release: a mypy plugin for the Odoo ORM, Odoo 17, 18, 19 and 20 (`odoo_version`).
 
 ### Models and records
 

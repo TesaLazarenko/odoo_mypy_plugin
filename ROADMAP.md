@@ -201,11 +201,30 @@
     `account.bank.statement.line` (`account_journal.py:1420`), яка має лише `_inherits`
     від `account.move`.
   - Тести: 18 — 317, 19 і 20 — 316 + 1 пропущений (`api.returns`).
-- [ ] **V5. Odoo 17.**
-  - Odoo нічого не типізує, тож типи полів має давати сам плагін за класом поля, а comodel
-    — за назвою атрибута. Потребує етапу 1 (індекс полів).
-  - Без етапу 1 часткова підтримка вже можлива: реєстр, MRO, `env[...]`, `odoo-model`.
-    Поля в такому режимі читаються як Any.
+- [x] **V5. Odoo 17.** ✅ Профіль `ODOO_17` (`replace(ODOO_18, ...)`: `NewId` у
+  `odoo.models`, усі декоратори `api` — identity, шаблон `def [T](T) -> T` будується
+  плагіном, `untyped_fields=True`). Плагін дає те, що 18 оголошує сам:
+  - читання полів за класом (`CLASS_VALUES`: `Char` → `str | Literal[False]`, `Integer`
+    → `int`, `Date` → `date | Literal[False]`...), relational — записи comodel з індексу
+    полів (і з кінця шляху `related=`); оголошення `Many2one(...)` без тип-аргументу
+    (клас не generic);
+  - `BaseModel.id` / `display_name` / `_fields`, атрибути `Environment` (`cr`, `uid`,
+    `context`, `su`, `registry`...), `self.env` (attribute hook на властивість), ітерація
+    записів (`__iter__` → `Iterator[<receiver>]`), `create(dict | list[dict])`;
+  - неанотовані приватні атрибути `BaseModel`/`Model` (`_name = None`) стають Any, інакше
+    `_name = "x"` — несумісне перевизначення.
+  - Попутно виправлено для всіх версій: клас, визначення якого mypy ще не завершив
+    (`PlaceholderNode` у names модуля того самого циклу імпортів — `base.models.res_partner`
+    для `base.populate` в 17), тепер `pending` (MRO відкладається), а не відкидається.
+  - Тести: 17 — 403 + 8 пропущених (`@pytest.mark.odoo(18, 19, 20)` для перевірок
+    оголошених у 18+ типів: `Many2one[X]`, тип `_inherit`, `env[name]` як `BaseModel`);
+    `OdooNames.partner` для 17 — `base.populate.res_partner.Partner` (tip у 17).
+  - Бенчмарк 17 (crm / sale / account): без плагіна 1240 / 1757 / 6263 помилки, з плагіном 1157 / 1628 /
+    5963, «тільки плагін» 35 / 39 / 147 (на 18: 42 / 38 / 165). Групи ті самі, що на 18
+    (`X | False`, `int | NewId`, override), плюс 7 від об'єднання типів значень
+    неоднорідного dict-літерала (`{"last_rec": self.browse(), "seq_list": []}` дає
+    `Collection[Any]`; обхід — анотація). Холодний запуск ×1,2–2,1 до без-плагінного,
+    теплий 0,30–0,36 с.
 - **Наскрізне правило.** Кожна нова зашита назва Odoo додається в `OdooProfile`, а не
   константою в модулі.
 

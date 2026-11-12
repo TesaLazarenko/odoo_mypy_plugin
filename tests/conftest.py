@@ -80,12 +80,14 @@ def names(odoo_version: int) -> OdooNames:
     profile = profile_for(odoo_version)
     if profile is None:
         pytest.skip(f"the plugin has no profile for Odoo {odoo_version} yet")
-    # Odoo 19 names classes after their model (ResPartner, not Partner).
+    # Odoo 19 names classes after their model (ResPartner, not Partner); in Odoo 17 the
+    # last class of res.partner is base's populate extension.
     prefix = "Res" if odoo_version >= 19 else ""
     module = "odoo.addons.base.models.res_partner"
+    tip = "odoo.addons.base.populate.res_partner" if odoo_version == 17 else module
     return OdooNames(
         version=odoo_version,
-        partner=f"{module}.{prefix}Partner",
+        partner=f"{tip}.{prefix}Partner",
         partner_category=f"{module}.{prefix}PartnerCategory",
         base_model=profile.base_model,
         many2one=profile.many2one,

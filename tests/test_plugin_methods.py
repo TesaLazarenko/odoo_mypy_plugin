@@ -380,6 +380,8 @@ def test_env_dynamic_name_default_is_any(run_mypy: RunMypy) -> None:
     assert result.messages("models.py") == ['9: note: Revealed type is "Any"']
 
 
+# Odoo 17 declares no types (BaseModel, Field[T], _inherit): nothing to keep there.
+@pytest.mark.odoo(18, 19, 20)
 def test_env_dynamic_name_option_base_keeps_base_model(run_mypy: RunMypy, names: OdooNames) -> None:
     result = run_mypy({"my_mod": {"models.py": DYNAMIC_ENV}}, options='dynamic_env = "base"\n')
 
@@ -389,6 +391,8 @@ def test_env_dynamic_name_option_base_keeps_base_model(run_mypy: RunMypy, names:
     ]
 
 
+# Odoo 17 declares no types (BaseModel, Field[T], _inherit): nothing to keep there.
+@pytest.mark.odoo(18, 19, 20)
 def test_env_dynamic_name_option_change_invalidates_cache(
     run_mypy: RunMypy, names: OdooNames
 ) -> None:

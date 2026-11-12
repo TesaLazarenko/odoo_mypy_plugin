@@ -47,7 +47,8 @@ class OdooProfile:
         datetime: Full name of ``fields.Datetime``.
         identity_decorators: Decorators that return the decorated method.
         identity_factories: Decorator factories whose decorator returns the method.
-        identity_template: A typed ``def [T] (T) -> T`` to give those decorators.
+        identity_template: A typed ``def [T] (T) -> T`` to give those decorators;
+            ``None`` where Odoo has none (17): the plugin builds one.
         field_decorators: Full names of ``api.depends`` / ``constrains`` / ``onchange``,
             each with its short name: their arguments name fields of the model.
         domain_operators: The operators of a domain term (``"="``, ``"child_of"``...).
@@ -57,6 +58,9 @@ class OdooProfile:
         request_var: Full name of ``odoo.http.request`` when Odoo leaves it untyped
             (a werkzeug ``LocalProxy``), ``None`` when Odoo declares its type.
         request_class: Full name of ``odoo.http.Request``.
+        untyped_fields: Whether field classes have no value type (Odoo 17: ``Field``
+            is not generic and ``__get__`` is unannotated), so the plugin types reading
+            them by class, and relational fields by the comodel of the field index.
     """
 
     version: int
@@ -75,13 +79,14 @@ class OdooProfile:
     datetime: str
     identity_decorators: frozenset[str]
     identity_factories: frozenset[str]
-    identity_template: str
+    identity_template: str | None
     field_decorators: Mapping[str, str]
     domain_operators: frozenset[str]
     domain_class: str | None
     sorted_order: bool
     request_var: str | None
     request_class: str
+    untyped_fields: bool = False
 
     @property
     def environment(self) -> str:
@@ -163,6 +168,23 @@ ODOO_18 = OdooProfile(
     request_class="odoo.http.Request",
 )
 
+# Odoo 17: the same modules as 18, but nothing is typed: ``Field`` is not generic, the
+# decorators and ``Environment.__getitem__`` are unannotated, ``NewId`` is in models.py.
+ODOO_17 = replace(
+    ODOO_18,
+    version=17,
+    new_id="odoo.models.NewId",
+    identity_decorators=frozenset(
+        {"odoo.api.private", "odoo.api.model", "odoo.api.model_create_multi", "odoo.api.autovacuum"}
+    ),
+    identity_factories=frozenset(
+        {"odoo.api.returns", "odoo.api.onchange", "odoo.api.ondelete", "odoo.api.depends_context"}
+        | {"odoo.api.depends", "odoo.api.constrains"}
+    ),
+    identity_template=None,
+    untyped_fields=True,
+)
+
 # Odoo 19: the ORM lives in odoo/orm/*; odoo.fields / odoo.models / odoo.api re-export it.
 # ``api.model``, ``private``... are typed ``C -> C`` (``model_create_multi`` also accepts
 # one dict); the factories return ``Decorator``, an alias of ``Callable[[C], C]`` used
@@ -219,7 +241,9 @@ ODOO_20 = replace(
     request_class="odoo.http.requestlib.Request",
 )
 
-_PROFILES: Mapping[int, OdooProfile] = MappingProxyType({18: ODOO_18, 19: ODOO_19, 20: ODOO_20})
+_PROFILES: Mapping[int, OdooProfile] = MappingProxyType(
+    {17: ODOO_17, 18: ODOO_18, 19: ODOO_19, 20: ODOO_20}
+)
 
 
 def profile_for(version: int) -> OdooProfile | None:

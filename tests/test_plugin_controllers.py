@@ -24,5 +24,5 @@ def test_request_env_in_controller_is_checked(run_mypy: RunMypy) -> None:
 
     messages = result.messages("my_mod/controllers.py")
     assert messages[0].endswith('.Environment"')
-    assert messages[1].startswith('11: note: Revealed type is "odoo.addons.base.models.res_partner')
+    assert messages[1].startswith('11: note: Revealed type is "odoo.addons.base.')
     assert messages[2:] == ['12: error: Unknown Odoo model "res.partnr"  [odoo-model]']

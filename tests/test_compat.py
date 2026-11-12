@@ -67,4 +67,4 @@ def test_profile_for_18_and_19_parse_with_python_3_10(version: int) -> None:
 
 
 def test_profile_for_version_not_implemented_yet_returns_none() -> None:
-    assert profile_for(17) is None
+    assert profile_for(16) is None

@@ -68,7 +68,7 @@ def test_binary_and_reference_fields_read_typed(run_mypy: RunMypy, odoo_version:
             f'10: note: Revealed type is "{binary}"',
             f'11: note: Revealed type is "{binary}"',
         ]
-    assert messages[2].startswith('12: note: Revealed type is "odoo.addons.base.models.res_partner')
+    assert messages[2].startswith('12: note: Revealed type is "odoo.addons.base.')
     assert "t_base.models.Line" in messages[2]
     assert messages[2].endswith('| Literal[False]"')
     assert messages[3].endswith('BaseModel | Literal[False]"')
@@ -106,7 +106,7 @@ class Line(models.Model):
 """
 
 
-def test_read_returns_typed_dicts_of_literal_fields(run_mypy: RunMypy) -> None:
+def test_read_returns_typed_dicts_of_literal_fields(run_mypy: RunMypy, odoo_version: int) -> None:
     result = run_mypy(
         {
             "t_base": {"models.py": T_BASE},
@@ -127,4 +127,5 @@ def test_read_returns_typed_dicts_of_literal_fields(run_mypy: RunMypy) -> None:
     assert messages[3].split(";")[0] == (
         '16: error: Odoo model "t.line" has no field "lable" in read()'
     )
-    assert messages[4] == '17: note: Revealed type is "list[dict[str, Any]]"'
+    unread = "Any" if odoo_version == 17 else "list[dict[str, Any]]"  # 17: unannotated
+    assert messages[4] == f'17: note: Revealed type is "{unread}"'

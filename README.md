@@ -1,8 +1,10 @@
 # odoo-typing
 
 mypy plugin that understands the Odoo ORM, for mypy 2.1-2.4. The target Odoo version is
-set in the config (`odoo_version`); supported: Odoo 18, 19 and 20. Odoo 17 is planned
-(see [ROADMAP.md](ROADMAP.md), «Версії Odoo»).
+set in the config (`odoo_version`); supported: Odoo 17, 18, 19 and 20 (see
+[ROADMAP.md](ROADMAP.md), «Версії Odoo»). Odoo 17 declares no types at all; the plugin
+gives its fields, `self.env`, `self.id`, record iteration, `create()` and the `api`
+decorators the types Odoo 18 declares.
 
 Plain mypy treats `env["res.partner"]` as `BaseModel`. It cannot see fields that other
 modules add through `_inherit`, and it reads every relational field as `Any`. With this

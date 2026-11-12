@@ -6,11 +6,14 @@ Odoo model classes override private configuration attributes (``_rec_name``,
 
 from __future__ import annotations
 
+import pytest
 from conftest import OdooNames, RunMypy
 
 # -- [37] meta attributes keep BaseModel's declared type --------------------------------------
 
 
+# Odoo 17 declares no types (BaseModel, Field[T], _inherit): nothing to keep there.
+@pytest.mark.odoo(18, 19, 20)
 def test_meta_attributes_rec_name_and_same_file_list_inherit_do_not_clash(
     run_mypy: RunMypy, names: OdooNames
 ) -> None:

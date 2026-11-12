@@ -65,6 +65,7 @@ from mypy.errorcodes import ErrorCode
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import (
     ARG_POS,
+    MDEF,
     AssignmentStmt,
     CallExpr,
     ClassDef,
@@ -74,8 +75,10 @@ from mypy.nodes import (
     MemberExpr,
     MypyFile,
     NameExpr,
+    PlaceholderNode,
     RefExpr,
     StrExpr,
+    SymbolTableNode,
     TempNode,
     TupleExpr,
     TypeInfo,
@@ -422,6 +425,8 @@ class OdooPlugin(Plugin):
             return partial(self._read_result, name)
         if name in RECORD_PATH_METHODS:
             return partial(self._record_path, name)
+        if self._profile.untyped_fields and name == "__iter__":
+            return self._iterate_records  # Odoo 17: unannotated
         if is_self_method(fullname):
             return partial(keep_receiver, self._profile.base_model)
         return None
@@ -453,6 +458,15 @@ class OdooPlugin(Plugin):
         if is_self_method(method):
             return keep_receiver(base_model, ctx)
         return ctx.default_return_type
+
+    def _iterate_records(self, ctx: MethodContext) -> Type:
+        """``for record in records`` (Odoo 17): each record has the receiver's type."""
+        receiver = get_proper_type(ctx.type)
+        if not isinstance(receiver, Instance) or not receiver.type.has_base(
+            self._profile.base_model
+        ):
+            return ctx.default_return_type
+        return _checker(ctx.api).named_generic_type("typing.Iterator", [receiver])
 
     def _check_domain(self, method: str, ctx: MethodContext) -> Type:
         """Check the literal ``domain`` of ``search`` / ``search_count`` / ``_read_group``...
@@ -705,7 +719,10 @@ class OdooPlugin(Plugin):
             return self._relational_get
         if fullname.endswith(".__set__"):
             return self._field_set
-        return partial(create_signature, self._profile.base_model) if is_create(fullname) else None
+        if not is_create(fullname):
+            return None
+        profile = self._profile
+        return partial(create_signature, profile.base_model, untyped=profile.untyped_fields)
 
     def get_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
         """Resolve record-typed attributes of model classes from the reading addon."""
@@ -713,6 +730,8 @@ class OdooPlugin(Plugin):
             return partial(self._env_record, self._profile.env_records[fullname])
         if fullname == f"{self._profile.request_class}.env":
             return partial(_request_env, self._profile.environment)
+        if self._profile.untyped_fields and fullname == f"{self._profile.base_model}.env":
+            return partial(_request_env, self._profile.environment)  # Odoo 17: a bare property
         owner, _, name = fullname.rpartition(".")
         if name in LOG_ACCESS_USERS and self.registry.contribution(owner):
             # Declared as ``Many2one[Any]``: the res.users records the reading addon sees.
@@ -1021,7 +1040,10 @@ class OdooPlugin(Plugin):
         if definition is None:
             if comodel is not None:
                 self._unknown_model(name, addon_name, comodel, ctx.api)
-            return default.copy_modified(args=[AnyType(TypeOfAny.from_error)])
+            unknown = AnyType(TypeOfAny.from_error)
+            return default.copy_modified(args=[unknown]) if default.type.type_vars else default
+        if not default.type.type_vars:
+            return default  # Odoo 17: not generic; reading the field finds the comodel
         found = _class_infos([definition], _checker(ctx.api).modules).infos
         model_type = instance_of(found[0]) if found else AnyType(TypeOfAny.special_form)
         return default.copy_modified(args=[model_type])
@@ -1043,6 +1065,10 @@ class OdooPlugin(Plugin):
             return signature.copy_modified(arg_types=arg_types, ret_type=descriptor)
         args = map_instance_to_supertype(descriptor, base).args
         comodel = get_proper_type(args[0]) if args else None  # Odoo 19: not generic
+        if not isinstance(comodel, Instance) and self._profile.untyped_fields:
+            if not isinstance(records, Instance):
+                return signature
+            return self._indexed_comodel_get(records, signature, ctx)  # Odoo 17
         if not isinstance(comodel, Instance):
             return signature
         owner = records.type if isinstance(records, Instance) else None
@@ -1069,9 +1095,13 @@ class OdooPlugin(Plugin):
             None,
         )
         records = _record_type(ctx)
-        if kind is None or not isinstance(records, Instance):
+        if not isinstance(records, Instance):
             return signature
         checker = _checker(ctx.api)
+        if kind is None or (kind == "Selection" and not self._settings.literal_selection):
+            if self._profile.untyped_fields:  # Odoo 17
+                return _class_value_get(descriptor, signature, self._profile, checker)
+            return signature
         false = LiteralType(False, checker.named_type("builtins.bool"))
         info = self._read_field(records, ctx)
         if kind == "Binary":
@@ -1084,12 +1114,31 @@ class OdooPlugin(Plugin):
         if kind == "Reference":
             models = self._reference_types(info, records, ctx.api)
             return signature.copy_modified(ret_type=make_simplified_union([*models, false]))
-        if not self._settings.literal_selection or info is None or not info.selection:
-            return signature
-        if "selection" in info.dynamic:
+        if info is None or not info.selection or "selection" in info.dynamic:
+            if self._profile.untyped_fields:
+                return _class_value_get(descriptor, signature, self._profile, checker)
             return signature
         keys = [LiteralType(key, checker.named_type("builtins.str")) for key in info.selection]
         return signature.copy_modified(ret_type=make_simplified_union([*keys, false]))
+
+    def _indexed_comodel_get(
+        self, records: Instance, signature: CallableType, ctx: MethodSigContext
+    ) -> FunctionLike:
+        """Odoo 17: a relational field reads as its comodel's records, from the field index."""
+        info = self._read_field(records, ctx)
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        model = self._model_of(records.type)
+        if info is None or not addon_name or model is None:
+            return signature
+        comodel = info.comodel if "comodel" not in info.dynamic else None
+        if comodel is None and info.related:  # fields.Many2one(related="a.b")
+            fields_of = partial(self.registry.fields, addon_name=addon_name)
+            target = resolve_path(info.related, model, fields_of, "").field
+            comodel = target.comodel if target is not None else None
+        if comodel is None:
+            return signature
+        view = self._view_type(comodel, addon_name, ctx.api)
+        return signature.copy_modified(ret_type=view) if isinstance(view, Instance) else signature
 
     def _read_field(self, records: Instance, ctx: MethodSigContext) -> FieldInfo | None:
         """The field read by ``record.name`` (``ctx.context``), as the reading addon sees it."""
@@ -1289,7 +1338,10 @@ def _class_infos(
     A class absent from a module that is completely analyzed does not exist for mypy
     (an unreachable ``if sys.version_info < ...`` branch): it is neither pending nor
     missing. ``incomplete`` tells which modules are still being analyzed (none, once
-    type checking runs).
+    type checking runs). A class whose definition mypy has not finished (a placeholder
+    in its module's names: a deferred class of another module of the same import
+    cycle, as Odoo 17's ``base.models.res_partner`` for ``base.populate``) is pending
+    even when its module no longer counts as incomplete.
     """
     infos: list[TypeInfo] = []
     pending = missing = False
@@ -1300,7 +1352,9 @@ def _class_infos(
             infos.append(node.node)
         elif tree is None:
             missing = True
-        elif incomplete(item.module):
+        elif incomplete(item.module) or (
+            node is not None and isinstance(node.node, PlaceholderNode)
+        ):
             pending = missing = True
     return _Found(infos=infos, pending=pending, missing=missing)
 
@@ -1414,6 +1468,9 @@ def _normalize_meta_attributes(ctx: ClassDefContext, profile: OdooProfile) -> No
     info = ctx.cls.info
     if info.fullname == profile.base_model or not info.has_base(profile.base_model):
         return
+    if profile.untyped_fields:
+        _relax_untyped_base_attributes(info, profile)
+        _declare_untyped_attributes(ctx, profile)
     for statement in ctx.cls.defs.body:
         target = _private_attribute(statement)
         if target is None or not isinstance(statement, AssignmentStmt):
@@ -1433,6 +1490,67 @@ def _normalize_meta_attributes(ctx: ClassDefContext, profile: OdooProfile) -> No
         if isinstance(target.node, Var):
             target.node.type = declared
             target.node.is_inferred = False
+
+
+def _relax_untyped_base_attributes(info: TypeInfo, profile: OdooProfile) -> None:
+    """Odoo 17: make the unannotated private attributes of Odoo's model classes ``Any``.
+
+    ``BaseModel._name = None`` is inferred as ``None`` there (18+ declare
+    ``_name: str | None``), so every ``_name = "x"`` would be an incompatible override.
+    """
+    module = profile.base_model.rpartition(".")[0]
+    for base in info.mro[1:]:
+        if base.module_name != module:
+            continue
+        for name, node in base.names.items():
+            var = node.node
+            private = name.startswith("_") and not name.startswith("__")
+            if private and isinstance(var, Var) and var.is_inferred:
+                var.type = AnyType(TypeOfAny.special_form)
+
+
+def _declare_untyped_attributes(ctx: ClassDefContext, profile: OdooProfile) -> None:
+    """Odoo 17: declare what Odoo 18 annotates and 17 only sets at run time.
+
+    ``BaseModel.id`` / ``display_name`` / ``_fields`` (added by the metaclass) and the
+    attributes ``Environment.__new__`` assigns (``cr``, ``uid``, ``context``...), with
+    Odoo 18's types where they are simple, else ``Any``.
+    """
+    api = ctx.api
+    false = LiteralType(False, api.named_type("builtins.bool"))
+    text = api.named_type("builtins.str")
+    anything = AnyType(TypeOfAny.special_form)
+    new_id = api.lookup_fully_qualified_or_none(profile.new_id)
+    if new_id is None or not isinstance(new_id.node, TypeInfo):
+        return
+    record_id = UnionType([api.named_type("builtins.int"), instance_of(new_id.node), false])
+    declarations: dict[str, dict[str, Type]] = {
+        profile.base_model: {
+            "id": record_id,
+            "display_name": UnionType([text, false]),
+            "_fields": api.named_type("builtins.dict", [text, anything]),
+        },
+        profile.environment: {
+            "cr": anything,
+            "uid": api.named_type("builtins.int"),
+            "context": api.named_type("builtins.dict", [text, anything]),
+            "su": api.named_type("builtins.bool"),
+            "registry": anything,
+            "cache": anything,
+            "transaction": anything,
+        },
+    }
+    for owner, attributes in declarations.items():
+        node = api.lookup_fully_qualified_or_none(owner)
+        if node is None or not isinstance(node.node, TypeInfo):
+            continue
+        for name, value in attributes.items():
+            if name in node.node.names:
+                continue
+            var = Var(name, value)
+            var.info = node.node
+            var._fullname = f"{owner}.{name}"
+            node.node.names[name] = SymbolTableNode(MDEF, var, plugin_generated=True)
 
 
 def _private_attribute(statement: object) -> NameExpr | None:
@@ -1560,6 +1678,44 @@ def _field_arguments(call: CallExpr, field_class: str) -> list[tuple[str, Expres
     return found
 
 
+# Odoo 17: what reading a field gives, by field class (as Odoo 18 declares them).
+CLASS_VALUES: dict[str, tuple[str | bool, ...]] = {
+    "Boolean": ("builtins.bool",),
+    "Integer": ("builtins.int",),
+    "Float": ("builtins.float",),
+    "Monetary": ("builtins.float",),
+    "_String": ("builtins.str", False),
+    "Selection": ("builtins.str", False),
+    "Date": ("datetime.date", False),
+    "Datetime": ("datetime.datetime", False),
+    "Id": ("builtins.int", "new_id", False),
+}
+
+
+def _class_value_get(
+    descriptor: Instance, signature: CallableType, profile: OdooProfile, checker: TypeChecker
+) -> FunctionLike:
+    """The value type of a field class Odoo does not type (17), by the first known class."""
+    if not isinstance(get_proper_type(signature.ret_type), AnyType):
+        return signature
+    found = next(
+        (CLASS_VALUES[item.name] for item in descriptor.type.mro if item.name in CLASS_VALUES), None
+    )
+    if found is None:
+        return signature
+    items: list[Type] = []
+    for part in found:
+        if not isinstance(part, str):  # False
+            items.append(LiteralType(False, checker.named_type("builtins.bool")))
+            continue
+        node = lookup_fully_qualified(profile.new_id if part == "new_id" else part, checker.modules)
+        if node is None or not isinstance(node.node, TypeInfo):
+            return signature
+        items.append(instance_of(node.node))
+    value = items[0] if len(items) == 1 else UnionType(items)
+    return signature.copy_modified(ret_type=value)
+
+
 def _type_request(profile: OdooProfile, modules: dict[str, MypyFile]) -> bool:
     """Type ``odoo.http.request`` as a ``Request`` where Odoo leaves it ``Any``.
 
@@ -1591,7 +1747,11 @@ def _type_request(profile: OdooProfile, modules: dict[str, MypyFile]) -> bool:
 
 
 def _request_env(environment: str, ctx: AttributeContext) -> Type:
-    """``request.env``: an ``Environment`` (Odoo sets it to ``None`` before dispatch)."""
+    """``request.env`` / ``self.env`` (Odoo 17): an ``Environment``.
+
+    Odoo sets ``request.env`` to ``None`` before dispatch, and Odoo 17 declares
+    ``BaseModel.env`` as an unannotated property.
+    """
     if not isinstance(ctx.api, TypeChecker):
         return ctx.default_attr_type
     node = lookup_fully_qualified(environment, ctx.api.modules)

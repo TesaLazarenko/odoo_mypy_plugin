@@ -204,6 +204,8 @@ def test_relational_same_field_declared_in_two_views_is_compatible(run_mypy: Run
     assert result.messages("t_hr/models.py") == ['19: note: Revealed type is "int"']
 
 
+# Odoo 17's Many2one is not generic: the comodel is found when the field is read.
+@pytest.mark.odoo(18, 19, 20)
 def test_relational_field_declaration_is_bound_to_the_defining_class(
     run_mypy: RunMypy, names: OdooNames
 ) -> None:
@@ -334,6 +336,8 @@ def test_annotated_name_registers_model(run_mypy: RunMypy) -> None:
     assert result.messages("models.py") == ['8: note: Revealed type is "my_mod.models.Thing"']
 
 
+# Odoo 17 declares no types (BaseModel, Field[T], _inherit): nothing to keep there.
+@pytest.mark.odoo(18, 19, 20)
 def test_custom_relational_subclass_reads_comodel(run_mypy: RunMypy, names: OdooNames) -> None:
     # Odoo 19 declares Many2one without a type parameter; the plugin adds one.
     partner_class = names.partner.rpartition(".")[2]

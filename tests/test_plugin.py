@@ -5,6 +5,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import pytest
 from conftest import OdooNames, RunMypy
 from pytest_mock import MockerFixture
 from test_harness import ENV_LOOKUP
@@ -329,6 +330,8 @@ def run(env: Environment) -> None:
 """
 
 
+# Odoo 17 declares no types (BaseModel, Field[T], _inherit): nothing to keep there.
+@pytest.mark.odoo(18, 19, 20)
 def test_env_getitem_outside_addon_keeps_declared_type_unchecked(
     run_mypy: RunMypy, names: OdooNames
 ) -> None:

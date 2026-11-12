@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Final
 
 from mypy.lookup import lookup_fully_qualified
-from mypy.nodes import Decorator, FuncDef, TypeInfo
+from mypy.nodes import ARG_POS, Decorator, FuncDef, TypeInfo
 from mypy.plugin import ClassDefContext, FunctionContext, MethodContext, MethodSigContext
 from mypy.types import (
     AnyType,
@@ -72,18 +72,41 @@ def identity_decorator(ctx: FunctionContext) -> Type:
     return ctx.default_return_type
 
 
-def identity_factory(template: str, ctx: FunctionContext) -> Type:
+def identity_factory(template: str | None, ctx: FunctionContext) -> Type:
     """``@api.returns("self")``: a decorator that keeps the method's own signature.
 
-    ``template`` is the full name of a typed ``def [T] (T) -> T`` (``api.model``).
+    ``template`` is the full name of a typed ``def [T] (T) -> T`` (``api.model``); with
+    ``None`` (Odoo 17 types none) such a function type is built here.
     """
     if not isinstance(ctx.api, TypeChecker):
         return ctx.default_return_type
+    if template is None:
+        return _identity_type(ctx.api)
     node = lookup_fully_qualified(template, ctx.api.modules)
     func = node.node if node is not None else None
     if isinstance(func, FuncDef) and isinstance(func.type, CallableType):
         return func.type
     return ctx.default_return_type
+
+
+def _identity_type(checker: TypeChecker) -> CallableType:
+    """``def [T] (T) -> T``."""
+    variable = TypeVarType(
+        "T",
+        "T",
+        id=TypeVarId(-1),
+        values=[],
+        upper_bound=checker.named_type("builtins.object"),
+        default=AnyType(TypeOfAny.from_omitted_generics),
+    )
+    return CallableType(
+        [variable],
+        [ARG_POS],
+        [None],
+        variable,
+        checker.named_type("builtins.function"),
+        variables=[variable],
+    )
 
 
 def is_self_method(fullname: str) -> bool:
@@ -96,11 +119,13 @@ def is_create(fullname: str) -> bool:
     return fullname.rpartition(".")[2] == "create"
 
 
-def create_signature(base_model: str, ctx: MethodSigContext) -> FunctionLike:
+def create_signature(base_model: str, ctx: MethodSigContext, untyped: bool = False) -> FunctionLike:
     """``create(vals_list: list[X])`` also accepts one ``X``, as ``model_create_multi`` does.
 
     ``BaseModel.create`` is declared with a list, but its decorator wraps a single dict
-    into a list at runtime, and most code passes one dict.
+    into a list at runtime, and most code passes one dict. With ``untyped`` (Odoo 17,
+    where ``vals_list`` is unannotated) the argument gets Odoo 18's type,
+    ``dict[str, Any] | list[dict[str, Any]]``.
     """
     signature = ctx.default_signature
     receiver = get_proper_type(ctx.type)
@@ -112,6 +137,12 @@ def create_signature(base_model: str, ctx: MethodSigContext) -> FunctionLike:
     ):
         return signature
     vals = get_proper_type(signature.arg_types[0])
+    if untyped and isinstance(vals, AnyType) and vals.type_of_any == TypeOfAny.unannotated:
+        any_type = AnyType(TypeOfAny.special_form)
+        text = ctx.api.named_generic_type("builtins.str", [])
+        vals = ctx.api.named_generic_type(
+            "builtins.list", [ctx.api.named_generic_type("builtins.dict", [text, any_type])]
+        )
     if not isinstance(vals, Instance) or vals.type.fullname != "builtins.list":
         return signature
     accepted = UnionType.make_union([vals.args[0], vals])

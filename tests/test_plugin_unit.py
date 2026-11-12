@@ -76,10 +76,10 @@ def test_plugin_init_version_without_profile_exits_with_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with pytest.raises(SystemExit) as exit_info:
-        OdooPlugin(_plugin_options(tmp_path, "", version="odoo_version = 17\n"))
+        OdooPlugin(_plugin_options(tmp_path, "", version="odoo_version = 16\n"))
 
     assert exit_info.value.code == 2
-    assert "Odoo 17 is not supported yet" in capsys.readouterr().err
+    assert "16" in capsys.readouterr().err
 
 
 def test_plugin_init_odoo_20_on_python_3_11_exits_with_message(

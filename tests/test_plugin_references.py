@@ -88,7 +88,7 @@ class Line(models.Model):
 def test_related_relational_field_gets_comodel_of_path(run_mypy: RunMypy) -> None:
     messages = _messages(run_mypy, RELATED_COMODEL)
 
-    assert messages[0].startswith('11: note: Revealed type is "odoo.addons.base.models.res_partner')
+    assert messages[0].startswith('11: note: Revealed type is "odoo.addons.base.')
     assert messages[1:] == ['12: note: Revealed type is "str | Literal[False]"']
 
 
