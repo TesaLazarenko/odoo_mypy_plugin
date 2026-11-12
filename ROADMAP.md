@@ -925,12 +925,12 @@
 - [x] **Тести залежать від Odoo на хості.** ✅ `ODOO_REQUIRED=1`: Odoo, якого не знайдено
   (або чию версію не прочитано), робить e2e-тести помилкою (`conftest._skip_or_fail`), а
   не пропуском. Описано в README (Development).
-- [x] **Метадані пакета і випуск.** ✅ classifiers, keywords, `py.typed` (пакет
+- [~] **Метадані пакета і випуск.** ✅ classifiers, keywords, `py.typed` (пакет
   `Typing :: Typed`), `CHANGELOG.md`, `.github/workflows/release.yml` (тег `v*` → збірка
   → PyPI через trusted publishing, середовище `pypi`); `uv build` збирає wheel і sdist.
   Ліцензія ✅ LGPL-3.0-or-later (рішення власника): `license` і `license-files` (PEP 639),
   `LICENSE` (LGPL-3) і `COPYING` (GPL-3), обидва в wheel і sdist, розділ License у README.
-  **Відкладено рішенням власника (2026-11-12):** `project.urls` — поки в репозиторію немає
+  **Не зроблено, відкладено рішенням власника (2026-11-12):** `project.urls` — поки в репозиторію немає
   remote; налаштування trusted publisher на PyPI, тег `v0.1.0` і випуск — не зараз
   (`release.yml` готовий, публікація лише за командою власника).
 
