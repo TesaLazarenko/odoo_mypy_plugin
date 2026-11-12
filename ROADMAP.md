@@ -928,9 +928,10 @@
 - [~] **Метадані пакета і випуск.** ✅ classifiers, keywords, `py.typed` (пакет
   `Typing :: Typed`), `CHANGELOG.md`, `.github/workflows/release.yml` (тег `v*` → збірка
   → PyPI через trusted publishing, середовище `pypi`); `uv build` збирає wheel і sdist.
-  **Чекає рішення власника:** ліцензія (`license` і файл `LICENSE`) і `project.urls` (у
-  репозиторію немає remote), а також налаштування trusted publisher на PyPI — сам
-  випуск не робився.
+  Ліцензія ✅ LGPL-3.0-or-later (рішення власника): `license` і `license-files` (PEP 639),
+  `LICENSE` (LGPL-3) і `COPYING` (GPL-3), обидва в wheel і sdist, розділ License у README.
+  **Чекає власника:** `project.urls` (у репозиторію немає remote), налаштування trusted
+  publisher на PyPI і сам випуск (публікація — лише за командою власника).
 
 ---
 

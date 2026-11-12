@@ -3,6 +3,8 @@ name = "odoo-typing"
 version = "0.1.0"
 description = "mypy plugin that understands the Odoo ORM: models, _inherit, fields and recordsets"
 readme = "README.md"
+license = "LGPL-3.0-or-later"
+license-files = ["LICENSE", "COPYING"]
 requires-python = ">=3.11"
 dependencies = ["mypy>=2.1,<2.5"]  # internal mypy APIs: tested on 2.1 and 2.4
 keywords = ["odoo", "mypy", "mypy-plugin", "typing", "static-analysis"]

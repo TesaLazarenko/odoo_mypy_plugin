@@ -7,6 +7,7 @@ All notable changes to this project. The format follows
 ## [Unreleased]
 
 First release: a mypy plugin for the Odoo ORM, Odoo 17, 18, 19 and 20 (`odoo_version`).
+License: LGPL-3.0-or-later.
 
 ### Models and records
 
@@ -15,7 +16,8 @@ First release: a mypy plugin for the Odoo ORM, Odoo 17, 18, 19 and 20 (`odoo_ver
   dependencies are known on `self`; `_inherits` delegation, transitively.
 - `env["model.name"]` is the model's class as the addon sees it (also `Final` constants,
   aliases of `env`, `request.env` in controllers); `env.user` / `env.company`.
-- Relational fields are typed with their comodel (also from `related=`); `Binary`,
+- Relational fields are typed with their comodel (also from `related=`, through chains of
+  related fields); `Binary`,
   `Reference` and log-access fields get real types; option `literal_selection`.
 - `env.ref("module.name")` is the record's model, from the XML ids of data files.
 - `mapped("a.b")`, `grouped("a")` and `read([...])` / `search_read` return real types.
