@@ -206,6 +206,8 @@ def test_vals_unknown_keys_reported_unless_ignored_or_not_literal(run_mypy: RunM
         '10: error: Odoo model "t.order" has no field "cuont"; did you mean "count"?  '
         "[odoo-vals-key]",
         '11: error: Odoo model "t.line" has no field "message"  [odoo-vals-key]',
+        '13: error: Odoo model "t.order" has no field "nope"; did you mean "note"?  '
+        "[odoo-vals-key]",
         '15: note: Revealed type is "t_use.models.Order"',
     ]
 
@@ -455,4 +457,60 @@ def test_field_guards_keep_optional_fields_unreported(run_mypy: RunMypy) -> None
     assert messages == [
         '9: error: Odoo model "t.order" has no field "studio_typo"  [odoo-vals-key]',
         '13: error: Odoo model "t.order" has no field "studio_flag"  [odoo-vals-key]',
+    ]
+
+
+BUILT_VALS = """
+from typing import Any
+from odoo import models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self, rows: list[dict[str, Any]]) -> None:
+        vals: dict[str, Any] = {"nmae": "x", "count": "bad"}
+        vals["stat"] = "draft"
+        vals.update({"notee": 1}, done=True)
+        vals.setdefault("amount", "x")
+        self.write(vals)
+        self.create(dict(vals, nmae2=1))
+        vals = {"name": "ok"}
+        self.write(vals)
+        vals_list = []
+        line = {"lable": 1}
+        vals_list.append(line)
+        vals_list.append({"count": 2})
+        vals_list += [{"amont": 1}]
+        self.create(vals_list)
+        orders = self.with_context(default_stat="draft")
+        orders.create({})
+        ctx = {"default_stat": "x"}
+        self.with_context(ctx).create({})
+        later: dict[str, Any] = {}
+        self.write(later)
+        later["nmae"] = 1
+        for vals in rows:
+            self.write(vals)
+"""
+
+
+def test_vals_built_in_a_variable_checked(run_mypy: RunMypy) -> None:
+    messages = [line.split(";")[0] for line in _messages(run_mypy, BUILT_VALS)]
+
+    assert messages == [
+        '9: error: Odoo model "t.order" has no field "nmae"',
+        '9: error: Incompatible type for field "count" of Odoo model "t.order" (expression '
+        'has type "str", Integer field takes "int | NewId | Literal[False] | None")  '
+        "[odoo-vals-type]",
+        '10: error: Odoo model "t.order" has no field "stat"',
+        '11: error: Odoo model "t.order" has no field "notee"',
+        '12: error: Incompatible type for field "amount" of Odoo model "t.order" (expression '
+        'has type "str", Float field takes "float | Literal[False] | None")  [odoo-vals-type]',
+        '14: error: Odoo model "t.order" has no field "nmae2"',
+        # 16: rebound to {"name": ...}: the earlier keys are not its keys
+        '18: error: Odoo model "t.order" has no field "lable"  [odoo-vals-key]',
+        '21: error: Odoo model "t.order" has no field "amont"',
+        '23: error: Odoo model "t.order" has no field "stat" (default_stat in with_context)',
+        '25: error: Odoo model "t.order" has no field "stat" (default_stat in with_context)',
+        # 28: the key set after the call; 30: a loop variable
     ]

@@ -29,7 +29,9 @@ License: LGPL-3.0-or-later.
 - `odoo-model` / `odoo-model-depends`: unknown model names, models outside `depends`
   (not under guards such as `if "sale.order" in self.env:`).
 - `odoo-vals` (`odoo-vals-key`, `odoo-vals-type`): `create` / `write` / `copy` vals,
-  x2many commands, field assignments, `default_<field>` of `with_context(...).create`.
+  also `dict(...)` and a variable built in the function (`vals["k"] = v`,
+  `vals.update(...)`, `vals_list.append(...)`), x2many commands, field assignments,
+  `default_<field>` of `with_context(...).create`.
 - `odoo-field-ref`: `related=`, `compute=`, `inverse=`, `search=`, `selection=`,
   `@api.depends` / `constrains` / `onchange`, paths of `mapped` / `filtered` / `sorted`
   / `grouped` (literals and `Final` / `Literal` strings), fields of `read()`.

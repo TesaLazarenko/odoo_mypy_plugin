@@ -77,12 +77,17 @@ vals inside x2many commands (`Command.create({...})`, `Command.update(id, {...})
 (`record.partner_id = "x"`): its sub-codes `odoo-vals-key`
 (a key that is not a field of the model, as the addon sees it: fields of later addons
 and of `_inherits` parents included) and `odoo-vals-type` (a value the field does not
-take). The `default_<field>` keys of `records.with_context(...)` chained straight into
-`.create(...)` are checked the same way (keywords, or a literal dict); a key of a
-field the model lacks is reported only when it is a near miss of one (a typo), since
-Odoo ignores it and code passes defaults for fields of optional addons. Only dict
-displays written in the call are checked (for `create`, also a list of
-them); a `vals` variable, `dict(...)`, `**spread` and computed keys are not. In
+take). The `default_<field>` keys of `records.with_context(...)` followed by
+`.create(...)` are checked the same way (keywords, a dict, or a variable holding such
+records); a key of a field the model lacks is reported only when it is a near miss of
+one (a typo), since Odoo ignores it and code passes defaults for fields of optional
+addons. Checked are dict displays and `dict(k=v, ...)` (for `create`, also a list of
+them), and a variable built before the call in the same function: its literal value and
+what is added to it in place (`vals["k"] = v`, `vals.update(...)`,
+`vals.setdefault(...)`, `vals_list.append({...})` / `+= [...]`, through other variables
+too). The flow is read in source order: the last assignment before the call, then the
+changes after it; a variable assigned from a call (`vals = self._prepare_vals()`) keeps
+only the keys added afterwards, and `**spread` and computed keys are not checked. In
 abstract models (mixins, `base`) keys are not checked, since their methods run on models
 with more fields. What each field class takes follows Odoo's `convert_to_cache`
 (`False` and `None` clear a field; `Many2one` takes an id, a record of its comodel or a
@@ -570,8 +575,8 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
 
 ## Not yet supported
 
-- `vals` built in a variable or with `dict(...)`, and the `default_<field>` keys of a
-  context that is not passed straight to `.create(...)`
+- `vals` returned by a helper (`self._prepare_vals()`), or assigned in another branch
+  than the last assignment before the call (source order stands for the flow)
 - domains built in a variable, with `expression.AND(...)` or as `[...] + [...]`, and
   string arguments of `mapped()` / `filtered()` known only at run time (not a literal
   or a `Final` / `Literal` str)

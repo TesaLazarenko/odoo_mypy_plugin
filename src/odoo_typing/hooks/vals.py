@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from functools import partial
 
-from mypy.nodes import CallExpr, MemberExpr, TempNode
+from mypy.nodes import CallExpr, MemberExpr, NameExpr, TempNode
 from mypy.plugin import CheckerPluginInterface, MethodContext, MethodSigContext
 from mypy.types import FunctionLike, Instance, Type, get_proper_type
 
@@ -29,10 +29,11 @@ class ValsHooks(Hooks):
         argument = ctx.args[0][0] if ctx.args and ctx.args[0] else None
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
         model = self._models.model_of(receiver.type) if isinstance(receiver, Instance) else None
+        local = self._local_values(ctx.api)
         if argument is not None and addon_name is not None and model is not None:
             target = self._vals_target(model, addon_name)
             checker = self._vals_checker(ctx.api, addon_name)
-            for vals in vals_dicts(argument, many=method == "create"):
+            for vals in vals_dicts(argument, method == "create", local):
                 checker.check(target, vals)
         call = ctx.context
         if (
@@ -42,7 +43,11 @@ class ValsHooks(Hooks):
             and isinstance(call, CallExpr)
             and isinstance(call.callee, MemberExpr)
         ):
-            defaults = context_defaults(call.callee.expr)  # x.with_context(default_y=...).create
+            receiver_node = call.callee.expr  # x.with_context(default_y=...).create
+            if isinstance(receiver_node, NameExpr) and local is not None:
+                built = local.built(receiver_node, receiver_node.line)  # orders = x.with_context
+                receiver_node = built.value if built.value is not None else receiver_node
+            defaults = context_defaults(receiver_node, local)
             if defaults:
                 target = self._vals_target(model, addon_name)
                 self._vals_checker(ctx.api, addon_name).check_defaults(target, defaults)

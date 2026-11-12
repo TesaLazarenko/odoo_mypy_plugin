@@ -33,6 +33,7 @@ from odoo_typing.hooks.nodes import (
     lookup_class,
     type_checker,
 )
+from odoo_typing.local_values import LocalValues
 from odoo_typing.registry import Registry
 
 __all__ = [
@@ -191,6 +192,16 @@ class Hooks:
 
     def __init__(self, models: Models) -> None:
         self._models = models
+        self._local: LocalValues | None = None
+
+    def _local_values(self, api: CheckerPluginInterface) -> LocalValues | None:
+        """The variables of the function being checked (kept for its next calls)."""
+        function = type_checker(api).scope.current_function()
+        if function is None:
+            return None
+        if self._local is None or self._local.function is not function:
+            self._local = LocalValues(function)
+        return self._local
 
     @property
     def registry(self) -> Registry:

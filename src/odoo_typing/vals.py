@@ -6,8 +6,9 @@ variable is ``dict[str, Any]``, which a ``TypedDict`` parameter would reject. In
 the method hook looks at the argument expression: a dict display (or a list of them for
 ``create``) has each literal key checked against the model's fields
 (:meth:`odoo_typing.registry.Registry.fields`, the view of the checking addon) and each
-value against the field's class (:data:`VALUE_TYPES`). Keys of ``**spread`` and
-non-literal keys are not checked, nor are dicts built any other way.
+value against the field's class (:data:`VALUE_TYPES`). So are ``dict(k=v)`` and a variable
+built before the call (:mod:`odoo_typing.local_values`): its literal value and the keys
+added in place. Keys of ``**spread`` and non-literal keys are not checked.
 
 What a field accepts follows Odoo's ``convert_to_cache``: ``False`` and ``None`` clear
 almost every field. A plain ``bool`` value is taken where ``False`` is: Odoo code
@@ -37,6 +38,7 @@ from mypy.nodes import (
     IntExpr,
     ListExpr,
     MemberExpr,
+    NameExpr,
     RefExpr,
     StrExpr,
     TupleExpr,
@@ -59,6 +61,7 @@ from mypy.types import (
 # After mypy.types: mypy.checker and mypy.types import each other at import time.
 from mypy.checker import TypeChecker
 
+from odoo_typing.local_values import Change, LocalValues
 from odoo_typing.scanner import FieldInfo
 
 __all__ = [
@@ -88,6 +91,7 @@ ODOO_VALS_TYPE = ErrorCode(
 
 FALSE: Final = "Literal[False]"
 # Context keys that give a default to a field of the created records.
+MAX_DEPTH: Final = 3  # vals_list.append(vals), vals.update(other): names read through
 DEFAULT_PREFIX: Final = "default_"
 NONE: Final = "None"
 RECORDS: Final = "records"  # a recordset (of the field's comodel, checked by model name)
@@ -148,12 +152,75 @@ class ValsTarget:
     ignore_keys: tuple[str, ...]
 
 
-def vals_dicts(argument: Expression, many: bool) -> Iterator[DictExpr]:
-    """The dict displays of a ``vals`` argument (``many``: ``create``, also a list)."""
+def vals_dicts(
+    argument: Expression, many: bool, local: LocalValues | None = None, depth: int = 0
+) -> Iterator[DictExpr]:
+    """The dict displays of a ``vals`` argument (``many``: ``create``, also a list).
+
+    Also ``dict(k=v, ...)``, and, with the function's :class:`LocalValues`, a variable built
+    before the call: its literal value and what was added to it in place
+    (``vals["k"] = v``, ``vals.update(...)``, ``vals_list.append({...})``...).
+    """
     if isinstance(argument, DictExpr):
         yield argument
-    elif many and isinstance(argument, ListExpr):
-        yield from (item for item in argument.items if isinstance(item, DictExpr))
+    elif isinstance(argument, CallExpr) and _is_dict_call(argument):
+        for value, kind in zip(argument.args, argument.arg_kinds, strict=True):
+            if kind == ARG_POS:  # dict(other, k=v): the keys of ``other`` too
+                yield from vals_dicts(value, False, local, depth + 1)
+        yield from _keyword_dicts(argument.args, argument.arg_names)
+    elif many and isinstance(argument, (ListExpr, TupleExpr)):
+        for item in argument.items:
+            yield from vals_dicts(item, False, local, depth + 1)
+    elif isinstance(argument, NameExpr) and local is not None and depth < MAX_DEPTH:
+        built = local.built(argument, argument.line)
+        if built.value is not None:
+            yield from vals_dicts(built.value, many, local, depth + 1)
+        for change in built.changes:
+            yield from _changed_dicts(change, many, local, depth + 1)
+
+
+def _changed_dicts(
+    change: Change, many: bool, local: LocalValues, depth: int
+) -> Iterator[DictExpr]:
+    """The dicts an in-place change adds to a vals variable (a dict, or a list of them)."""
+    args = change.args
+    if change.method in {"__setitem__", "setdefault"}:  # vals["k"] = v, setdefault("k", v)
+        if len(args) == 2 and isinstance(args[0], StrExpr):
+            yield _synthetic_dict([(args[0], args[1])])
+    elif change.method in {"update", "__ior__"}:
+        for value, name in zip(args, change.arg_names, strict=True):
+            if name is None:
+                yield from vals_dicts(value, False, local, depth)
+        yield from _keyword_dicts(args, change.arg_names)
+    elif many and change.method == "append" and len(args) == 1:
+        yield from vals_dicts(args[0], False, local, depth)
+    elif many and change.method == "insert" and len(args) == 2:
+        yield from vals_dicts(args[1], False, local, depth)
+    elif many and change.method in {"extend", "__iadd__"} and len(args) == 1:
+        yield from vals_dicts(args[0], True, local, depth)
+
+
+def _keyword_dicts(args: Sequence[Expression], names: Sequence[str | None]) -> Iterator[DictExpr]:
+    """``dict(k=v)`` / ``vals.update(k=v)``: the keyword arguments as one dict."""
+    items: list[tuple[StrExpr, Expression]] = []
+    for value, name in zip(args, names, strict=True):
+        if name is not None:
+            key = StrExpr(name)
+            key.set_line(value)
+            items.append((key, value))
+    if items:
+        yield _synthetic_dict(items)
+
+
+def _synthetic_dict(items: Sequence[tuple[StrExpr, Expression]]) -> DictExpr:
+    """A dict display of keys and values found elsewhere (messages point at the keys)."""
+    display = DictExpr(list(items))
+    display.set_line(items[0][0])
+    return display
+
+
+def _is_dict_call(call: CallExpr) -> bool:
+    return isinstance(call.callee, RefExpr) and call.callee.fullname == "builtins.dict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,10 +436,13 @@ class ContextDefault:
     node: Context
 
 
-def context_defaults(receiver: Expression) -> list[ContextDefault]:
+def context_defaults(
+    receiver: Expression, local: LocalValues | None = None
+) -> list[ContextDefault]:
     """The ``default_<field>`` entries of ``records.with_context(...)``, if it is that.
 
-    Keyword arguments and the keys of a literal dict (the positional argument) count.
+    Keyword arguments and the keys of the positional dict count: a dict display,
+    ``dict(...)``, or a variable built before (with the function's :class:`LocalValues`).
     """
     if not (
         isinstance(receiver, CallExpr)
@@ -385,11 +455,12 @@ def context_defaults(receiver: Expression) -> list[ContextDefault]:
     for name, value, kind in arguments:
         if name is not None and name.startswith(DEFAULT_PREFIX):
             found.append(ContextDefault(name, name.removeprefix(DEFAULT_PREFIX), value, value))
-        elif name is None and kind == ARG_POS and isinstance(value, DictExpr):
-            for key, item in value.items:
-                if isinstance(key, StrExpr) and key.value.startswith(DEFAULT_PREFIX):
-                    field = key.value.removeprefix(DEFAULT_PREFIX)
-                    found.append(ContextDefault(key.value, field, item, key))
+        elif name is None and kind == ARG_POS:
+            for display in vals_dicts(value, False, local):
+                for key, item in display.items:
+                    if isinstance(key, StrExpr) and key.value.startswith(DEFAULT_PREFIX):
+                        field = key.value.removeprefix(DEFAULT_PREFIX)
+                        found.append(ContextDefault(key.value, field, item, key))
     return found
 
 

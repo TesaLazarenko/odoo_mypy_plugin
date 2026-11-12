@@ -886,7 +886,21 @@
 - **Критерій готовності.** Константа з хибним полем дає `odoo-field-ref`, з правильним —
   той самий тип, що й літерал.
 
-### 6.3 `vals` і `default_*`, зібрані у змінній
+### 6.3 `vals` і `default_*`, зібрані у змінній — ✅ зроблено
+- **Зроблено.** Модуль `local_values.py`: `LocalValues(function)` один раз обходить
+  інструкції функції (власний обхід: скомпільований mypy не дає успадковувати свої
+  visitor-и) і для кожної змінної (`NameExpr.node`) записує прив'язки і зміни на місці;
+  `built(name, line)` — останнє присвоєння до рядка і зміни після нього.
+  `vals.vals_dicts(argument, many, local)` розбирає `dict(...)`, змінну, `vals["k"] = v`,
+  `update` / `setdefault` / `|=`, для `create` — `append` / `insert` / `extend` / `+=`,
+  також через інші змінні (глибина 3). `context_defaults` бере контекст зі змінної
+  (`orders = x.with_context(...)`, `with_context(ctx)`). Функція береться з
+  `TypeChecker.scope.current_function()` (є в mypy 2.1 і 2.4), `LocalValues` кешується
+  на останню функцію (`Hooks._local_values`). Повторні повідомлення для однієї змінної у
+  двох викликах прибирає сам mypy (`Errors.remove_duplicates`).
+- **Перевірка на бенчмарку.** Тимчасовий плагін-лічильник: на crm / sale / account
+  змінну передано у 14 / 28 / 65 викликах, розібрано 8 / 24 / 44 (10 / 25 / 65 dict);
+  нових помилок 0, хибних 0, час у межах шуму.
 - **Проблема.** `vals = {...}; self.create(vals)`, `create(dict(name=...))`, `vals_list
   = []` + `vals_list.append({...})` не перевіряються; так само `orders =
   x.with_context(default_y=...)` + `orders.create({})` (9 місць). Параметр, переданий
