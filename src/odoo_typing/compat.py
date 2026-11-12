@@ -54,6 +54,9 @@ class OdooProfile:
         domain_class: Full name of the ``Domain`` class (Odoo 19+), ``None`` before.
         sorted_order: Whether ``sorted("...")`` takes an order (``"name desc, id"``,
             Odoo 19+) rather than one field name.
+        request_var: Full name of ``odoo.http.request`` when Odoo leaves it untyped
+            (a werkzeug ``LocalProxy``), ``None`` when Odoo declares its type.
+        request_class: Full name of ``odoo.http.Request``.
     """
 
     version: int
@@ -77,6 +80,13 @@ class OdooProfile:
     domain_operators: frozenset[str]
     domain_class: str | None
     sorted_order: bool
+    request_var: str | None
+    request_class: str
+
+    @property
+    def environment(self) -> str:
+        """Full name of ``Environment``."""
+        return self.env_getitem.rpartition(".")[0]
 
     def is_field_class(self, fullname: str) -> bool:
         """Whether a full name is that of a field class (``odoo.fields.Char``...)."""
@@ -149,6 +159,8 @@ ODOO_18 = OdooProfile(
     domain_operators=_OPERATORS_18,
     domain_class=None,
     sorted_order=False,
+    request_var="odoo.http.request",
+    request_class="odoo.http.Request",
 )
 
 # Odoo 19: the ORM lives in odoo/orm/*; odoo.fields / odoo.models / odoo.api re-export it.
@@ -190,12 +202,22 @@ ODOO_19 = OdooProfile(
     domain_operators=_OPERATORS_19,
     domain_class="odoo.orm.domains.Domain",
     sorted_order=True,
+    request_var="odoo.http.request",
+    request_class="odoo.http.Request",
 )
 
 # Odoo 20: the same names as 19. The sources use PEP 695 type parameters
 # (``class Field[T]``, ``def model[C: Callable]``), which mypy parses from Python 3.12.
-# ``<>`` and ``==`` are gone; ``access`` is new.
-ODOO_20 = replace(ODOO_19, version=20, min_python=(3, 12), domain_operators=_OPERATORS_20)
+# ``<>`` and ``==`` are gone; ``access`` is new. odoo/http is a package that declares
+# ``request: Request`` (and ``Request.env: Environment | None``).
+ODOO_20 = replace(
+    ODOO_19,
+    version=20,
+    min_python=(3, 12),
+    domain_operators=_OPERATORS_20,
+    request_var=None,
+    request_class="odoo.http.requestlib.Request",
+)
 
 _PROFILES: Mapping[int, OdooProfile] = MappingProxyType({18: ODOO_18, 19: ODOO_19, 20: ODOO_20})
 

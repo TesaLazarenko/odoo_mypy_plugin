@@ -566,7 +566,18 @@
   ("expected Self"), 1 випадок на account. Можливе рішення: перевіряти тіло з типом
   повернення `Self | <tip моделі>`, а для викликів залишати `Self`.
 
-### 4.5 `request.env` у контролерах
+### 4.5 `request.env` у контролерах — ✅ зроблено (варіант A)
+- **Зроблено.** Odoo 18–19: `_type_request` з class hook-а будь-якого класу після того,
+  як `odoo.http` проаналізовано і перевірено (у змінної вже є тип), замінює `Any` у
+  `odoo.http.request` на `Request` (`profile.request_var`, `request_class`). Прототип
+  показав, що перезапису немає: модуль `odoo.http` перевірено раніше за залежні, а з
+  кешу він приходить з `Any`, який замінюється так само. Перша спроба пропускала
+  випадок, коли хук спрацьовує під час аналізу самого `odoo/http.py` (змінної ще немає):
+  тепер спроба повторюється на наступному класі. Odoo 20 сам оголошує
+  `request: Request` (пакет `odoo/http`, `requestlib.Request`). Attribute hook на
+  `Request.env` повертає `Environment` (Odoo оголошує `None` / `Environment | None`), тож
+  `request.env["res.partnr"]` дає `odoo-model`. Бенчмарк: помилки ті самі, час у межах
+  шуму.
 - **Перевірено:** `request = _request_stack()`, тобто werkzeug `LocalProxy`. Werkzeug
   немає в `mypy_path`, тож `request` — це Any, а хуки на Any не викликаються. До того ж
   `Request.env` у `__init__` присвоюється `None`, тож навіть типізований `request` дасть

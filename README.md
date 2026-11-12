@@ -162,6 +162,10 @@ rather than `str | Literal[False]`, so comparing it with a key that does not exi
 an error; it is off by default because assigning the value to a variable then fixes
 the variable's type to those literals.
 
+**Controllers.** `odoo.http.request` is a `Request` and `request.env` an `Environment`
+(Odoo 18-19 build `request` with werkzeug, which mypy does not follow; Odoo 20 declares
+`env` as possibly `None`), so `request.env["res.partner"]` is checked like `self.env`.
+
 **Reading fields that Odoo leaves untyped.** `Binary` and `Image` read as
 `bytes | Literal[False]` (Odoo 18-19 declare them without a value type; Odoo 20's own
 type is kept), except computed fields that are not stored: Odoo uses those to hold any
@@ -468,8 +472,6 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
   field of model `x`, as in `for line in self.move_id.line_ids:` then
   `for line in self:` in an earlier `account.move.line` class) cannot later be
   assigned `self` of an earlier class of `x` (an `assignment` error)
-- `request.env` in controllers is `Any` (the `odoo.http.request` proxy is untyped), so
-  model names there are not checked
 - only the guard forms listed above are detected (a guard in a helper function, or a
   flag computed earlier, is not)
 - `env[name]` with a name only known at run time is `Any` (option `dynamic_env`), so

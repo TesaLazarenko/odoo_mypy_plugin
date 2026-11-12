@@ -204,6 +204,7 @@ class OdooPlugin(Plugin):
             print(warning, file=sys.stderr)
         self._store = RecordStore.for_cache_dir(options.cache_dir)
         self._inputs_checked = False
+        self._request_typed = False
         self._new_registry()
 
     def _new_registry(self) -> None:
@@ -331,6 +332,8 @@ class OdooPlugin(Plugin):
     def _after_class_body(self, ctx: ClassDefContext) -> None:
         """Run once the class body is analyzed (and again for each written base)."""
         _normalize_meta_attributes(ctx, self._profile)
+        if not self._request_typed:
+            self._request_typed = _type_request(self._profile, ctx.api.modules)
         if not ctx.cls.info.has_base(self._profile.base_model):
             return  # the hook runs for every class, also outside Odoo
         annotate_self_overrides(ctx)
@@ -655,6 +658,8 @@ class OdooPlugin(Plugin):
         """Resolve record-typed attributes of model classes from the reading addon."""
         if fullname in self._profile.env_records:
             return partial(self._env_record, self._profile.env_records[fullname])
+        if fullname == f"{self._profile.request_class}.env":
+            return partial(_request_env, self._profile.environment)
         owner, _, name = fullname.rpartition(".")
         if name in LOG_ACCESS_USERS and self.registry.contribution(owner):
             # Declared as ``Many2one[Any]``: the res.users records the reading addon sees.
@@ -1433,6 +1438,46 @@ def _field_arguments(call: CallExpr, field_class: str) -> list[tuple[str, Expres
                 found.append((positional[position], value))
             position += 1
     return found
+
+
+def _type_request(profile: OdooProfile, modules: dict[str, MypyFile]) -> bool:
+    """Type ``odoo.http.request`` as a ``Request`` where Odoo leaves it ``Any``.
+
+    Odoo 18-19 build it with werkzeug's ``LocalStack()()``, which mypy cannot follow
+    (werkzeug is not on the search path), so ``request.env[...]`` in a controller went
+    unchecked. It runs from the class hook of a later module, once ``odoo.http`` is
+    type-checked (its variable has a type then).
+
+    Returns:
+        Whether nothing is left to do (typed now, or typed by Odoo).
+    """
+    if profile.request_var is None:
+        return True
+    if "odoo.http" not in modules:
+        return False
+    variable = lookup_fully_qualified(profile.request_var, modules)
+    request = lookup_fully_qualified(profile.request_class, modules)
+    if (
+        variable is None
+        or request is None
+        or not isinstance(variable.node, Var)
+        or not isinstance(request.node, TypeInfo)
+        or variable.node.type is None
+    ):
+        return False  # odoo.http is not analyzed (or type-checked) yet: a later class
+    if isinstance(get_proper_type(variable.node.type), AnyType):
+        variable.node.type = instance_of(request.node)
+    return True
+
+
+def _request_env(environment: str, ctx: AttributeContext) -> Type:
+    """``request.env``: an ``Environment`` (Odoo sets it to ``None`` before dispatch)."""
+    if not isinstance(ctx.api, TypeChecker):
+        return ctx.default_attr_type
+    node = lookup_fully_qualified(environment, ctx.api.modules)
+    if node is None or not isinstance(node.node, TypeInfo):
+        return ctx.default_attr_type
+    return instance_of(node.node)
 
 
 def _argument(ctx: MethodContext, name: str, position: int) -> Expression | None:
