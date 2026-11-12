@@ -850,8 +850,9 @@
   - CI-матриця: мінімальна і остання версія.
   - Внутрішні API в коді позначені коментарями: `calculate_mro`, `info.mro`,
     `is_incomplete_namespace`, створення `TypeInfo`.
-- [ ] **Тести залежать від Odoo на хості.** Зараз e2e мовчки пропускаються без Odoo. У CI
-  зробити пропуск помилкою (`ODOO_REQUIRED=1`).
+- [x] **Тести залежать від Odoo на хості.** ✅ `ODOO_REQUIRED=1`: Odoo, якого не знайдено
+  (або чию версію не прочитано), робить e2e-тести помилкою (`conftest._skip_or_fail`), а
+  не пропуском. Описано в README (Development).
 - [ ] **Метадані пакета і випуск.** license, classifiers, `project.urls`, changelog,
   PyPI через trusted publishing.
 

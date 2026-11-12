@@ -444,6 +444,8 @@ or `i18n/`, about 150-200 MB) under `~/.cache/odoo-typing/odoo/<version>/` and p
 `odoo` package directory to test against. The tests read the version from its
 `release.py` (or `ODOO_VERSION`); for a version the plugin has no profile for yet, the
 end-to-end tests are skipped. `@pytest.mark.odoo(18, 19)` limits a test to some versions.
+In CI, set `ODOO_REQUIRED=1`: an Odoo that is not found (or whose version cannot be read)
+then fails the end-to-end tests instead of skipping them silently.
 
 ```bash
 ODOO_PATH=$(tools/odoo/fetch.sh 19.0) uv run pytest
@@ -470,6 +472,8 @@ uv run python tools/bench/bench.py --compare-only wp1 --compare baseline   # no 
 - `--bench-dir DIR`: where `<label>.json`, the generated configs (`config/`) and the caches
   (`cache/<label>/<addon>`) go.
 - `--addons a b ...`, `--jobs N` (addons at once; 1 gives the most stable timings).
+- `--option "key = value"` (repeatable): a line added to the plugin's
+  `[tool.odoo_typing]` table (`--option "literal_selection = true"`).
 - The run without the plugin is saved once as `noplugin.json` and reused. Pass
   `--refresh-baseline` after upgrading mypy or Odoo; it rebuilds the baseline from the
   `--addons` given, so pass all of them.

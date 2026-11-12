@@ -9,6 +9,7 @@ import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 from mypy import api as mypy_api
@@ -33,11 +34,18 @@ def _find_odoo() -> Path | None:
     return None
 
 
+def _skip_or_fail(reason: str) -> NoReturn:
+    """Skip an e2e test that needs Odoo, or fail it in CI (``ODOO_REQUIRED=1``)."""
+    if os.environ.get("ODOO_REQUIRED") == "1":
+        pytest.fail(f"{reason} (ODOO_REQUIRED=1)")
+    pytest.skip(reason)
+
+
 @pytest.fixture(scope="session")
 def odoo_path() -> Path:
     path = _find_odoo()
     if path is None or not (path / "release.py").is_file():
-        pytest.skip("Odoo not found; set ODOO_PATH to the odoo package directory")
+        _skip_or_fail("Odoo not found; set ODOO_PATH to the odoo package directory")
     return path
 
 
@@ -51,7 +59,7 @@ def odoo_version(odoo_path: Path) -> int:
         return int(env)
     detected = read_odoo_version(odoo_path)
     if detected is None:
-        pytest.skip(f"cannot read the Odoo version of {odoo_path}; set ODOO_VERSION")
+        _skip_or_fail(f"cannot read the Odoo version of {odoo_path}; set ODOO_VERSION")
     return detected[0]
 
 
