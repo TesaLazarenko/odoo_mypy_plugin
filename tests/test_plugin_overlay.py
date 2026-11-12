@@ -7,6 +7,7 @@ other (and their own ``tests.common``) that way. With an ``odoo-typing-root`` ov
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -210,3 +211,16 @@ def test_overlay_real_path_target_warns_about_module_name(
     assert err.count("odoo-typing: warning") == 1
     assert 'module "ov_ext' in err
     assert '"odoo.addons.ov_ext"' in err
+
+
+def test_overlay_out_of_date_warns_once(
+    project: Project, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    late = project.root / "addons" / "ov_late"
+    write_addon(late, {"models.py": "x = 1\n"})
+    try:
+        _, err = _run(project, tmp_path / "cache", capfd, "-p", "odoo.addons.ov_ext")
+    finally:
+        shutil.rmtree(late)
+
+    assert err.count("is out of date (addon ov_late is not linked); run odoo-typing-root") == 1

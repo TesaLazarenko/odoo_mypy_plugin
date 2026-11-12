@@ -149,6 +149,7 @@ from odoo_typing.methods import (
     keep_receiver,
 )
 from odoo_typing.odoo_version import version_mismatch_warning
+from odoo_typing.overlay import overlay_differences
 from odoo_typing.records import RecordStore, load_index
 from odoo_typing.references import (
     KNOWN_CLASSES,
@@ -208,6 +209,7 @@ class OdooPlugin(Plugin):
         self._store = RecordStore.for_cache_dir(options.cache_dir)
         self._config_stamp = stamp(options.config_file) if options.config_file else None
         self._inputs_checked = False
+        self._overlay_checked = False
         self._request_typed = False
         self._new_registry()
 
@@ -243,6 +245,10 @@ class OdooPlugin(Plugin):
         self._inputs_checked = True
         if self._config_changed() or self.registry.inputs_changed():
             self._new_registry()
+        if not self._overlay_checked:
+            self._overlay_checked = True
+            if warning := _stale_overlay_warning(self._settings, self.registry):
+                print(warning, file=sys.stderr)
 
     def _config_changed(self) -> bool:
         """Reload the settings if mypy's config file changed (``dmypy`` keeps the plugin).
@@ -1167,6 +1173,20 @@ def _settings_or_exit(options: Options) -> Settings:
     except ConfigError as exc:
         print(f"odoo-typing: error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
+
+
+def _stale_overlay_warning(settings: Settings, registry: Registry) -> str | None:
+    """A warning when the overlay root no longer links the addons on the addons paths."""
+    if settings.overlay_root is None:
+        return None
+    differences = overlay_differences(registry.addons, settings.overlay_root)
+    if not differences:
+        return None
+    shown = "; ".join(differences[:3]) + ("; ..." if len(differences) > 3 else "")
+    return (
+        f"odoo-typing: warning: the overlay root {settings.overlay_root} is out of date "
+        f"({shown}); run odoo-typing-root"
+    )
 
 
 def _package_bases_warning(

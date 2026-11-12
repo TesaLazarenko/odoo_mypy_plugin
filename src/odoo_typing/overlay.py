@@ -12,9 +12,11 @@ of symlinks::
 
 Odoo 19+ has no ``odoo/addons/__init__.py`` (a namespace package); its overlay has none.
 
-Usage: ``odoo-typing-root [--config pyproject.toml] [--output DIR]``. The settings
-come from the ``[tool.odoo_typing]`` table (``odoo_path``, ``addons_path``, and
-``overlay_root`` as the default output). Run it again after adding or removing addons.
+Usage: ``odoo-typing-root [--config pyproject.toml] [--output DIR] [--check]``. The
+settings come from the ``[tool.odoo_typing]`` table (``odoo_path``, ``addons_path``, and
+``overlay_root`` as the default output). Run it again after adding or removing addons;
+``--check`` (for CI) only reports whether the overlay still matches the addons, and the
+plugin warns at start when it does not (:func:`overlay_differences`).
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from odoo_typing.addons import AddonIndex
 from odoo_typing.config import OVERLAY_MARKER as MARKER
 from odoo_typing.config import ConfigError, Settings, load_settings
 
-__all__ = ["MARKER", "OverlayError", "build_overlay", "main"]
+__all__ = ["MARKER", "OverlayError", "build_overlay", "main", "overlay_differences"]
 
 SKIPPED = frozenset({"addons", "__pycache__"})
 
@@ -73,6 +75,38 @@ def build_overlay(settings: Settings, output: Path) -> int:
     return len(index.addons)
 
 
+def overlay_differences(index: AddonIndex, output: Path) -> list[str]:
+    """How an overlay root differs from the addons on the addons paths.
+
+    Args:
+        index: The addons the overlay should link.
+        output: The overlay root.
+
+    Returns:
+        One line per difference (an addon not linked, a link to a removed addon, a
+        link to another directory); empty if the overlay is up to date.
+    """
+    addons_dir = output / "odoo" / "addons"
+    linked: dict[str, Path] = {}
+    if addons_dir.is_dir():
+        for entry in addons_dir.iterdir():
+            if entry.is_symlink():
+                linked[entry.name] = Path(entry.readlink())
+    differences: list[str] = []
+    for name, addon in sorted(index.addons.items()):
+        target = linked.pop(name, None)
+        if target is None:
+            differences.append(f"addon {name} is not linked")
+        elif target.absolute() != addon.path.absolute():
+            differences.append(f"addon {name} links {target}, not {addon.path}")
+    differences += [
+        f"{name} links a removed addon ({target})"
+        for name, target in sorted(linked.items())
+        if name != "__init__.py"
+    ]
+    return differences
+
+
 def _remove_previous(output: Path, package: Path) -> None:
     """Remove an earlier overlay (or the plain ``odoo`` symlink of the simple setup)."""
     if package.is_symlink():
@@ -103,17 +137,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--config", default="pyproject.toml", help="default: %(default)s")
     parser.add_argument("--output", help="overlay root (default: overlay_root in the config)")
+    parser.add_argument(
+        "--check", action="store_true", help="exit 1 if the overlay root is out of date"
+    )
     args = parser.parse_args(argv)
     try:
         settings = load_settings(args.config, require_overlay=False)
         output = Path(args.output) if args.output else settings.overlay_root
         if output is None:
             raise ConfigError("no output: set overlay_root in [tool.odoo_typing] or pass --output")
+        if args.check:
+            return _check(settings, output)
         count = build_overlay(settings, output)
     except (ConfigError, OverlayError, OSError) as exc:
         print(f"odoo-typing-root: error: {exc}", file=sys.stderr)
         return 2
     print(f"odoo-typing-root: wrote {output} ({count} addons)")
+    return 0
+
+
+def _check(settings: Settings, output: Path) -> int:
+    if not (output / MARKER).is_file():
+        print(f"odoo-typing-root: {output} was not generated; run odoo-typing-root")
+        return 1
+    differences = overlay_differences(AddonIndex(settings.odoo_path, settings.addons_paths), output)
+    for line in differences:
+        print(f"odoo-typing-root: {line}")
+    if differences:
+        print(f"odoo-typing-root: {output} is out of date; run odoo-typing-root")
+        return 1
+    print(f"odoo-typing-root: {output} is up to date")
     return 0
 
 

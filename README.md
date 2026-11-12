@@ -167,6 +167,9 @@ with an older target the plugin stops with a message. Some addons ship migration
 (`migrations/<version>/pre-migrate.py`) that mypy sees as duplicate modules: add
 `exclude = "/migrations/"` to `[tool.mypy]`.
 
+After adding or removing an addon, rerun `odoo-typing-root`: the plugin warns once
+per run when the overlay root no longer links the addons on the addons paths.
+
 Unknown keys in this table are a configuration error, so a typo such as `addon_path`
 does not go unnoticed. `dynamic_env = "base"` keeps plain mypy's `BaseModel` for
 `env[name]` when `name` is not a literal (or a `Final`/`Literal` str): every field read
@@ -194,6 +197,7 @@ of `Selection`, but the value is a record.
 ```bash
 odoo-typing-root                     # (re)generate .odoo-root; again after adding/removing addons
 mypy -p odoo.addons.my_addon         # or: mypy .odoo-root/odoo/addons/my_addon
+odoo-typing-root --check             # in CI: exit 1 if .odoo-root no longer matches the addons
 ```
 
 The root contains `odoo/<entry>` symlinks to every entry of the Odoo package except
@@ -498,5 +502,3 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
   flag computed earlier, is not)
 - `env[name]` with a name only known at run time is `Any` (option `dynamic_env`), so
   code on it is not checked
-- the generated overlay root is not checked against the addons: rerun `odoo-typing-root`
-  after adding an addon, or `odoo.addons.<new>` imports are `import-not-found`

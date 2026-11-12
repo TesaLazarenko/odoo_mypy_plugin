@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from odoo_typing.addons import AddonIndex
 from odoo_typing.config import Settings
-from odoo_typing.overlay import OverlayError, build_overlay, main
+from odoo_typing.overlay import OverlayError, build_overlay, main, overlay_differences
 
 
 def _addon(root: Path, name: str) -> Path:
@@ -184,3 +185,36 @@ def test_main_config_error_returns_2(tmp_path: Path, capsys: pytest.CaptureFixtu
 
     assert status == 2
     assert "odoo-typing-root: error: " in capsys.readouterr().err
+
+
+def test_overlay_differences_report_new_removed_and_moved_addons(
+    tmp_path: Path, settings: Settings
+) -> None:
+    output = tmp_path / "root"
+    build_overlay(settings, output)
+    index = AddonIndex(settings.odoo_path, settings.addons_paths)
+    assert overlay_differences(index, output) == []
+    _addon(tmp_path / "addons", "new_mod")
+    (output / "odoo/addons/gone_mod").symlink_to(tmp_path, target_is_directory=True)
+
+    index = AddonIndex(settings.odoo_path, settings.addons_paths)
+
+    assert overlay_differences(index, output) == [
+        "addon new_mod is not linked",
+        f"gone_mod links a removed addon ({tmp_path})",
+    ]
+
+
+def test_main_check_returns_1_when_out_of_date_and_0_after_rebuild(
+    tmp_path: Path, odoo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = _pyproject(tmp_path, odoo, ".odoo-root")
+    assert main(["--config", str(config), "--check"]) == 1  # never generated
+    main(["--config", str(config)])
+    assert main(["--config", str(config), "--check"]) == 0
+    _addon(tmp_path / "addons", "later_mod")
+
+    status = main(["--config", str(config), "--check"])
+
+    assert status == 1
+    assert "addon later_mod is not linked" in capsys.readouterr().out
