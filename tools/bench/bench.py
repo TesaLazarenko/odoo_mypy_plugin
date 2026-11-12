@@ -62,6 +62,19 @@ FETCH_CACHE = Path(
     os.environ.get("ODOO_TYPING_ODOO_CACHE", Path.home() / ".cache/odoo-typing/odoo")
 )
 DEFAULT_ADDONS = ("crm", "sale", "account", "website_sale", "project_sms", "sale_stock")
+# ``--profile``: the addons measured when ``--addons`` is not given.
+PROFILES = {
+    "small": ("crm", "sale", "account"),
+    "default": DEFAULT_ADDONS,
+    "big": (
+        *DEFAULT_ADDONS,
+        *("sale_management", "purchase", "stock", "mrp", "hr", "project", "website", "event"),
+        *("point_of_sale", "mail", "calendar", "contacts", "hr_expense", "hr_holidays"),
+        *("im_livechat", "mass_mailing", "survey", "website_sale_stock", "purchase_stock"),
+        *("sale_mrp", "stock_account", "account_payment", "payment", "analytic", "product"),
+        *("uom", "utm", "sales_team", "portal", "digest"),
+    ),
+}
 BASELINE_LABEL = "noplugin"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES_PER_GROUP = 3
@@ -76,7 +89,7 @@ NUMBER = re.compile(r"\b\d+\b")
 CONFIG_TEMPLATE = """\
 [tool.mypy]
 plugins = [{plugins}]
-mypy_path = ["{odoo_root}"]
+mypy_path = ["{odoo_root}"{project_path}]
 check_untyped_defs = true
 show_error_codes = true
 show_traceback = true
@@ -91,7 +104,7 @@ follow_imports = "silent"
 [tool.odoo_typing]
 odoo_path = "{odoo_root}/odoo"
 odoo_version = {odoo_version}
-addons_path = []
+addons_path = [{project_addons}]
 """
 
 
@@ -156,6 +169,7 @@ class BenchContext:
     timeout: float
     odoo_version: int = DEFAULT_ODOO_VERSION
     options: tuple[str, ...] = ()  # ``key = value`` lines added to [tool.odoo_typing]
+    project: Path | None = None  # a directory of the project's own addons (``--project``)
 
     @property
     def config_dir(self) -> Path:
@@ -190,6 +204,8 @@ def write_config(context: BenchContext, with_plugin: bool) -> Path:
             odoo_root=context.odoo_root,
             odoo_version=context.odoo_version,
             package_bases=_package_bases(context.odoo_version),
+            project_path=f', "{context.project}"' if context.project else "",
+            project_addons=f'"{context.project}"' if context.project else "",
         )
         + "".join(f"{option}\n" for option in context.options if with_plugin)
     )
@@ -282,7 +298,7 @@ def measure_addon(context: BenchContext, label: str, addon: str, with_plugin: bo
     config = context.config_dir / ("plugin.toml" if with_plugin else "noplugin.toml")
     cache_dir = context.bench_dir / "cache" / label / addon
     shutil.rmtree(cache_dir, ignore_errors=True)
-    target = f"odoo/addons/{addon}"
+    target = str(context.project / addon) if context.project else f"odoo/addons/{addon}"
     cold = run_mypy(context, config, cache_dir, target)
     warm = run_mypy(context, config, cache_dir, target)
     errors = parse_errors(cold.stdout, context.odoo_root)
@@ -539,7 +555,18 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--label", help="name of this run; writes <bench-dir>/<label>.json")
     parser.add_argument("--compare", help="earlier label to diff against")
     parser.add_argument("--compare-only", help="diff this stored label, do not run mypy")
-    parser.add_argument("--addons", nargs="+", default=list(DEFAULT_ADDONS))
+    parser.add_argument("--addons", nargs="+", help="addons to measure (default: --profile)")
+    parser.add_argument(
+        "--profile", choices=sorted(PROFILES), default="default", help="a set of core addons"
+    )
+    parser.add_argument(
+        "--project", type=Path, help="measure every addon of this directory (the project's own)"
+    )
+    parser.add_argument(
+        "--thresholds",
+        type=Path,
+        help='JSON {"<error code>": max, "*": max}: plugin-only errors allowed (exit 1 above)',
+    )
     parser.add_argument("--refresh-baseline", action="store_true")
     parser.add_argument(
         "--odoo-version", type=int, default=DEFAULT_ODOO_VERSION, help="odoo_version to target"
@@ -567,6 +594,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         parser.error("give exactly one of --label and --compare-only")
     if args.label == BASELINE_LABEL:
         parser.error(f"label {BASELINE_LABEL!r} is reserved for the run without the plugin")
+    if args.addons is None:
+        args.addons = project_addons(args.project) if args.project else list(PROFILES[args.profile])
     version = args.odoo_version
     if args.odoo_root is None:
         args.odoo_root = (
@@ -576,6 +605,47 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         # Each version has its own baseline and labels; 18 keeps the original layout.
         args.bench_dir = args.bench_dir / f"odoo-{version}"
     return args
+
+
+def project_addons(directory: Path) -> list[str]:
+    """The addons of a project directory: subdirectories with a manifest."""
+    return sorted(
+        entry.name
+        for entry in directory.iterdir()
+        if (entry / "__manifest__.py").is_file() or (entry / "__openerp__.py").is_file()
+    )
+
+
+def threshold_violations(report: Report, thresholds: dict[str, int]) -> list[str]:
+    """The error codes whose plugin-only errors (all addons) exceed their threshold.
+
+    Args:
+        report: A run with the plugin.
+        thresholds: Maximum count per error code; ``"*"`` limits the total.
+    """
+    counts: dict[str, int] = {}
+    for result in report["addons"].values():
+        for error in result["plugin_only"]:
+            code = error.split(":")[2]
+            counts[code] = counts.get(code, 0) + 1
+    counts["*"] = sum(counts.values())
+    return [
+        f"{code}: {counts.get(code, 0)} plugin-only errors, threshold {limit}"
+        for code, limit in sorted(thresholds.items())
+        if counts.get(code, 0) > limit
+    ]
+
+
+def _load_thresholds(path: Path) -> dict[str, int]:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise BenchError(f"cannot read thresholds {path}: {error}") from error
+    if not isinstance(data, dict) or not all(
+        isinstance(key, str) and isinstance(value, int) for key, value in data.items()
+    ):
+        raise BenchError(f"{path}: thresholds must be an object of error code -> count")
+    return data
 
 
 def fetched_root(version: int) -> Path:
@@ -592,6 +662,7 @@ def run(args: argparse.Namespace) -> Report:
         timeout=args.timeout,
         odoo_version=args.odoo_version,
         options=tuple(args.option),
+        project=args.project.absolute() if args.project else None,
     )
     if not (context.odoo_root / "odoo" / "release.py").is_file():
         raise BenchError(f"{context.odoo_root} does not contain odoo/release.py")
@@ -611,7 +682,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         argv: Command line arguments without the program name.
 
     Returns:
-        1 if a mypy run crashed, else 0.
+        1 if a mypy run crashed or a threshold is exceeded, 2 on bad input, else 0.
     """
     args = parse_args(sys.argv[1:] if argv is None else argv)
     bench_dir = args.bench_dir.absolute()
@@ -620,6 +691,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         baseline_path = bench_dir / f"{BASELINE_LABEL}.json"
         baseline = load_report(baseline_path) if baseline_path.exists() else None
         old = load_report(bench_dir / f"{args.compare}.json") if args.compare else report
+        thresholds = _load_thresholds(args.thresholds) if args.thresholds else {}
     except BenchError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -627,7 +699,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     crashes = [name for name, result in report["addons"].items() if result["crash"]]
     for name in crashes:
         print(f"\nCRASH in {name}:\n{report['addons'][name]['crash']}")
-    return 1 if crashes else 0
+    violations = threshold_violations(report, thresholds)
+    for line in violations:
+        print(f"THRESHOLD {line}")
+    return 1 if crashes or violations else 0
 
 
 if __name__ == "__main__":

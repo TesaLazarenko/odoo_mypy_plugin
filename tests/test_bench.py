@@ -162,3 +162,40 @@ def test_write_config_adds_plugin_options_only_with_plugin(tmp_path: Path) -> No
 
     assert with_plugin.endswith("addons_path = []\nliteral_selection = true\n")
     assert "literal_selection" not in without
+
+
+def test_parse_args_profile_and_project_choose_the_addons(tmp_path: Path) -> None:
+    for name in ("b_mod", "a_mod"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "__manifest__.py").write_text("{}")
+    (tmp_path / "not_an_addon").mkdir()
+
+    small = bench.parse_args(["--label", "x", "--profile", "small"])
+    project = bench.parse_args(["--label", "x", "--project", str(tmp_path)])
+    explicit = bench.parse_args(["--label", "x", "--profile", "big", "--addons", "crm"])
+
+    assert small.addons == ["crm", "sale", "account"]
+    assert project.addons == ["a_mod", "b_mod"]
+    assert explicit.addons == ["crm"]
+    assert len(bench.PROFILES["big"]) >= 30
+
+
+def test_write_config_project_adds_its_directory(tmp_path: Path) -> None:
+    context = bench.BenchContext("python", tmp_path, tmp_path, 1.0, project=tmp_path / "p")
+
+    text = bench.write_config(context, with_plugin=True).read_text()
+
+    assert f'mypy_path = ["{tmp_path}", "{tmp_path / "p"}"]' in text
+    assert f'addons_path = ["{tmp_path / "p"}"]' in text
+
+
+def test_threshold_violations_count_plugin_only_errors_per_code() -> None:
+    report = _report(
+        "x",
+        ["a.py:1:odoo-vals-key:m", "a.py:2:odoo-vals-key:m", "a.py:3:arg-type:m"],
+    )
+
+    violations = bench.threshold_violations(report, {"odoo-vals-key": 1, "arg-type": 1, "*": 3})
+
+    assert violations == ["odoo-vals-key: 2 plugin-only errors, threshold 1"]
+    assert bench.threshold_violations(report, {"*": 2}) == ["*: 3 plugin-only errors, threshold 2"]

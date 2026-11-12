@@ -471,7 +471,12 @@ uv run python tools/bench/bench.py --compare-only wp1 --compare baseline   # no 
 - `--odoo-root DIR`: a directory that holds only an `odoo` symlink (see the note above).
 - `--bench-dir DIR`: where `<label>.json`, the generated configs (`config/`) and the caches
   (`cache/<label>/<addon>`) go.
-- `--addons a b ...`, `--jobs N` (addons at once; 1 gives the most stable timings).
+- `--addons a b ...`, or `--profile small|default|big` (3, 6 or 37 core addons), or
+  `--project DIR` (every addon of a project directory); `--jobs N` (addons at once; 1
+  gives the most stable timings).
+- `--thresholds FILE`: a JSON object of error code (or `"*"` for all) to the most
+  plugin-only errors allowed; above it the script prints `THRESHOLD ...` and exits 1
+  (`tools/bench/thresholds-18.json` is the current `small` run on Odoo 18).
 - `--option "key = value"` (repeatable): a line added to the plugin's
   `[tool.odoo_typing]` table (`--option "literal_selection = true"`).
 - The run without the plugin is saved once as `noplugin.json` and reused. Pass

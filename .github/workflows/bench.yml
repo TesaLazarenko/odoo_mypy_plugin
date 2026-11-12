@@ -1,0 +1,31 @@
+# Regression benchmark: the plugin-only errors of real Odoo addons must stay within
+# tools/bench/thresholds-18.json (update it with the classification of new errors,
+# see ROADMAP.md, cross-cutting rule 8).
+name: Benchmark
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/odoo-typing/odoo/18.0
+          key: odoo-18.0-v1
+      - run: uv sync
+      - name: Fetch Odoo 18.0
+        run: echo "ODOO_ROOT=$(dirname "$(tools/odoo/fetch.sh 18.0 --update)")" >> "$GITHUB_ENV"
+      - name: Benchmark
+        run: >
+          uv run python tools/bench/bench.py --label ci --profile small --jobs 2
+          --odoo-root "$ODOO_ROOT" --bench-dir bench --thresholds tools/bench/thresholds-18.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-report
+          path: bench/*.json
