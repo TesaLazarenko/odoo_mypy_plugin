@@ -13,6 +13,10 @@ The checks follow those rules on the literal parts of a domain:
 * a string value (or a list of strings) of a ``Selection`` field with literal keys
   must be one of the keys, as in :mod:`odoo_typing.vals`.
 
+The literal lists are found in the domain expression by :func:`domain_term_lists`:
+``a + b``, ``expression.AND/OR``, ``Domain`` objects and operators, and a variable built
+before the call (:mod:`odoo_typing.local_values`).
+
 The ``domain=`` of a relational field is a domain of the comodel; given as a string it
 is evaluated by the client (``parent.x``, names of the record's fields as values), so
 only its field paths are checked.
@@ -26,8 +30,22 @@ from dataclasses import dataclass
 from typing import Final
 
 from mypy.errorcodes import ErrorCode
-from mypy.nodes import Context, Expression, ListExpr, StrExpr, TupleExpr
+from mypy.nodes import (
+    ARG_POS,
+    CallExpr,
+    Context,
+    Expression,
+    ListExpr,
+    MemberExpr,
+    NameExpr,
+    OpExpr,
+    RefExpr,
+    StrExpr,
+    TupleExpr,
+    UnaryExpr,
+)
 
+from odoo_typing.local_values import MAX_DEPTH, Change, LocalValues
 from odoo_typing.references import RELATIONAL, did_you_mean, resolve_path
 from odoo_typing.scanner import FieldInfo
 
@@ -91,6 +109,82 @@ class Term:
     path: StrExpr
     operator: StrExpr | None
     value: Expression | None
+
+
+# ``expression.AND([...])`` / ``OR`` (``odoo.osv.expression``, Odoo 17-19).
+COMBINATORS: Final = frozenset({"odoo.osv.expression.AND", "odoo.osv.expression.OR"})
+# Operators that combine two domains: lists (``+``), ``Domain`` objects (``&``, ``|``).
+DOMAIN_OPERATORS: Final = frozenset({"+", "&", "|"})
+
+
+def domain_term_lists(
+    domain: Expression,
+    domain_class: str | None,
+    local: LocalValues | None = None,
+    depth: int = 0,
+) -> Iterator[Sequence[Expression]]:
+    """The literal term lists a domain expression is made of.
+
+    A list display; ``a + b`` of lists, ``a & b`` / ``a | b`` / ``~a`` of ``Domain``
+    objects; ``Domain([...])`` / ``Domain(path, operator, value)`` and ``Domain.AND`` /
+    ``OR`` (Odoo 19+, ``domain_class``); ``expression.AND([...])`` / ``OR``; and, with the
+    function's :class:`LocalValues`, a variable built before (``domain = [...]``,
+    ``domain += [...]``, ``domain.append(term)``, ``domain = expression.AND([domain, ...])``).
+    """
+    if isinstance(domain, ListExpr):
+        yield domain.items
+    elif isinstance(domain, OpExpr) and domain.op in DOMAIN_OPERATORS:
+        yield from domain_term_lists(domain.left, domain_class, local, depth)
+        yield from domain_term_lists(domain.right, domain_class, local, depth)
+    elif isinstance(domain, UnaryExpr) and domain.op == "~":
+        yield from domain_term_lists(domain.expr, domain_class, local, depth)
+    elif isinstance(domain, CallExpr):
+        yield from _call_term_lists(domain, domain_class, local, depth)
+    elif isinstance(domain, NameExpr) and local is not None and depth < MAX_DEPTH:
+        built = local.built(domain, domain.line)
+        if built.value is not None:
+            yield from domain_term_lists(built.value, domain_class, local, depth + 1)
+        for change in built.changes:
+            yield from _changed_term_lists(change, domain_class, local, depth + 1)
+
+
+def _call_term_lists(
+    call: CallExpr, domain_class: str | None, local: LocalValues | None, depth: int
+) -> Iterator[Sequence[Expression]]:
+    if any(kind != ARG_POS for kind in call.arg_kinds):
+        return
+    callee = call.callee
+    if domain_class is not None and isinstance(callee, RefExpr) and callee.fullname == domain_class:
+        if len(call.args) == 1:  # Domain([...]), Domain(other)
+            yield from domain_term_lists(call.args[0], domain_class, local, depth)
+        elif len(call.args) == 3:  # Domain(path, operator, value)
+            yield [TupleExpr(list(call.args))]
+        return
+    combinator = isinstance(callee, RefExpr) and callee.fullname in COMBINATORS
+    if (
+        domain_class is not None
+        and isinstance(callee, MemberExpr)
+        and callee.name in {"AND", "OR"}
+        and isinstance(callee.expr, RefExpr)
+        and callee.expr.fullname == domain_class
+    ):
+        combinator = True  # Domain.AND([...])
+    if combinator and len(call.args) == 1 and isinstance(call.args[0], (ListExpr, TupleExpr)):
+        for item in call.args[0].items:
+            yield from domain_term_lists(item, domain_class, local, depth)
+
+
+def _changed_term_lists(
+    change: Change, domain_class: str | None, local: LocalValues, depth: int
+) -> Iterator[Sequence[Expression]]:
+    """The terms an in-place change adds to a domain variable."""
+    args = change.args
+    if change.method in {"__iadd__", "__ior__", "__iand__", "extend"} and len(args) == 1:
+        yield from domain_term_lists(args[0], domain_class, local, depth)
+    elif change.method == "append" and len(args) == 1:
+        yield [args[0]]
+    elif change.method == "insert" and len(args) == 2:
+        yield [args[1]]
 
 
 class DomainChecker:

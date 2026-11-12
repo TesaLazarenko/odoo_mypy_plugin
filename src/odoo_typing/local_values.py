@@ -40,10 +40,16 @@ from mypy.nodes import (
     WithStmt,
 )
 
-__all__ = ["Built", "Change", "LocalValues"]
+__all__ = ["MAX_DEPTH", "Built", "Change", "LocalValues"]
+
+# How many variables deep a value is followed (``vals_list.append(vals)``,
+# ``domain = expression.AND([domain, [...]])``).
+MAX_DEPTH: Final = 3
 
 # Methods that change a dict or a list in place.
 CHANGING_METHODS: Final = frozenset({"append", "extend", "insert", "setdefault", "update"})
+# ``x += v``, ``x |= v`` (a dict merge, or ``Domain`` OR), ``x &= v`` (``Domain`` AND).
+IN_PLACE_OPERATORS: Final = {"+": "__iadd__", "|": "__ior__", "&": "__iand__"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,8 +58,8 @@ class Change:
 
     Attributes:
         method: The method called (``update``, ``append``...); ``__setitem__`` for
-            ``x[k] = v`` (arguments ``k, v``), ``__iadd__`` for ``x += v``, ``__ior__``
-            for ``x |= v``.
+            ``x[k] = v`` (arguments ``k, v``), ``__iadd__`` / ``__ior__`` / ``__iand__``
+            for ``x += v`` / ``x |= v`` / ``x &= v``.
         args: The arguments.
         arg_names: Their keyword names (``None`` for a positional one).
         line: The line of the change.
@@ -193,8 +199,8 @@ class _Collector:
     def _operator_assignment(self, statement: OperatorAssignmentStmt) -> None:
         if not isinstance(statement.lvalue, NameExpr):
             return
-        if statement.op in {"+", "|"}:
-            method = "__iadd__" if statement.op == "+" else "__ior__"
+        method = IN_PLACE_OPERATORS.get(statement.op)
+        if method is not None:
             change = Change(method, (statement.rvalue,), (None,), statement.line)
             self._add(statement.lvalue, change)
         else:

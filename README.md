@@ -97,10 +97,13 @@ with more fields. What each field class takes follows Odoo's `convert_to_cache`
 (`bool(value)`), computed `Binary` fields that are not stored (widget data), `Json`,
 `Properties` and custom field classes are not checked.
 
-`odoo-domain` covers literal domains: the `domain` of `search()`, `search_count()`,
+`odoo-domain` covers domains: the `domain` of `search()`, `search_count()`,
 `search_read()`, `search_fetch()`, `filtered_domain()`, `read_group()`, `_read_group()`,
-`_search()` (a list, or `Domain([...])` / `Domain(path, operator, value)` on Odoo 19+),
-and the `domain=` of relational fields, checked against the comodel (a string domain
+`_search()` (a list, `[...] + [...]`, `expression.AND([...])` / `OR`, and on Odoo 19+
+`Domain([...])`, `Domain(path, operator, value)`, `Domain.AND` / `OR`, `&`, `|`, `~`;
+also a variable built before the call in the same function: `domain = [...]`,
+`domain += [...]`, `domain.append(term)`, `domain &= Domain(...)`, read in source order
+as for `vals`), and the `domain=` of relational fields, checked against the comodel (a string domain
 is evaluated by the client, so only its field paths and operators are checked, and
 `parent.x` is skipped). Each term with a literal path is checked: its fields
 (through the comodels; a date field may end with a date part such as
@@ -577,7 +580,7 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
 
 - `vals` returned by a helper (`self._prepare_vals()`), or assigned in another branch
   than the last assignment before the call (source order stands for the flow)
-- domains built in a variable, with `expression.AND(...)` or as `[...] + [...]`, and
+- domains returned by a helper (`self._get_domain()`) or taken as a parameter, and
   string arguments of `mapped()` / `filtered()` known only at run time (not a literal
   or a `Final` / `Literal` str)
 - an unannotated override of a `-> Self` method (`create`, `copy`, `search`, `sudo`...)

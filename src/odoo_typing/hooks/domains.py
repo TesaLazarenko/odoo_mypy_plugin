@@ -1,4 +1,4 @@
-"""Hooks that check literal domains: ``search([...])`` and the like, ``domain=`` of fields.
+"""Hooks that check domains: ``search([...])`` and the like, ``domain=`` of fields.
 
 The terms themselves are checked by :mod:`odoo_typing.domains`.
 """
@@ -7,11 +7,17 @@ from __future__ import annotations
 
 from functools import partial
 
-from mypy.nodes import ARG_POS, CallExpr, Expression, ListExpr, RefExpr, StrExpr, TupleExpr
+from mypy.nodes import CallExpr, Expression, StrExpr
 from mypy.plugin import CheckerPluginInterface, MethodContext
 from mypy.types import Instance, Type, get_proper_type
 
-from odoo_typing.domains import ODOO_DOMAIN, DomainChecker, Term, string_domain_paths
+from odoo_typing.domains import (
+    ODOO_DOMAIN,
+    DomainChecker,
+    Term,
+    domain_term_lists,
+    string_domain_paths,
+)
 from odoo_typing.hooks.models import Hooks, Models
 from odoo_typing.hooks.nodes import field_arguments
 from odoo_typing.hooks.recordsets import RecordsetHooks
@@ -61,24 +67,11 @@ class DomainHooks(Hooks):
     def _check_domain_expression(
         self, domain: Expression, model: str, addon_name: str, api: CheckerPluginInterface
     ) -> None:
-        """Check a literal domain list, or a ``Domain([...])`` / ``Domain(path, op, value)``."""
+        """Check the literal terms of a domain expression (:func:`domain_term_lists`)."""
         checker = self._domain_checker(addon_name, api)
-        if isinstance(domain, ListExpr):
-            checker.check(model, domain.items)
-            return
-        domain_class = self._profile.domain_class
-        if (
-            domain_class is None
-            or not isinstance(domain, CallExpr)
-            or not isinstance(domain.callee, RefExpr)
-            or domain.callee.fullname != domain_class
-            or any(kind != ARG_POS for kind in domain.arg_kinds)
-        ):
-            return
-        if len(domain.args) == 1 and isinstance(domain.args[0], ListExpr):
-            checker.check(model, domain.args[0].items)
-        elif len(domain.args) == 3:
-            checker.check(model, [TupleExpr(list(domain.args))])
+        local = self._local_values(api)
+        for items in domain_term_lists(domain, self._profile.domain_class, local):
+            checker.check(model, items)
 
     def check_field(
         self, call: CallExpr, field_class: str, addon_name: str, api: CheckerPluginInterface

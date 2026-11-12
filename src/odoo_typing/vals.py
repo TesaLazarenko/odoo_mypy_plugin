@@ -61,7 +61,7 @@ from mypy.types import (
 # After mypy.types: mypy.checker and mypy.types import each other at import time.
 from mypy.checker import TypeChecker
 
-from odoo_typing.local_values import Change, LocalValues
+from odoo_typing.local_values import MAX_DEPTH, Change, LocalValues
 from odoo_typing.scanner import FieldInfo
 
 __all__ = [
@@ -91,7 +91,6 @@ ODOO_VALS_TYPE = ErrorCode(
 
 FALSE: Final = "Literal[False]"
 # Context keys that give a default to a field of the created records.
-MAX_DEPTH: Final = 3  # vals_list.append(vals), vals.update(other): names read through
 DEFAULT_PREFIX: Final = "default_"
 NONE: Final = "None"
 RECORDS: Final = "records"  # a recordset (of the field's comodel, checked by model name)

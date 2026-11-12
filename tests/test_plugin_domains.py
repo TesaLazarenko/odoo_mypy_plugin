@@ -146,3 +146,85 @@ def test_domain_class_checked(run_mypy: RunMypy, odoo_version: int) -> None:
         '9: error: Odoo model "t.order" has no field "nmae" in domain',
         '10: error: Odoo model "t.order" has no field "stat" in domain',
     ]
+
+
+BUILT_DOMAINS = """
+from typing import Any
+from odoo import models
+from odoo.osv import expression
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self, extra: list[Any]) -> None:
+        domain: list[Any] = [("nmae", "=", "x")]
+        domain += [("stat", "=", "draft")]
+        domain.append(("dat", "=", False))
+        domain.extend(extra)
+        self.search(domain)
+        self.search([("name", "=", "x")] + [("lable", "=", 1)])
+        self.search(expression.AND([[("prtner_id", "=", 1)], domain]))
+        domain = [("name", "=", "y")]
+        self.search(domain)
+        both = expression.OR([domain, [("lines", "=", 1)]])
+        self.search_count(both)
+        self.search(extra)
+"""
+
+
+def test_domains_built_in_a_variable_checked(run_mypy: RunMypy, odoo_version: int) -> None:
+    if odoo_version > 19:
+        pytest.skip("odoo.osv.expression is gone in Odoo 20")
+
+    messages = _domain_errors(_messages(run_mypy, BUILT_DOMAINS))
+
+    assert messages == [
+        '10: error: Odoo model "t.order" has no field "nmae" in domain',
+        '11: error: Odoo model "t.order" has no field "stat" in domain',
+        '12: error: Odoo model "t.order" has no field "dat" in domain',
+        '15: error: Odoo model "t.order" has no field "lable" in domain',
+        '16: error: Odoo model "t.order" has no field "prtner_id" in domain',
+        # 18: rebound, the earlier terms are not its terms
+        '19: error: Odoo model "t.order" has no field "lines" in domain',
+    ]
+
+
+DOMAIN_OBJECTS = """
+from odoo import models
+from odoo.fields import Domain
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self) -> None:
+        domain = Domain("name", "=", "x")
+        domain &= Domain("stat", "=", "draft")
+        domain |= Domain([("dat", "=", False)])
+        self.search(domain)
+        self.search(~Domain("nmae", "=", 1) | Domain.AND([[("lable", "=", 1)]]))
+        self.search(Domain.OR([domain, Domain("prtner_id", "=", 1)]))
+"""
+
+
+def test_domain_objects_combined_checked(run_mypy: RunMypy, odoo_version: int) -> None:
+    if odoo_version < 19:
+        pytest.skip("Domain is new in Odoo 19")
+
+    messages = _domain_errors(_messages(run_mypy, DOMAIN_OBJECTS))
+
+    assert messages == [
+        '10: error: Odoo model "t.order" has no field "stat" in domain',
+        '11: error: Odoo model "t.order" has no field "dat" in domain',
+        '13: error: Odoo model "t.order" has no field "nmae" in domain',
+        '13: error: Odoo model "t.order" has no field "lable" in domain',
+        '14: error: Odoo model "t.order" has no field "prtner_id" in domain',
+    ]
+
+
+def _domain_errors(messages: list[str]) -> list[str]:
+    """The ``odoo-domain`` errors, without the code and the suggestion."""
+    return [
+        line.split(";")[0].removesuffix("  [odoo-domain]")
+        for line in messages
+        if "[odoo-domain]" in line
+    ]

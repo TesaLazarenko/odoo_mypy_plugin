@@ -38,7 +38,9 @@ License: LGPL-3.0-or-later.
 - A field guarded by `"f" in self._fields`, `_fields.get("f")` or `hasattr(x, "f")` is
   not reported as unknown in vals, domains and record paths under the guard.
 - `odoo-domain`: field paths, operators (per Odoo version) and selection values of
-  literal domains, `domain=` of relational fields, `Domain(...)` on Odoo 19+.
+  literal domains, also `[...] + [...]`, `expression.AND/OR` and a variable built in the
+  function; `domain=` of relational fields; `Domain(...)`, `Domain.AND/OR`, `&`, `|`,
+  `~` on Odoo 19+.
 - `odoo-xmlid` / `odoo-xmlid-depends`: XML ids of `env.ref(...)`.
 
 ### Tooling
