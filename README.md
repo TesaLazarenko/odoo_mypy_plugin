@@ -566,8 +566,8 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
 - `vals` built in a variable or with `dict(...)`, and the `default_<field>` keys of a
   context that is not passed straight to `.create(...)`; a key guarded by
   `if "x" in self._fields:` is still reported
-- domains built in a variable or with `expression.AND(...)`, and string arguments of
-  `mapped()` / `filtered()` that are not literals
+- domains built in a variable, with `expression.AND(...)` or as `[...] + [...]`, and
+  string arguments of `mapped()` / `filtered()` that are not literals
 - an unannotated override of a `-> Self` method (`create`, `copy`, `search`, `sudo`...)
   is typed `(self: Self, ...) -> Self`, so `super().create(...)` keeps the model type; in
   its body, returning a concrete class (`return self.env["account.account"].union(...)`)
