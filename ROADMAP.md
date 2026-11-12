@@ -762,7 +762,21 @@
 
 ## Етап 5 — використання поза mypy (P2)
 
-### 5.1 IDE: Pyright, PyCharm, VS Code
+### 5.1 IDE: Pyright, PyCharm, VS Code — ✅ зроблено
+- **Зроблено.** `odoo-typing-stubs --addon X --output typings [--check]` (`stubs.py`):
+  `odoo_typing_models.pyi` — клас на модель (bases як у view-класу плагіна: tip або
+  `view.bases`), кожне поле з типом читання (relational — клас comodel), повні імена
+  типів (поле може зватися `float`), `TypedDict` `<model>__vals`; модуль `Environment`
+  (`odoo/api.pyi` для 17–18, `odoo/orm/environments.pyi` для 19+) — вивід `stubgen`
+  справжнього модуля (за шляхом файлу: в системі може бути інший `odoo`) з overload-ами
+  `Literal["<model>"]` і запасним `str -> BaseModel`; `TypeAlias` без значення, який
+  лишає stubgen, доповнюється `typing.Any`. Конфлікти між справжніми класами моделі
+  (`_inherit`, перевизначені поля) вимкнено в стабі (`# mypy:` / `# pyright:`).
+  `--check` порівнює з тим, що було б згенеровано зараз. Перевірено mypy без плагіна в
+  розкладі редактора (пакет `odoo` з модулем, заміненим стабом) на 17–20: `env["t.thing"]`
+  → клас моделі, поля, ланцюжок relational, невідома модель → `BaseModel`. Pyright і
+  PyCharm не запускались (не встановлені; встановлення — завантаження зовнішніх
+  програм).
 - **Проблема.** Плагін працює лише в mypy, тож у редакторі типи моделей лишаються
   `BaseModel`.
 - **Як вирішити.** Команда `odoo-typing-stubs` генерує `.pyi` з індексу етапу 1:

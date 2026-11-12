@@ -148,6 +148,28 @@ how to deal with them:
 - `assignment` between two classes of the same model (`AccountMoveLine` of two addons):
   use another variable name, or annotate it.
 
+## Editors (Pyright, PyCharm, VS Code)
+
+The plugin runs only inside mypy. For an editor, `odoo-typing-stubs` writes `.pyi` stubs
+of the models as one addon sees them (the "top" addon of your project):
+
+```bash
+odoo-typing-stubs --addon my_addon --output typings        # again after adding fields
+odoo-typing-stubs --addon my_addon --output typings --check  # in CI: exit 1 if stale
+```
+
+`typings/odoo_typing_models.pyi` has a class per model (bases: the model's classes, as
+for the plugin) that declares each field with the type reading it gives (a relational
+field: its comodel's class), and a `<model>__vals` `TypedDict`;
+`typings/odoo/api.pyi` (Odoo 17-18) or `typings/odoo/orm/environments.pyi` (19+) is the
+real module's stub (mypy's `stubgen`) with a `Literal["<model>"]` overload of
+`Environment.__getitem__` per model, so `self.env["res.partner"].` completes partner
+fields. Point the editor at the directory (`"stubPath": "typings"` in
+`pyrightconfig.json`, VS Code's `python.analysis.stubPath`, or mark it as a stub root in
+PyCharm). Do not put it on mypy's `mypy_path`: it would hide the real modules from the
+plugin. The stubs are checked with mypy without the plugin (as an editor sees them);
+Pyright and PyCharm themselves are not part of the test suite.
+
 ## Integration
 
 - **pre-commit**: the repository provides the hook `odoo-typing` (mypy with the

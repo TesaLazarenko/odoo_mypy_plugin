@@ -309,6 +309,13 @@ class Registry:
         addon = self.addons.addon_for_path(path)
         return addon.name if addon else None
 
+    def models(self, addon_name: str) -> list[str]:
+        """The models a class of an addon's closure defines, sorted."""
+        found = {
+            model for name in self.addons.closure(addon_name) for model in self._models_of(name)
+        }
+        return sorted(model for model in found if self.visible(model, addon_name))
+
     def visible(self, model: str, addon_name: str) -> bool:
         """Whether a class of an addon's closure defines a model (``view_class`` is not None).
 

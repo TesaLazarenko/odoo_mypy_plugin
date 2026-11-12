@@ -36,6 +36,9 @@ First release: a mypy plugin for the Odoo ORM, Odoo 17, 18, 19 and 20 (`odoo_ver
 
 ### Tooling
 
+- `odoo-typing-stubs` writes `.pyi` stubs of the models for editors (Pyright,
+  PyCharm): `env["res.partner"]` and its fields without mypy.
+- `odoo-typing-baseline` reports only the errors that are not in a recorded baseline.
 - `odoo-typing-root` generates a `mypy_path` root in which every addon is
   `odoo.addons.<name>`; `--check` reports an out-of-date one.
 - mypy's incremental cache and `dmypy` follow edits of other addons, manifests, data
