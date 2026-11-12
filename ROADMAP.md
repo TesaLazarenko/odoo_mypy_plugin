@@ -973,7 +973,14 @@
 - **Критерій готовності.** `self.env[self._name].search([])` має тип `self`, хибне поле
   на ньому дає помилку.
 
-### 6.6 Guard через прапорець або helper
+### 6.6 Guard через прапорець або helper — ✅ зроблено
+- **Зроблено.** `guards.model_guards`: `_flag_scopes` — функції, де змінна один раз
+  (усі `Name(Store)` у функції) отримує тест guard-а; `_helper_scopes` — класи з методом
+  без аргументів (крім `self`), тіло якого (без docstring) — `return <тест>`. Тест
+  `if flag:` / `if self._helper():` (також з `not`, `and`, `or`, `return`-формами 4.6)
+  доводить те саме, що й тест, який вони називають. Без прапорців і helper-ів у файлі
+  шлях той самий, що й раніше (`NO_NAMES`).
+  Бенчмарк: помилки ті самі (у core-addons depends повні), час у межах шуму.
 - **Проблема.** `has_sale = "sale.order" in self.env; if has_sale:` і `if
   self._has_sale():` дають `odoo-model-depends` (README: «only the guard forms listed
   above are detected»). Прапорців у Odoo 18 ~90 (грубий grep).

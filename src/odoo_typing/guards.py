@@ -25,6 +25,11 @@ records, for each file, the lines a guard covers:
 them). ``env.ref("sale.x", raise_if_not_found=False)`` in a test guards the XML ids of
 the addon ``sale`` (:func:`module_guard`).
 
+A test can also be named: a flag assigned once in the function (``has_sale = "sale.order"
+in self.env``, then ``if has_sale:``), or a method of the same class whose body is one
+``return <test>`` (``if self._has_sale():``). A helper of another class or addon is not
+followed: an override may change it.
+
 A field is guarded the same way, by ``"f" in records._fields``, ``records._fields.get("f")``
 or ``hasattr(records, "f")`` (:func:`field_guard`): code that writes a field another addon
 may add. The field name alone counts, whatever the records are.
@@ -33,15 +38,39 @@ may add. The field name alone counts, whatever the records are.
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
-from typing import Final
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Final, TypeAlias
 
 __all__ = ["Guard", "field_guard", "is_guarded", "model_guards", "module_guard"]
 
 TERMINATORS: Final = (ast.Return, ast.Raise, ast.Continue, ast.Break)
 REGISTRY_ATTRIBUTES: Final = frozenset({"registry", "pool", "models"})
 BLOCK_FIELDS: Final = ("body", "orelse", "finalbody")
+FUNCTIONS: Final = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+# The guard names a test proves when it is true, and when it is false.
+Proves: TypeAlias = tuple[set[str], set[str]]
+
+
+@dataclass(frozen=True, slots=True)
+class _Scope:
+    """Names that stand for a test on some lines: flags of a function, helpers of a class."""
+
+    first: int
+    last: int
+    names: dict[str, Proves] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class _Known:
+    """The flags and helper methods a test may use."""
+
+    flags: Mapping[str, Proves]
+    helpers: Mapping[str, Proves]
+
+
+NO_NAMES: Final = _Known({}, {})
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,26 +95,111 @@ def is_guarded(guards: Iterable[Guard], model: str, line: int) -> bool:
 
 def model_guards(nodes: Iterable[ast.AST]) -> tuple[Guard, ...]:
     """The guards in a file, from its inner nodes (see ``scanner.syntax.inner_nodes``)."""
+    nodes = list(nodes)
+    flags, helpers = _flag_scopes(nodes), _helper_scopes(nodes)
     guards: list[Guard] = []
     for node in nodes:
         if isinstance(node, ast.IfExp):
-            when_true, when_false = _test_models(node.test)
+            known = _known_at(node.lineno, flags, helpers)
+            when_true, when_false = _test_models(node.test, known)
             guards += _cover(when_true, [node.body])
             guards += _cover(when_false, [node.orelse])
             continue
-        for field in BLOCK_FIELDS:
-            block = getattr(node, field, None)
+        for name in BLOCK_FIELDS:
+            block = getattr(node, name, None)
             if isinstance(block, list) and block and isinstance(block[0], ast.stmt):
-                guards += _block_guards(block)
+                guards += _block_guards(block, _known_at(block[0].lineno, flags, helpers))
     return tuple(guards)
 
 
-def _block_guards(block: Sequence[ast.stmt]) -> list[Guard]:
+def _flag_scopes(nodes: Sequence[ast.AST]) -> list[_Scope]:
+    """The functions that assign a guard test to a variable once (``has_sale = ... in env``)."""
+    functions = [node for node in nodes if isinstance(node, FUNCTIONS)]
+    scopes: dict[int, _Scope] = {}
+    for node in nodes:
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            continue
+        proves = _test_models(node.value)
+        if not proves[0] and not proves[1]:
+            continue
+        function = _innermost(functions, node.lineno)
+        if function is None or _assignments(function, node.targets[0].id) != 1:
+            continue
+        scope = scopes.setdefault(id(function), _scope_of(function))
+        scope.names[node.targets[0].id] = proves
+    return list(scopes.values())
+
+
+def _helper_scopes(nodes: Sequence[ast.AST]) -> list[_Scope]:
+    """The classes with a method whose body is ``return <guard test>``."""
+    classes = [node for node in nodes if isinstance(node, ast.ClassDef)]
+    scopes: dict[int, _Scope] = {}
+    for node in nodes:
+        if not isinstance(node, FUNCTIONS) or node.args.args[1:] or node.args.posonlyargs:
+            continue
+        body = node.body[1:] if ast.get_docstring(node) is not None else node.body
+        if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+            continue
+        proves = _test_models(body[0].value)
+        owner = _innermost(classes, node.lineno)
+        if owner is None or (not proves[0] and not proves[1]):
+            continue
+        scopes.setdefault(id(owner), _scope_of(owner)).names[node.name] = proves
+    return list(scopes.values())
+
+
+def _innermost(nodes: Sequence[ast.stmt], line: int) -> ast.stmt | None:
+    """The innermost of some function or class definitions that contains a line."""
+    found: ast.stmt | None = None
+    for node in nodes:
+        inside = node.lineno <= line <= (node.end_lineno or node.lineno)
+        if inside and (found is None or node.lineno >= found.lineno):
+            found = node
+    return found
+
+
+def _scope_of(node: ast.stmt) -> _Scope:
+    return _Scope(node.lineno, node.end_lineno or node.lineno)
+
+
+def _assignments(function: ast.AST, name: str) -> int:
+    """How many times a function binds a name (a flag must not change)."""
+    return sum(
+        1
+        for node in ast.walk(function)
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store)
+    )
+
+
+def _known_at(line: int, flags: Sequence[_Scope], helpers: Sequence[_Scope]) -> _Known:
+    if not flags and not helpers:
+        return NO_NAMES
+    flag_scope = _innermost_scope(flags, line)
+    helper_scope = _innermost_scope(helpers, line)
+    return _Known(
+        flag_scope.names if flag_scope is not None else {},
+        helper_scope.names if helper_scope is not None else {},
+    )
+
+
+def _innermost_scope(scopes: Sequence[_Scope], line: int) -> _Scope | None:
+    found: _Scope | None = None
+    for scope in scopes:
+        if scope.first <= line <= scope.last and (found is None or scope.first >= found.first):
+            found = scope
+    return found
+
+
+def _block_guards(block: Sequence[ast.stmt], known: _Known = NO_NAMES) -> list[Guard]:
     guards: list[Guard] = []
     for position, statement in enumerate(block):
         if not isinstance(statement, ast.If):
             continue
-        when_true, when_false = _test_models(statement.test)
+        when_true, when_false = _test_models(statement.test, known)
         guards += _cover(when_true, statement.body)
         guards += _cover(when_false, statement.orelse)
         rest = block[position + 1 :]
@@ -104,13 +218,13 @@ def _cover(models: Iterable[str], nodes: Sequence[ast.stmt | ast.expr]) -> list[
     return [Guard(model, first, last) for model in models]
 
 
-def _test_models(test: ast.expr) -> tuple[set[str], set[str]]:
+def _test_models(test: ast.expr, known: _Known = NO_NAMES) -> Proves:
     """The models a test proves installed when it is true, and when it is false."""
     if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
-        when_true, when_false = _test_models(test.operand)
+        when_true, when_false = _test_models(test.operand, known)
         return when_false, when_true
     if isinstance(test, ast.BoolOp):
-        parts = [_test_models(value) for value in test.values]
+        parts = [_test_models(value, known) for value in test.values]
         if isinstance(test.op, ast.And):  # true: every part is true
             return set().union(*(true for true, _ in parts)), set()
         return set(), set().union(*(false for _, false in parts))  # false: every part false
@@ -138,6 +252,17 @@ def _test_models(test: ast.expr) -> tuple[set[str], set[str]]:
         name = _string(test.args[1])
         if name is not None:
             return {field_guard(name)}, set()
+    if isinstance(test, ast.Name) and test.id in known.flags:
+        return known.flags[test.id]
+    if (
+        isinstance(test, ast.Call)
+        and not test.args
+        and isinstance(test.func, ast.Attribute)
+        and isinstance(test.func.value, ast.Name)
+        and test.func.value.id in {"self", "cls"}
+        and test.func.attr in known.helpers
+    ):
+        return known.helpers[test.func.attr]
     if isinstance(test, ast.Call) and _is_optional_ref(test):
         name = _string(test.args[0])
         if name is not None and "." in name:  # the id's addon is installed

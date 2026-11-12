@@ -27,7 +27,8 @@ License: LGPL-3.0-or-later.
 ### Checks
 
 - `odoo-model` / `odoo-model-depends`: unknown model names, models outside `depends`
-  (not under guards such as `if "sale.order" in self.env:`).
+  (not under guards such as `if "sale.order" in self.env:`, also through a flag
+  variable or a `return <test>` helper method of the class).
 - `odoo-vals` (`odoo-vals-key`, `odoo-vals-type`): `create` / `write` / `copy` vals,
   also `dict(...)` and a variable built in the function (`vals["k"] = v`,
   `vals.update(...)`, `vals_list.append(...)`), x2many commands, field assignments,

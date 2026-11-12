@@ -532,3 +532,37 @@ def test_guarded_models_outside_depends_are_any(run_mypy: RunMypy) -> None:
         '13: error: Odoo model "t.partner" is defined in addon "t_base", which is not in '
         'the dependencies of "t_nodep"  [odoo-model-depends]',
     ]
+
+
+def test_flag_and_helper_guards_of_models_outside_depends(run_mypy: RunMypy) -> None:
+    result = run_mypy(
+        {
+            "t_base": {"models.py": T_PARTNER},
+            "t_nodep": {
+                "depends": ["base"],
+                "models.py": """
+                from odoo import models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    def _has_partner(self) -> bool:
+                        return "t.partner" in self.env
+
+                    def action(self) -> None:
+                        installed = "t.partner" in self.env
+                        if installed:
+                            self.env["t.partner"].search([])
+                        if self._has_partner():
+                            self.env["t.partner"].search([])
+                        self.env["t.partner"]
+                """,
+            },
+        },
+        check=["t_nodep"],
+    )
+
+    assert result.messages("t_nodep/models.py") == [
+        '16: error: Odoo model "t.partner" is defined in addon "t_base", which is not in '
+        'the dependencies of "t_nodep"  [odoo-model-depends]',
+    ]

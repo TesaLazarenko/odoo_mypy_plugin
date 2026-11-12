@@ -45,7 +45,10 @@ codes. Code that runs only when the model is installed is not reported at all (w
 either code) and its records are `Any`: the body of `if "sale.order" in self.env:` (also
 `self.env.get("sale.order")`, `self.pool`, `env.registry`, inside `and`), the `else` of
 `not in`, the rest of the block after `if "sale.order" not in self.env: return` (or
-`raise` / `continue` / `break`), and `x if "sale.order" in self.env else y`. A field
+`raise` / `continue` / `break`), and `x if "sale.order" in self.env else y`; the test
+may also be a flag assigned once in the function (`has_sale = "sale.order" in self.env`,
+then `if has_sale:`) or a method of the same class whose body is `return <test>`
+(`if self._has_sale():`). A field
 that another addon may add is guarded the same way by `"x_flag" in self._fields`,
 `self._fields.get("x_flag")` or `hasattr(record, "x_flag")`: there the name is not
 reported as an unknown key of `vals`, a domain field, or a field of `mapped()` /
@@ -593,8 +596,8 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
   field of model `x`, as in `for line in self.move_id.line_ids:` then
   `for line in self:` in an earlier `account.move.line` class) cannot later be
   assigned `self` of an earlier class of `x` (an `assignment` error)
-- only the guard forms listed above are detected (a guard in a helper function, or a
-  flag computed earlier, is not)
+- only the guard forms listed above are detected (a helper of another class or addon,
+  or a flag assigned more than once, is not)
 - `env[name]` with a name only known at run time is `Any` (option `dynamic_env`), so
   code on it is not checked
 

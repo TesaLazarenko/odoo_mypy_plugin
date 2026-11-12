@@ -87,3 +87,41 @@ def test_field_guards_cover_branches_that_run_with_the_field() -> None:
         Guard(field_guard("x_attr"), 10, 10),
         Guard("sale.order", 10, 10),
     }
+
+
+NAMED_SOURCE = """
+class Thing:
+    def _has_sale(self):
+        \"\"\"Whether sale is installed.\"\"\"
+        return "sale.order" in self.env
+
+    def action(self):
+        has_crm = "crm.lead" in self.env and "x_flag" in self._fields
+        changed = "ee.only" in self.env
+        changed = False
+        if has_crm:
+            a = 1
+        if not self._has_sale():
+            return
+        b = 2
+        if changed:
+            c = 3
+
+    def other(self):
+        if has_crm:
+            d = 4
+
+def helper_outside():
+    if self._has_sale():
+        e = 5
+"""
+
+
+def test_flags_and_helper_methods_stand_for_their_tests() -> None:
+    guards = model_guards(ast.walk(ast.parse(textwrap.dedent(NAMED_SOURCE))))
+
+    assert set(guards) == {
+        Guard("crm.lead", 12, 12),
+        Guard(field_guard("x_flag"), 12, 12),
+        Guard("sale.order", 15, 17),
+    }
