@@ -7,7 +7,7 @@ All notable changes to this project. The format follows
 ## [Unreleased]
 
 First release: a mypy plugin for the Odoo ORM, Odoo 17, 18, 19 and 20 (`odoo_version`).
-License: LGPL-3.0-or-later.
+License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 
 ### Models and records
 

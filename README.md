@@ -617,6 +617,8 @@ and pylint-odoo on the probe addon in `tests/fixtures/addons/probe_mod`.
 
 ## License
 
+Copyright (C) 2026 Taras Shabaranskyi
+
 LGPL-3.0-or-later, the license of Odoo Community: see [LICENSE](LICENSE) (the GNU Lesser
 General Public License, version 3) and [COPYING](COPYING) (the GNU General Public License,
 version 3, which it supplements).
