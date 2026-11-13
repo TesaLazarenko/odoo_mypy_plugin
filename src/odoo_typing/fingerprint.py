@@ -282,14 +282,31 @@ def _stored_names(record: Record, stat: Callable[[str], Stamp | None]) -> dict[s
     return names if len(names) == len(addons) else None
 
 
+_FINGERPRINT_FIELDS: dict[type, tuple[str, ...] | None] = {}
+
+
+def _fingerprint_fields(kind: type) -> tuple[str, ...] | None:
+    """A dataclass's fields that count for fingerprints, in order; ``None``: no dataclass."""
+    if kind not in _FINGERPRINT_FIELDS:
+        names = None
+        if dataclasses.is_dataclass(kind):  # the class of an instance
+            fields = dataclasses.fields(kind)
+            names = tuple(f.name for f in fields if f.metadata.get("fingerprint", True))
+        _FINGERPRINT_FIELDS[kind] = names
+    return _FINGERPRINT_FIELDS[kind]
+
+
 def _canonical(value: object) -> object:
     """A JSON value for a scan result: dataclass fields in order, sets sorted.
 
     A field with ``metadata={"fingerprint": False}`` is left out.
     """
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        fields = [f for f in dataclasses.fields(value) if f.metadata.get("fingerprint", True)]
-        return [type(value).__name__, *(_canonical(getattr(value, f.name)) for f in fields)]
+    kind = type(value)
+    if kind is str or kind is int or kind is bool or kind is float or value is None:
+        return value
+    names = _fingerprint_fields(kind)
+    if names is not None:
+        return [kind.__name__, *(_canonical(getattr(value, name)) for name in names)]
     if isinstance(value, frozenset | set):
         return sorted((_canonical(item) for item in value), key=json.dumps)
     if isinstance(value, tuple | list):

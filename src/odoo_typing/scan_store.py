@@ -26,7 +26,7 @@ from odoo_typing.scanner import AddonScan, Contribution, FieldInfo, ModuleScan, 
 from odoo_typing.stamps import Stamps, unchanged
 from odoo_typing.xmlids import DataScan, XmlId
 
-__all__ = ["ScanStore", "decode", "encode"]
+__all__ = ["ScanStore", "dataclass_fields", "decode", "encode"]
 
 # The classes a scan is made of, by name (the only ones ``decode`` builds).
 CLASSES: Final[Mapping[str, type]] = {
@@ -35,15 +35,34 @@ CLASSES: Final[Mapping[str, type]] = {
 }
 
 
+_FIELDS: dict[type, tuple[str, ...] | None] = {}
+
+
+def dataclass_fields(kind: type) -> tuple[str, ...] | None:
+    """The field names of a dataclass in order, ``None`` for another class (cached)."""
+    if kind not in _FIELDS:
+        is_dataclass = dataclasses.is_dataclass(kind)  # the class of an instance
+        _FIELDS[kind] = tuple(f.name for f in dataclasses.fields(kind)) if is_dataclass else None
+    return _FIELDS[kind]
+
+
 class DecodeError(ValueError):
     """A stored scan that does not have the expected shape."""
 
 
+# Leaves stored as they are (exact classes: the common case is checked first).
+PLAIN: Final = frozenset({str, int, bool, float, type(None)})
+
+
 def encode(value: object) -> object:
     """A JSON value for a scan (or any part of it)."""
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        fields = {f.name: encode(getattr(value, f.name)) for f in dataclasses.fields(value)}
-        return {"$": type(value).__name__, **fields}
+    kind = type(value)
+    if kind in PLAIN:
+        return value
+    names = dataclass_fields(kind)
+    if names is not None:
+        fields = {name: encode(getattr(value, name)) for name in names}
+        return {"$": kind.__name__, **fields}
     if isinstance(value, SourceError):
         return {"$error": [str(value.path), value.reason]}
     if isinstance(value, tuple):

@@ -28,6 +28,7 @@ class DependencyEdges(ModelFields):
         self._comodels: dict[str, frozenset[str]] = {}
         self._covered: dict[str, frozenset[str]] = {}
         self._edge_addon_memo: dict[str, frozenset[str]] = {}
+        self._view_addon_memo: dict[tuple[str, str], frozenset[str]] = {}
 
     def covered_models(self, module: str, path: str | Path | None = None) -> frozenset[str]:
         """Models whose whole registry class a module's dependency edges cover.
@@ -85,7 +86,7 @@ class DependencyEdges(ModelFields):
         addon = self.addons.addon_for_module(module)
         if addon is None:
             return False
-        needed = {self._module_addon(name) for name in self.view_modules(model, addon_name)}
+        needed = self._view_addons(model, addon_name)
         reachable = self._edge_addons(addon.name)
         if needed <= reachable:
             return True
@@ -93,6 +94,14 @@ class DependencyEdges(ModelFields):
         source = path if path is not None else self._module_path(module)
         edges = self.dependency_modules(module, source) if source is not None else frozenset()
         return needed <= reachable | {self._module_addon(name) for name in edges}
+
+    def _view_addons(self, model: str, addon_name: str) -> frozenset[str]:
+        """The addons of the modules that make up a model's registry class (cached)."""
+        key = (model, addon_name)
+        if key not in self._view_addon_memo:
+            modules = self.view_modules(model, addon_name)
+            self._view_addon_memo[key] = frozenset(self._module_addon(name) for name in modules)
+        return self._view_addon_memo[key]
 
     def _edge_addons(self, addon_name: str) -> frozenset[str]:
         """The addon, and the addons its modules' dependency edges point into."""
