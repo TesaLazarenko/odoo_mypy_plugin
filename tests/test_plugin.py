@@ -10,6 +10,7 @@ from conftest import OdooNames, RunMypy
 from pytest_mock import MockerFixture
 from test_harness import ENV_LOOKUP
 
+from odoo_typing.plugin import OdooPlugin
 from odoo_typing.registry import scans as registry_scans
 
 
@@ -345,17 +346,20 @@ def test_env_getitem_outside_addon_keeps_declared_type_unchecked(
 
 
 def test_cold_run_scans_only_addons_of_loaded_files(
-    run_mypy: RunMypy, mocker: MockerFixture, odoo_version: int
+    run_mypy: RunMypy, mocker: MockerFixture
 ) -> None:
     # Odoo core files (odoo/http.py, odoo/tests/common.py...) use env[...] too; they
     # must not make the plugin scan every installed addon.
     scan = mocker.spy(registry_scans, "scan_addon")
-    # Odoo 20's odoo/tests/common.py imports odoo.addons.bus.tools: bus (and web, its
-    # dependency) are addons of loaded files there.
-    core = {"bus", "web"} if odoo_version >= 20 else set()
+    loaded = mocker.spy(OdooPlugin, "get_additional_deps")
 
     run_mypy(ENV_LOOKUP, scripts={"tool.py": SCRIPT}, fresh_cache=True)
 
+    # odoo/tests/common.py imports odoo.addons.bus modules (Odoo 20 always; Odoo 19 inside
+    # functions, which mypy before 2.4 follows): bus, and web, its dependency, are then
+    # addons of loaded files.
+    modules = {call.args[1].fullname for call in loaded.call_args_list}
+    core = {"bus", "web"} if any(name.startswith("odoo.addons.bus.") for name in modules) else set()
     assert {call.args[0].name for call in scan.call_args_list} == {"base", "my_mod"} | core
 
 
