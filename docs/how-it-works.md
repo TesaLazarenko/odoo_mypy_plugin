@@ -1,0 +1,180 @@
+# How it works
+
+[← README](../README.md)
+
+- [The registry](#the-registry)
+- [mypy hooks](#mypy-hooks)
+- [Incremental mode](#incremental-mode)
+- [Shared scan cache](#shared-scan-cache)
+- [The daemon (dmypy)](#the-daemon-dmypy)
+
+## The registry
+
+The registry ([registry/](../src/odoo_typing/registry/__init__.py),
+[scanner/](../src/odoo_typing/scanner/__init__.py)) is a static AST scan that never
+imports Odoo or touches a database. It mirrors Odoo 18's loading rules:
+
+- **Addons** are directories with a `__manifest__.py` (or the deprecated
+  `__openerp__.py`), named after their entry in the addons path (a symlink may point to
+  any directory). Files are matched to addons by their resolved directory, so a path
+  through the overlay root, a symlink or the real directory finds the same addon. Module
+  names of an `addons_path` addon are recognized in both spellings (`my_addon.x`,
+  `odoo.addons.my_addon.x`); the plugin itself only ever names the configured one.
+- **Load order** is Odoo's module graph: `base`, then by dependency depth, then by name.
+- **Within an addon**, classes are ordered as Python creates them: the scan replays the
+  `__init__.py` imports statement by statement, so an imported module's classes come at
+  the import, and imports or classes inside `try:` / `if` blocks count (not
+  `if TYPE_CHECKING:` ones).
+- **Model names** follow `MetaModel`: `_name = _description = "x"`, `_name = CONST`,
+  `_inherit = _name` and f-strings of module constants are understood. Several
+  `_inherit` entries without `_name` define a new model named after the class. A `_name`
+  that cannot be computed statically (for example in a loop) is skipped.
+- **Every model inherits `base` last**, like `_build_model` does, so methods that addons
+  add with `_inherit = "base"` exist on `self` and on extensions of other models.
+- **A model's class chain** is built like Odoo's registry class (`_build_model`'s
+  `LastOrderedSet` of bases, linearized with C3): the model's earlier classes, then the
+  registry classes of its `_inherit` parents, `base` last. A parent's registry class
+  holds *all* its classes that the addon sees, also later ones: Odoo extends it in
+  place, so a method that `sms` adds to `mail.thread` is on `project.task` in every
+  addon that depends on both `project` and `sms`.
+
+Everything is lazy: manifests are read on the first question (a fully cached mypy run
+reads the stored index instead, see [Incremental mode](#incremental-mode)), and an addon
+is scanned only when a file whose `depends` closure contains it needs a model.
+
+Sources are parsed as bytes, so a UTF-8 BOM or a `# -*- coding: ... -*-` cookie works. A
+file that cannot be parsed is reported once on stderr
+(`odoo-typing: warning: cannot parse ...`), since its models are then missing.
+
+## mypy hooks
+
+- **`get_additional_deps`** makes mypy load (and analyze first) the modules of every
+  class a file's models are made of: the class chains of its own classes, the models
+  named in `env["..."]` and comodel literals, and the comodels of the relational fields
+  its classes inherit (so `self.partner_id.<field added by a dependency>` resolves).
+
+- **`get_customize_class_mro_hook`** gives each model class the MRO of its registry
+  class, computed by the registry. It is never copied from a base class, so it does not
+  depend on the order in which mypy analyzes the classes of an import cycle.
+  - When a class of the chain is not analyzed yet, mypy is asked to analyze the class
+    again (classes outside the run, or still missing on mypy's final pass, are left out,
+    and unknown attributes then give `Any`). A class that mypy never analyzes although
+    its module is done (an unreachable `if sys.version_info < ...` branch) does not
+    exist for mypy and is simply left out.
+  - Written bases keep their type arguments (`class N(Mix[int])`). Python's own MRO of
+    the written bases is respected; when it contradicts the `_inherit` order (Odoo
+    cannot load such a class either), all bases are kept and a note says so.
+  - It also reports, with code `odoo-model`, what Odoo would refuse to load: an
+    `_inherit` entry that no addon in the `depends` closure defines (naming the addon
+    that does, if any, with code `odoo-model-depends`: the fix is usually a missing
+    `depends`), one that is only defined after the class, and `_inherit` cycles (whose
+    edges are then ignored). Finding the defining addon outside the closure is one text
+    search over all addons (about 0.3 s, only in a run that reports an unknown model
+    name).
+
+- **`_inherits`** and **`Many2one(..., delegate=True)`**: once a model class's body is
+  analyzed, the fields (not the methods) of the delegated models' registry classes, as
+  the class's addon sees them, are added to it unless the class already has the name,
+  like Odoo's `_add_inherited_fields`. `_inherits` of mixins count (`mail.alias.mixin`).
+  The field variables are shared with the parent's classes, so their types are inferred
+  once. A model whose delegated parent is extended outside the tip's view gets a merged
+  `env[...]` class.
+
+- **Decorators and `-> Self` methods**: `@api.private` and `@api.returns(...)` have no
+  annotations, which made `sudo`, `with_context`, `filtered`, `search`, `copy`... `Any`.
+  A function hook keeps the decorated signature (also for `api.model`, `api.readonly`,
+  `api.model_create_multi`). An override of `create`, `copy`, `search`, `browse`,
+  `sudo`, `with_*`, `filtered`, `sorted`, `exists` or `ensure_one` written without
+  annotations returns the receiver's model; `create` also accepts one dict, as
+  `model_create_multi` does at runtime.
+
+- **`env.user` / `env.company` / `env.companies`**: records of `res.users` /
+  `res.company` as the file's addon sees them. `env[NAME]` accepts a `Final` string
+  constant (a plain variable stays `BaseModel`).
+
+- **`get_base_class_hook`**: private class attributes of model classes (`_inherit`,
+  `_order`, `_rec_name`, `_sequence_index`...) get the type a model base class declares
+  with an annotation (`BaseModel._inherit: str | list[str] | ...`), `Any` otherwise. So
+  `_inherit = "x"` does not clash with `_inherit = ["x", "y"]` in a base class, nor
+  `_sequence_index = "journal_id"` with `sequence.mixin`'s `False`, nor a property with
+  a mixin's string. `_name` is a `str`; private fields (`_x = fields.Char()`) keep their
+  type.
+
+- **`Environment.__getitem__`**: `env["x"]` is the last class of `x` when its MRO is the
+  whole registry class as the addon sees it. Otherwise (unrelated addons extend `x`, or
+  its mixins are extended outside that class's view) it is a merged class named
+  `<subclass of "x" seen from "my_addon">` (shown as `"x"` in messages), stored in the
+  checked module like mypy's own ad hoc intersections, so the incremental cache keeps
+  it. A module reuses the merged class of a module it imports from, so records passed
+  between them (`RECS = env["x"]` in one, `from .a import RECS` in the other) keep one
+  type.
+
+- **`Many2one` / `One2many` / `Many2many(...)`** declare the field with the class that
+  defines the comodel (the same class in every addon, so redeclaring a field elsewhere
+  is compatible). **`__get__`** and an attribute hook resolve the comodel again when the
+  field is read, from the reading addon (or the record's own class, if the reading
+  module does not load all the comodel's classes), so the result has every extension
+  the reader sees. `Model.field` (read on the class) is the field itself.
+
+## Incremental mode
+
+mypy's cache only knows a module's own source and imports, but the plugin's result for a
+file also depends on its addon's `depends` closure. So the plugin gives mypy, for every
+module in an addon (`report_config_data`), a digest of that closure: each addon's name,
+path, manifest `depends` and what its scan found (model classes, `_name` / `_inherit`,
+registration order, comodels, model names used in `env[...]`), plus the plugin's version.
+
+When a dependency gains an `_inherit` extension, a manifest changes `depends`, an
+extension module is deleted or moved, or `addons_path` changes, mypy checks the affected
+modules again instead of replaying stale errors. Editing a method body changes no
+digest: mypy's own dependency tracking handles it.
+
+The digests are kept in `<cache_dir>/odoo_typing/`, together with `stat` stamps (mtime
+and size) of the manifests, addons directories and scanned files they come from. A run
+in which nothing changed reads these small files and calls `stat` on the files they
+list, but parses nothing.
+
+**Limits:**
+
+- A structural change (a new class, `_inherit`, comodel or `env["..."]` literal) in an
+  addon makes mypy recheck every module of the addons that depend on it, not only the
+  ones that use the changed model.
+- Whether an unknown name is reported as `odoo-model` or as `odoo-model-depends`
+  follows an addon *outside* the closure being added or removed: the cache entry of a
+  file of an `addons_path` addon that names such models depends on the list of addons
+  (not for Odoo's own addons, whose files often name optional models). It can still lag
+  when an existing outside addon starts or stops defining the model without a directory
+  change (only its file was edited), until the file is checked again.
+- Switching `overlay_root` on or off changes every addon's module names and invalidates
+  the whole cache.
+
+## Shared scan cache
+
+The plugin also keeps each addon's scan (classes, fields, XML ids), and what the files
+no scan reaches (tests) refer to, valid while the files they read are unchanged: after
+an edit, only the edited addon is parsed again, not its whole dependency closure.
+
+A scan depends only on its addon (its files, module prefix and place in the load order),
+so it is kept in `scan_cache_dir`, shared by every project and mypy cache on the
+machine:
+
+- `$XDG_CACHE_HOME/odoo-typing/scans` (`~/.cache/odoo-typing/scans`) by default;
+- a path relative to the config file;
+- or `""` to keep the scans in mypy's cache only.
+
+A new mypy cache, another worktree or another project on the same Odoo then skips the
+scans of Odoo's addons (on the `small` benchmark profile, a cold run without the scans
+takes 20–26 % less time). A directory that cannot be written falls back to mypy's cache.
+
+## The daemon (dmypy)
+
+The daemon keeps one plugin instance. Before the files of each update are processed,
+the plugin compares the stamps of everything its registry has read (addons roots,
+manifests, scanned and data files, and mypy's config file) with the disk, and starts
+over with a fresh registry, and the settings read again, if any changed (an invalid
+config is reported and the previous settings kept).
+
+The daemon only rechecks the code that changed (and its dependents), so the new
+registry or settings show in what is checked again. After editing only a manifest or
+the `[tool.odoo_typing]` / `[odoo_typing]` settings, run `dmypy restart` to see their
+effect everywhere.
