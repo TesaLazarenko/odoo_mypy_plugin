@@ -68,10 +68,10 @@ class RecordStore:
             return None
         return data
 
-    def save(self, key: str, record: Record) -> None:
-        """Write a record; a cache directory that cannot be written is ignored."""
+    def save(self, key: str, record: Record) -> bool:
+        """Write a record; whether it was written (a directory that cannot be is ignored)."""
         if self._directory is None:
-            return
+            return False
         data = {**record, "version": source_digest()}
         try:
             self._directory.mkdir(parents=True, exist_ok=True)
@@ -79,7 +79,8 @@ class RecordStore:
             temporary.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
             os.replace(temporary, self._directory / key)
         except OSError:
-            return
+            return False
+        return True
 
 
 @cache

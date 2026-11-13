@@ -95,6 +95,14 @@ def names(odoo_version: int) -> OdooNames:
 
 
 @pytest.fixture(autouse=True)
+def _own_scan_cache(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each test its own shared scan cache (``scan_cache_dir`` defaults to the user's)."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("xdg-cache")))
+
+
+@pytest.fixture(autouse=True)
 def _only_for_marked_versions(request: pytest.FixtureRequest) -> None:
     """``@pytest.mark.odoo(18, 19)``: run the test only for those Odoo versions."""
     marker = request.node.get_closest_marker("odoo")

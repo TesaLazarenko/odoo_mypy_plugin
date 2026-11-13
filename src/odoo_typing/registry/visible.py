@@ -181,10 +181,13 @@ def _since_last_definition(classes: list[Contribution]) -> list[Contribution]:
 def _defined_names(directory: Path) -> set[str]:
     """Model names in ``_name = "..."`` assignments of an addon's files (a text search)."""
     names: set[str] = set()
+    findall = DEFINITION_PATTERN.findall
     for root, subdirs, files in os.walk(directory):
         subdirs[:] = [name for name in subdirs if name not in SKIPPED_DIRS]
         for name in files:
             if name.endswith(".py"):
-                found = DEFINITION_PATTERN.findall(Path(root, name).read_bytes())
-                names.update(match.decode(errors="replace") for match in found)
+                with open(os.path.join(root, name), "rb") as source:  # every file of every addon
+                    data = source.read()
+                if b"_name" in data:
+                    names.update(match.decode(errors="replace") for match in findall(data))
     return names

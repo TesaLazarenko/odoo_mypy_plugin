@@ -34,11 +34,21 @@ __all__ = ["IndexLoader", "ScanCache", "ScannedAddons"]
 class ScanCache(Protocol):
     """Addon scans kept between runs (see :class:`odoo_typing.scan_store.ScanStore`)."""
 
-    def load(self, addon_name: str, load_key: LoadKey) -> tuple[AddonScan, Stamps] | None:
+    def load(self, addon: Addon, load_key: LoadKey) -> tuple[AddonScan, Stamps] | None:
         """The stored scan and its stamps, if none of its files changed."""
 
-    def save(self, addon_name: str, load_key: LoadKey, scan: AddonScan, stamps: Stamps) -> None:
+    def save(self, addon: Addon, load_key: LoadKey, scan: AddonScan, stamps: Stamps) -> None:
         """Keep a scan with the stamps of the files it read."""
+
+    def load_file(
+        self, path: Path, current: Stamp | None
+    ) -> tuple[frozenset[str], tuple[Guard, ...]] | None:
+        """What a file no scan reaches refers to (models, guards), if stored for its stamp."""
+
+    def save_file(
+        self, path: Path, current: Stamp | None, models: frozenset[str], guards: tuple[Guard, ...]
+    ) -> None:
+        """Keep what a file no scan reaches refers to, with its stamp."""
 
 
 IndexLoader = Callable[[], tuple[AddonIndex, Stamps]]
@@ -119,12 +129,12 @@ class ScannedAddons:
             models = self._by_model[addon_name] = {}
             addon = self.addons.addons[addon_name]
             load_key = self.addons.load_key(addon_name)
-            stored = self._scans.load(addon_name, load_key) if self._scans else None
+            stored = self._scans.load(addon, load_key) if self._scans else None
             if stored is None:
                 result = scan_addon(addon, load_key)
                 stored = (result, scan_stamps(addon, result))
                 if self._scans is not None:
-                    self._scans.save(addon_name, load_key, *stored)
+                    self._scans.save(addon, load_key, *stored)
             result = stored[0]
             self._scan_results[addon_name] = stored
             for error in result.errors:
@@ -216,6 +226,10 @@ class ScannedAddons:
         known = self._unreached.get(path)
         if known is not None and known.stamp == current:
             return known
+        stored = self._scans.load_file(path, current) if self._scans else None
+        if stored is not None:
+            found = self._unreached[path] = _UnreachedFile(current, *stored)
+            return found
         try:
             tree = parse_source(path)
         except SourceError:  # mypy reports unparsable files it checks itself
@@ -225,6 +239,8 @@ class ScannedAddons:
             found = _UnreachedFile(
                 current, frozenset(referenced_models(tree, nodes)), model_guards(nodes)
             )
+            if self._scans is not None:
+                self._scans.save_file(path, current, found.referenced_models, found.guards)
         self._unreached[path] = found
         return found
 

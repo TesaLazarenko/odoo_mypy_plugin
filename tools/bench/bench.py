@@ -36,7 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 
 __all__ = [
     "AddonReport",
@@ -76,6 +76,7 @@ PROFILES = {
     ),
 }
 BASELINE_LABEL = "noplugin"
+SHARED_CACHE_DIR = "xdg"  # XDG_CACHE_HOME of a run, inside its mypy cache dir
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES_PER_GROUP = 3
 CRASH_TAIL_LINES = 40
@@ -126,6 +127,7 @@ class AddonReport(TypedDict):
     errors: list[str]
     plugin_only: list[str]
     crash: str
+    rescan_s: NotRequired[float]  # a new mypy cache, the scans kept (scan_cache_dir)
 
 
 class Report(TypedDict):
@@ -229,9 +231,12 @@ def run_mypy(context: BenchContext, config: Path, cache_dir: Path, target: str) 
     """
     command = [context.python, "-m", "mypy", "--config-file", str(config)]
     command += ["--cache-dir", str(cache_dir), target]
+    # The plugin's shared scan cache (scan_cache_dir) lives in the run's cache dir, so a
+    # cold run starts with none, whatever earlier runs left in the user's cache.
+    env = {**os.environ, "XDG_CACHE_HOME": str(cache_dir / SHARED_CACHE_DIR)}
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         start = time.perf_counter()
-        process = subprocess.Popen(command, cwd=context.odoo_root, stdout=out, stderr=err)
+        process = subprocess.Popen(command, cwd=context.odoo_root, stdout=out, stderr=err, env=env)
         timer = threading.Timer(context.timeout, process.kill)
         timer.start()
         try:
@@ -301,15 +306,24 @@ def measure_addon(context: BenchContext, label: str, addon: str, with_plugin: bo
     target = str(context.project / addon) if context.project else f"odoo/addons/{addon}"
     cold = run_mypy(context, config, cache_dir, target)
     warm = run_mypy(context, config, cache_dir, target)
+    rescan = None
+    if with_plugin:  # mypy's cache gone, the shared scan cache kept
+        for entry in cache_dir.iterdir():
+            if entry.is_dir() and entry.name != SHARED_CACHE_DIR:
+                shutil.rmtree(entry)
+            elif entry.is_file():
+                entry.unlink()
+        rescan = run_mypy(context, config, cache_dir, target)
     errors = parse_errors(cold.stdout, context.odoo_root)
     crashed = [result for result in (cold, warm) if result.exit_status not in (0, 1)]
     crash = "" if not crashed else _tail(crashed[0].stdout + crashed[0].stderr)
+    rescanned = f", rescan {rescan.seconds}s" if rescan else ""
     print(
         f"  {label}/{addon}: {len(errors)} errors, cold {cold.seconds}s, "
-        f"warm {warm.seconds}s, exit {cold.exit_status}/{warm.exit_status}",
+        f"warm {warm.seconds}s{rescanned}, exit {cold.exit_status}/{warm.exit_status}",
         flush=True,
     )
-    return AddonReport(
+    report = AddonReport(
         exit_status=cold.exit_status,
         warm_exit_status=warm.exit_status,
         cold_s=cold.seconds,
@@ -322,6 +336,11 @@ def measure_addon(context: BenchContext, label: str, addon: str, with_plugin: bo
         plugin_only=[],
         crash=crash,
     )
+    if rescan is not None:
+        report["rescan_s"] = rescan.seconds
+        if parse_errors(rescan.stdout, context.odoo_root) != errors:
+            report["warm_matches_cold"] = False  # stored scans gave other errors
+    return report
 
 
 def _tail(text: str) -> str:
@@ -498,8 +517,8 @@ def diff_reports(old: Report, new: Report, baseline: Report | None) -> list[str]
 
 
 def _summary_header() -> str:
-    columns = ("addon", "exit", "errors", "plugin-only", "cold s", "warm s", "rss MB")
-    return "{:<14} {:>5} {:>13} {:>13} {:>19} {:>15} {:>13}".format(*columns)
+    columns = ("addon", "exit", "errors", "plugin-only", "cold s", "rescan s", "warm s", "rss MB")
+    return "{:<14} {:>5} {:>13} {:>13} {:>19} {:>13} {:>15} {:>13}".format(*columns)
 
 
 def _summary_row(
@@ -515,12 +534,14 @@ def _summary_row(
     exit_status = f"{result['exit_status']}/{result['warm_exit_status']}"
     if not result["warm_matches_cold"]:
         exit_status += "!"
-    return "{:<14} {:>5} {:>13} {:>13} {:>19} {:>15} {:>13}".format(
+    rescan = result.get("rescan_s")
+    return "{:<14} {:>5} {:>13} {:>13} {:>19} {:>13} {:>15} {:>13}".format(
         addon,
         exit_status,
         pair("total_errors", result["total_errors"]),
         pair("plugin_only", len(result["plugin_only"])),
         pair("cold_s", result["cold_s"]) + overhead,
+        pair("rescan_s", rescan) if rescan is not None else "-",
         pair("warm_s", result["warm_s"]),
         pair("rss_cold_mb", result["rss_cold_mb"]),
     )

@@ -45,6 +45,15 @@ License: LGPL-3.0-or-later.
   `~` on Odoo 19+.
 - `odoo-xmlid` / `odoo-xmlid-depends`: XML ids of `env.ref(...)`.
 
+### Performance
+
+- Addon scans are kept in `scan_cache_dir` (`~/.cache/odoo-typing/scans` by default),
+  shared by every project and mypy cache: a new cache, worktree or project on the same
+  Odoo skips the scans of Odoo's addons (20–26 % less time on the cold benchmark runs).
+- Scanning sorts the nodes of a file by class once (guards, model references), encodes
+  stored scans and fingerprints faster, and keeps each hook lookup per name: cold runs
+  take 3–6 % less time.
+
 ### Tooling
 
 - `odoo-typing-stubs` writes `.pyi` stubs of the models for editors (Pyright,

@@ -19,11 +19,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
-from odoo_typing.addons import LoadKey
+from odoo_typing.addons import Addon, LoadKey
 from odoo_typing.guards import Guard
-from odoo_typing.records import RecordStore, digest, parse_stamps, source_digest
+from odoo_typing.records import RecordStore, digest, is_str_list, parse_stamps, source_digest
 from odoo_typing.scanner import AddonScan, Contribution, FieldInfo, ModuleScan, SourceError
-from odoo_typing.stamps import Stamps, unchanged
+from odoo_typing.stamps import Stamp, Stamps, unchanged
 from odoo_typing.xmlids import DataScan, XmlId
 
 __all__ = ["ScanStore", "dataclass_fields", "decode", "encode"]
@@ -121,24 +121,41 @@ def _decode_tagged(tag: str, payload: object) -> object:
 
 
 class ScanStore:
-    """Addon scans in a :class:`~odoo_typing.records.RecordStore`.
+    """Addon scans in :class:`~odoo_typing.records.RecordStore` s.
+
+    A scan depends only on its addon: the files it read (their stamps), the module
+    prefix mypy names the package with, and the addon's place in the load order. Keyed by
+    the addon's directory and prefix, it is the same for every project and mypy cache that
+    use that addon, so a shared store (``scan_cache_dir``) spares a cold run (a new mypy
+    cache, another worktree or project on the same Odoo) the scans of Odoo's addons.
 
     Args:
-        store: Where records live (a no-op store keeps nothing).
-        index_key: The key of the addons roots (scans differ per module spelling).
+        store: The store in mypy's cache (a no-op store keeps nothing).
+        shared: The shared store, read first and written instead of ``store``; ``store``
+            is written when it cannot be (a read-only home).
     """
 
-    def __init__(self, store: RecordStore, index_key: str) -> None:
-        self._store = store
-        self._index_key = index_key
+    def __init__(self, store: RecordStore, shared: RecordStore | None = None) -> None:
+        self._stores = (store,) if shared is None else (shared, store)
         self._version = source_digest()
 
-    def _key(self, addon_name: str) -> str:
-        return f"addon-scan-{addon_name}-{digest([self._index_key])[:16]}.json"
+    @staticmethod
+    def _key(addon: Addon) -> str:
+        where = digest([str(addon.path), addon.module_prefix])[:16]
+        return f"addon-scan-{addon.name}-{where}.json"
 
-    def load(self, addon_name: str, load_key: LoadKey) -> tuple[AddonScan, Stamps] | None:
+    def load(self, addon: Addon, load_key: LoadKey) -> tuple[AddonScan, Stamps] | None:
         """The stored scan of an addon and its stamps, if no file it read changed."""
-        record = self._store.load(self._key(addon_name))
+        for store in self._stores:
+            found = self._load(store, addon, load_key)
+            if found is not None:
+                return found
+        return None
+
+    def _load(
+        self, store: RecordStore, addon: Addon, load_key: LoadKey
+    ) -> tuple[AddonScan, Stamps] | None:
+        record = store.load(self._key(addon))
         if record is None or record.get("version") != self._version:
             return None
         stamps = parse_stamps(record.get("stamps"))
@@ -150,12 +167,53 @@ class ScanStore:
             return None
         return (scan, stamps) if isinstance(scan, AddonScan) else None
 
-    def save(self, addon_name: str, load_key: LoadKey, scan: AddonScan, stamps: Stamps) -> None:
-        """Keep an addon's scan with the stamps of the files it read."""
+    def save(self, addon: Addon, load_key: LoadKey, scan: AddonScan, stamps: Stamps) -> None:
+        """Keep an addon's scan with the stamps of the files it read (first writable store)."""
         record = {
             "version": self._version,
             "load_key": encode(load_key),
             "stamps": stamps,
             "scan": encode(scan),
         }
-        self._store.save(self._key(addon_name), record)
+        self._save(self._key(addon), record)
+
+    def load_file(
+        self, path: Path, current: Stamp | None
+    ) -> tuple[frozenset[str], tuple[Guard, ...]] | None:
+        """What a file no addon scan reaches refers to, if stored for its current stamp.
+
+        Such files (tests, which ``__init__.py`` does not import) are parsed on their own
+        (:meth:`odoo_typing.registry.scans.ScannedAddons.referenced_models`).
+        """
+        for store in self._stores:
+            record = store.load(self._file_key(path))
+            if record is None or record.get("stamp") != (list(current) if current else None):
+                continue
+            models, guards = record.get("models"), record.get("guards")
+            try:
+                found = decode(guards)
+            except DecodeError:
+                continue
+            if is_str_list(models) and isinstance(found, tuple):
+                return frozenset(models), tuple(item for item in found if isinstance(item, Guard))
+        return None
+
+    def save_file(
+        self, path: Path, current: Stamp | None, models: frozenset[str], guards: tuple[Guard, ...]
+    ) -> None:
+        """Keep what a file no addon scan reaches refers to, with its stamp."""
+        record = {
+            "stamp": list(current) if current else None,
+            "models": sorted(models),
+            "guards": encode(guards),
+        }
+        self._save(self._file_key(path), record)
+
+    @staticmethod
+    def _file_key(path: Path) -> str:
+        return f"file-{path.stem}-{digest([str(path)])[:16]}.json"
+
+    def _save(self, key: str, record: dict[str, object]) -> None:
+        for store in self._stores:  # the first one that can be written
+            if store.save(key, record):
+                return

@@ -95,7 +95,7 @@ from odoo_typing.methods import (
     keep_receiver,
 )
 from odoo_typing.odoo_version import version_mismatch_warning
-from odoo_typing.records import RecordStore, index_key, load_index
+from odoo_typing.records import RecordStore, load_index
 from odoo_typing.references import RECORD_PATH_METHODS
 from odoo_typing.registry import Registry
 from odoo_typing.scan_store import ScanStore
@@ -158,7 +158,8 @@ class OdooPlugin(Plugin):
     def _new_registry(self, settings: Settings) -> Registry:
         """A registry for the settings, and the fingerprints that follow it."""
         index = partial(load_index, settings, self._store)
-        scans = ScanStore(self._store, index_key(settings))
+        shared = RecordStore(settings.scan_cache_dir) if settings.scan_cache_dir else None
+        scans = ScanStore(self._store, shared)
         registry = Registry(settings, index, scans)
         self._fingerprints = Fingerprints(registry, self._store, settings)
         return registry

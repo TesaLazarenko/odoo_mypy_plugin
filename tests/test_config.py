@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from pytest_mock import MockerFixture
 
-from odoo_typing.config import ConfigError, Settings, load_settings
+from odoo_typing.config import ConfigError, Settings, default_scan_cache_dir, load_settings
 
 
 def _config(tmp_path: Path, addons_path: list[str]) -> str:
@@ -99,6 +99,7 @@ def test_load_settings_ini_section_returns_settings(tmp_path: Path, name: str) -
     assert settings == Settings(
         odoo_path=(tmp_path / "odoo").resolve(),
         addons_paths=((tmp_path / "addons").resolve(), (tmp_path / "more").resolve()),
+        scan_cache_dir=default_scan_cache_dir(),
     )
 
 
@@ -359,3 +360,33 @@ def test_settings_option_data_changes_with_vals_ignore_keys(tmp_path: Path) -> N
     empty = load_settings(_options_config(tmp_path / "b", "vals_ignore_keys = []\n"))
 
     assert default.option_data() != empty.option_data()
+
+
+def test_scan_cache_dir_defaults_to_the_user_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+
+    settings = load_settings(_config(tmp_path, []))
+
+    assert settings.scan_cache_dir == tmp_path / "xdg" / "odoo-typing" / "scans"
+
+
+def test_scan_cache_dir_relative_to_config_or_empty_for_none(tmp_path: Path) -> None:
+    config = Path(_config(tmp_path, []))
+    text = config.read_text()
+
+    config.write_text(text + 'scan_cache_dir = ".scans"\n')
+    relative = load_settings(str(config)).scan_cache_dir
+    config.write_text(text + 'scan_cache_dir = ""\n')
+    disabled = load_settings(str(config)).scan_cache_dir
+
+    assert (relative, disabled) == (tmp_path / ".scans", None)
+
+
+def test_scan_cache_dir_not_a_string_is_an_error(tmp_path: Path) -> None:
+    config = Path(_config(tmp_path, []))
+    config.write_text(config.read_text() + "scan_cache_dir = 1\n")
+
+    with pytest.raises(ConfigError, match="scan_cache_dir must be a string"):
+        load_settings(str(config))
