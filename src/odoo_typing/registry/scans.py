@@ -94,6 +94,9 @@ class ScannedAddons:
         self._unreached: dict[Path, _UnreachedFile] = {}  # files the addon scans miss
         self._xml_ids: dict[str, Mapping[str, str]] = {}
         self._misnamed: set[str] = set()  # addons warned about by misnamed()
+        self._warned: set[str] = set()  # addons whose unparsable files were reported
+        # Addons read only for the models they define (see _defined_models).
+        self._peeked: dict[str, tuple[frozenset[str], Stamps]] = {}
 
     @cached_property
     def addons(self) -> AddonIndex:
@@ -121,27 +124,40 @@ class ScannedAddons:
             return False  # nothing read yet
         if not unchanged(self._index_stamps):
             return True
+        if not all(unchanged(stamps) for _, stamps in self._peeked.values()):
+            return True
         return not all(unchanged(stamps) for _, stamps in self._scan_results.values())
 
     def _models_of(self, addon_name: str) -> dict[str, list[Contribution]]:
         """Scan an addon once; return its contributions by model name."""
         if addon_name not in self._by_model:
             models = self._by_model[addon_name] = {}
-            addon = self.addons.addons[addon_name]
-            load_key = self.addons.load_key(addon_name)
-            stored = self._scans.load(addon, load_key) if self._scans else None
-            if stored is None:
-                result = scan_addon(addon, load_key)
-                stored = (result, scan_stamps(addon, result))
-                if self._scans is not None:
-                    self._scans.save(addon, load_key, *stored)
+            stored = self._load_scan(addon_name)
             result = stored[0]
             self._scan_results[addon_name] = stored
-            for error in result.errors:
-                _warn_unparsable(error)
+            self._peeked.pop(addon_name, None)
             for scan in result.modules:
                 self._index(scan, models)
         return self._by_model[addon_name]
+
+    def _load_scan(self, addon_name: str) -> tuple[AddonScan, Stamps]:
+        """An addon's scan and stamps: stored, or scanned now (and stored).
+
+        A file it cannot parse is reported once per run, however often it is loaded.
+        """
+        addon = self.addons.addons[addon_name]
+        load_key = self.addons.load_key(addon_name)
+        stored = self._scans.load(addon, load_key) if self._scans else None
+        if stored is None:
+            result = scan_addon(addon, load_key)
+            stored = (result, scan_stamps(addon, result))
+            if self._scans is not None:
+                self._scans.save(addon, load_key, *stored)
+        if addon_name not in self._warned:
+            self._warned.add(addon_name)
+            for error in stored[0].errors:
+                _warn_unparsable(error)
+        return stored
 
     def _index(self, scan: ModuleScan, models: dict[str, list[Contribution]]) -> None:
         self._by_module[scan.module] = scan

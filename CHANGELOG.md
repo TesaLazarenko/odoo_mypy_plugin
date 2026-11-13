@@ -54,9 +54,11 @@ License: LGPL-3.0-or-later.
   stored scans and fingerprints faster, and keeps each hook lookup per name: cold runs
   take 3–6 % less time.
 - Less memory: equal field maps, fields, MROs, tips and name sets are kept once, method
-  names are looked up instead of stored per view, and scan strings are interned. The data
-  the plugin keeps drops from 18 to 12.5 MB on `sale`; peak RSS of a cold run 6–9 MB lower
-  (sale 298 → 292 MB, account 355 → 349 MB), about a fifth of what the plugin adds.
+  names are looked up instead of stored per view, scan strings are interned, and addons
+  read only to tell whether they define a model keep that answer, not their whole scan.
+  The data the plugin keeps drops from 18 to 12.5 MB on `sale`; peak RSS of a cold run
+  6–9 MB lower (sale 298 → 292 MB, account 355 → 348 MB), about a fifth of what the
+  plugin adds.
 
 ### Tooling
 

@@ -156,9 +156,30 @@ class VisibleClasses(ScannedAddons):
             self._definers[model] = tuple(
                 name
                 for name in self._text_definers().get(model, ())
-                if any(defines(item) for item in self._models_of(name).get(model, ()))
+                if model in self._defined_models(name)
             )
         return self._definers[model]
+
+    def _defined_models(self, addon_name: str) -> frozenset[str]:
+        """The models the classes of an addon define (not extend).
+
+        For an addon the run does not otherwise need (asked when a model is unknown in a
+        view): its scan is read, but only this answer and its stamps are kept, not the
+        whole scan (an addon such as ``website`` holds thousands of fields).
+        """
+        if addon_name in self._by_model:
+            models = self._by_model[addon_name]
+            return frozenset(model for model, items in models.items() if any(map(defines, items)))
+        if addon_name not in self._peeked:
+            scan, stamps = self._load_scan(addon_name)
+            defined = frozenset(
+                item.model
+                for module in scan.modules
+                for item in module.contributions
+                if defines(item)
+            )
+            self._peeked[addon_name] = (defined, stamps)
+        return self._peeked[addon_name][0]
 
     def _text_definers(self) -> dict[str, list[str]]:
         """Model name -> addons whose sources contain ``_name = "<model>"``, in load order.
