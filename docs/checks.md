@@ -14,6 +14,7 @@ Models are resolved **per addon**: a module sees only the models of the addons i
 - [Domains: `odoo-domain`](#domains-odoo-domain)
 - [XML ids: `odoo-xmlid`](#xml-ids-odoo-xmlid)
 - [Fields that Odoo leaves untyped](#fields-that-odoo-leaves-untyped)
+- [Annotated helpers: `odoo.values` and `odoo.model`](#annotated-helpers-odoovalues-and-odoomodel)
 - [Code outside any addon](#code-outside-any-addon)
 - [Plain mypy errors you will see more often](#plain-mypy-errors-you-will-see-more-often)
 - [Not yet supported](#not-yet-supported)
@@ -281,6 +282,138 @@ creates.
 - With `literal_selection = true`, a `Selection` field with literal keys reads as
   `Literal["draft"] | ... | Literal[False]` (see [configuration](configuration.md#options)).
 
+## Annotated helpers: `odoo.values` and `odoo.model`
+
+A helper method that builds `vals` (`_prepare_invoice_line()`) or returns records has
+no type mypy could check. The PyCharm plugin "Odoo IDE" names them with annotations;
+the plugin gives the same annotations real types:
+
+| Annotation | Type |
+|---|---|
+| `Annotated[dict, "odoo.values.res_partner"]` | the `vals` of the model: a `TypedDict` named `res.partner values` |
+| `"odoo.values.res_partner"` | the same |
+| `"odoo.model.res_partner"` | the model's records, as `env["res.partner"]` gives them in the addon |
+
+```python
+def _prepare_line(self) -> "odoo.values.account_move_line":
+    vals: Annotated[dict, "odoo.values.account_move_line"] = {"name": self.name}
+    vals["quantity"] = self.product_uom_qty
+    vals["quantty"] = 1
+    # error: TypedDict "account.move.line values" has no key "quantty"  [typeddict-unknown-key]
+    # note: Did you mean "quantity"?
+    return vals
+```
+
+**Where they work.** The model is named with `_` for `.` (`account_move_line`;
+`"odoo.values.account.move.line"` works too). The bare string works in the annotations
+of functions (parameters, return), variables (module, class, function) and type
+comments, also inside other types (`"odoo.values.x | None"`,
+`"Mapping[str, odoo.model.x]"`), in a module that has a regular class at its top level
+(the plugin rewrites the module's annotations when mypy reaches it; a class-syntax
+`TypedDict` or `NamedTuple`, a class whose bases mypy rejects and a class defined in a
+function do not count). Use `Annotated[dict, "odoo.values.x"]` instead:
+
+- in a module without such a class, where mypy reports `Name "odoo" is not defined`;
+- in `cast(...)`, an expression, which mypy turns into a type later.
+
+A type alias (`V = Annotated[dict, "odoo.values.x"]`, `V: TypeAlias = ...`,
+`type V = ...`) is a plain `dict` in either form: mypy drops the metadata of
+`Annotated` there. Annotate the helpers and variables themselves.
+
+Outside any addon (scripts) the annotations mean what they mean to plain mypy:
+`Annotated[...]` is a `dict`, a bare string is an undefined name.
+
+**The model.** The alias is looked up among the models of the file's addon view, like
+`env["..."]`:
+
+- a name no addon defines is `odoo-model` (with a near match: `did you mean`);
+- a model defined only outside the `depends` closure is `odoo-model-depends`;
+- two models that differ only in `.` / `_` (`a.b_c`, `a_b.c`) are reported as
+  ambiguous (`odoo-model`): there are none in Odoo 17–20.
+
+The type is then `dict[str, Any]` (values) or `Any` (records). A guard such as
+`if "x" in self.env:` does not apply: the annotation is on the signature. Silence the
+line with `# type: ignore[odoo-model-depends]`.
+
+**The keys of `odoo.values.<model>`** are the fields that *any* addon on the addons
+paths gives the model, as Odoo assembles them: those of its own classes, of its
+`_inherit` parents and mixins (`message_ids`, `image_1920`, `access_token`...) and of
+`base`, then those of the models it delegates to (`_inherits`). Not only those of the
+addon's dependencies: with those only, `res = super()._prepare_vals()` in a later addon
+would have fewer keys than the later addon's own annotation, and every override would be
+an error. So:
+
+- a misspelled key is an error, with `Did you mean`;
+- a field of an addon outside the `depends` closure is a key (this is what code under
+  `if "f" in self._fields:` writes);
+- a field that only the database has (Studio, `x_*`) is not: the `TypedDict` has one
+  fixed set of keys, so `vals_ignore_keys` does not apply. Declare the field in the
+  code, or `# type: ignore[typeddict-unknown-key]`;
+- a class found only through a constant defined in another module
+  (`from .consts import MODEL`, `_name = MODEL`) is not read for the keys: they come
+  from the files whose `_name` / `_inherit` name the model as a string, or through an
+  expression the file itself can evaluate (`_name: str = "x"`, a constant of the same
+  module, `_inherit = _name`).
+
+**The values** depend on the field class only (the same type for every addon):
+
+| Field class | Takes |
+|---|---|
+| `Char`, `Text`, `Html`, `Selection` | `str \| bool \| None` |
+| `Integer`, `Many2oneReference` | `int \| NewId \| bool \| None` |
+| `Float`, `Monetary` | `float \| bool \| None` |
+| `Date`, `Datetime` | `date \| str \| bool \| None` |
+| `Binary`, `Image` | `bytes \| str \| bool \| None` |
+| `Many2one` | `int \| NewId \| BaseModel \| tuple \| bool \| None` |
+| `One2many`, `Many2many` | `list \| tuple \| BaseModel \| bool \| None` (commands, ids, records) |
+| `Reference` | `str \| BaseModel \| bool \| None` |
+| `Boolean`, `Json`, `Properties`, a custom class, a computed `Binary` that is not stored | `Any` |
+
+So a selection key that does not exist and records of the wrong comodel are not errors
+in these values: they are checked in the dict literals of `create()` / `write()`
+([`odoo-vals`](#values-of-create-and-write-odoo-vals)).
+
+**Where they go.** `create()` (one, or a list of them; for `super().create(...)` see
+below), `write()`, `copy(default=...)`, `Command.create(...)` and any `dict` parameter
+take them. Values
+of the model, of its `_inherit` parents and mixins and of the models it delegates to
+(`_inherits`: `product.product` takes `product.template` values) fit; values of another
+model are an `odoo-vals-type` error:
+
+```text
+error: Values of Odoo model "sale.order" given to create() of Odoo model "account.move"  [odoo-vals-type]
+error: Values of Odoo model "sale.order" in a command of field "line_ids" of Odoo model
+"account.move", which takes "account.move.line" values  [odoo-vals-type]
+```
+
+Their keys are not checked again there (mypy checked them where the values were built).
+
+**What mypy's `TypedDict` rules mean here:**
+
+- `vals.update({"bad": 1})` is mypy's `Unexpected TypedDict key "bad"` (code `misc`);
+- a copy, `{**vals}` or `dict(vals)`, is `dict[str, object]`: annotate the copy to keep
+  the field types;
+- a parameter annotated `odoo.values.x` takes a dict literal (checked) and other
+  `odoo.values.x` values, but not a plain `dict` variable (`arg-type`): annotate the
+  variable too;
+- an override cannot narrow a parameter that the overridden method (Odoo 19+) annotates
+  `dict[str, Any]` (`override`): annotate return values and variables instead;
+- an override of a helper that Odoo annotates `-> dict` (`_catalog_prepare_new_line_vals`
+  in Odoo 20, a few others in 19+) gets a plain `dict` from `super()`, which is not the
+  values (`return-value`): write
+  `return cast(Annotated[dict, "odoo.values.x"], super()._helper())`;
+- `super().create(prepared)` with a list of values is `arg-type` on Odoo 18+: mypy
+  calls no plugin hook for `super()` calls, so the parameter keeps Odoo's declared
+  `list[dict[str, Any]]` (lists are invariant) when no `create` override without
+  annotations sits between the class and `BaseModel`. Write
+  `super().create(cast("list[dict[str, Any]]", prepared))`;
+- `vals.get("name")` has the field's type; an unknown key is not an error there (as for
+  any `TypedDict`), it gives `Any | None`;
+- `reveal_type(vals)` prints every key.
+
+**Records of `odoo.model.x` from different addons** are different classes, as
+`env["x"]` ones are (see [Not yet supported](#not-yet-supported)).
+
 ## Code outside any addon
 
 Scripts, and Odoo's own `odoo/*.py` modules (which mypy always analyzes), have no
@@ -302,8 +435,10 @@ With real recordset types, some plain mypy codes appear more often:
 
 ## Not yet supported
 
-- `vals` returned by a helper (`self._prepare_vals()`), or assigned in another branch
-  than the last assignment before the call (source order stands for the flow).
+- `vals` returned by a helper that is not annotated with
+  [`odoo.values.*`](#annotated-helpers-odoovalues-and-odoomodel)
+  (`self._prepare_vals()`), or assigned in another branch than the last assignment
+  before the call (source order stands for the flow).
 - Domains returned by a helper (`self._get_domain()`) or taken as a parameter, and
   string arguments of `mapped()` / `filtered()` known only at run time (not a literal or
   a `Final` / `Literal` str).

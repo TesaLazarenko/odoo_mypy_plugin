@@ -20,6 +20,8 @@ analysis.
   it imports from, so that values passed between them keep one type. Its name starts
   with ``<subclass ``, which ``mypy.lookup.lookup_fully_qualified`` resolves even with
   dots in it.
+* The ``TypedDict`` of a model's values (``odoo.values.<model>``) is created the same
+  way, in the module that uses the annotation (``<values of res_partner>``: no dots).
 
 * Odoo 19+ declares relational fields as ``Field[BaseModel]``: the classes listed in
   the profile get a type variable for the comodel, as Odoo 18 declares them.
@@ -33,6 +35,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from mypy.mro import calculate_mro
 from mypy.nodes import (
     GDEF,
     MDEF,
@@ -44,7 +47,7 @@ from mypy.nodes import (
     TypeInfo,
     Var,
 )
-from mypy.types import AnyType, Instance, TypeOfAny, TypeVarId, TypeVarType
+from mypy.types import AnyType, Instance, Type, TypedDictType, TypeOfAny, TypeVarId, TypeVarType
 from mypy.typestate import type_state
 from mypy.typevars import fill_typevars_with_any
 
@@ -56,18 +59,22 @@ __all__ = [
     "Merge",
     "add_delegated_fields",
     "add_log_access_fields",
+    "create_values_class",
     "create_view_class",
     "install_mro",
     "instance_of",
     "make_comodel_generic",
     "merge_mro",
     "record_python_mro",
+    "values_class_model",
+    "values_class_name",
     "view_class_name",
     "view_class_origin",
 ]
 
 METADATA_KEY = "odoo_typing"
 VIEW_CLASS_PREFIX = "<subclass of "
+VALUES_CLASS_PREFIX = "<values of "
 
 Lookup = Callable[[str], TypeInfo | None]
 
@@ -196,6 +203,70 @@ def create_view_class(
     info.metaclass_type = info.calculate_metaclass_type()
     tree.names[name] = SymbolTableNode(GDEF, info, module_hidden=True, plugin_generated=True)
     return info
+
+
+def values_class_name(model: str, version: str) -> str:
+    """Name of the ``TypedDict`` class of a model's values (``odoo.values.<model>``).
+
+    Without dots: ``mypy.lookup.lookup_fully_qualified`` splits a full name on them
+    (only ``<subclass `` names are kept whole), and the cache finds a class by its
+    full name. Two models whose names differ only in ``.`` / ``_`` are never both
+    resolved in one view (:meth:`odoo_typing.registry.Registry.resolve_alias`). The
+    ``version`` (a digest of the keys) makes a class with other keys another class:
+    the daemon merges a module analyzed again into its earlier symbols by full name,
+    and would keep the earlier keys under the same name.
+    """
+    return f"{VALUES_CLASS_PREFIX}{model.replace('.', '_')} {version}>"
+
+
+def values_class_model(info: TypeInfo) -> str | None:
+    """The model whose values a ``TypedDict`` class stands for, if it is such a class."""
+    model = info.metadata.get(METADATA_KEY, {}).get("values_model")
+    return model if isinstance(model, str) else None
+
+
+def create_values_class(
+    tree: MypyFile,
+    model: str,
+    items: dict[str, Type],
+    typed_dict: Instance,
+    dict_base: Instance,
+    version: str,
+) -> Type:
+    """Create (or reuse) the ``TypedDict`` of a model's values in a module; return its type.
+
+    A named ``TypedDict`` (``total=False``), shown as ``"<model> values"``, so that
+    mypy's messages name it rather than list hundreds of keys. Built the way mypy builds
+    one: the class's own ``typeddict_type`` falls back to ``typing._TypedDict``, and the
+    type of an annotation is its alias target, whose fallback is the class; a class that
+    falls back to itself makes mypy recurse forever (on ``update()``, ``{**vals}``). Its
+    second base, ``dict[str, Any]``, lets the values go where Odoo 19+ annotates
+    ``create`` / ``write`` (and any function) with a ``dict``.
+
+    Args:
+        tree: The module that uses the annotation; the class goes into its symbol table.
+        model: Odoo model name.
+        items: Field name to the type of the values it takes.
+        typed_dict: ``typing._TypedDict``.
+        dict_base: ``dict[str, Any]``.
+        version: Digest of the fields ``items`` was made from (part of the class name).
+    """
+    name = values_class_name(model, version)
+    existing = tree.names.get(name)
+    if existing is not None and isinstance(existing.node, TypeInfo):
+        info = existing.node
+    else:
+        defn = ClassDef(f"{model} values", Block([]))
+        defn.fullname = f"{tree.fullname}.{name}"
+        info = TypeInfo(SymbolTable(), defn, tree.fullname)
+        defn.info = info
+        info.bases = [typed_dict, dict_base]
+        calculate_mro(info)
+        info.metadata[METADATA_KEY] = {"values_model": model}
+        info.update_typeddict_type(TypedDictType(items, set(), set(), typed_dict))
+        tree.names[name] = SymbolTableNode(GDEF, info, module_hidden=True, plugin_generated=True)
+    assert info.special_alias is not None  # set by update_typeddict_type
+    return info.special_alias.target
 
 
 def add_delegated_fields(info: TypeInfo, sources: Sequence[tuple[TypeInfo, Sequence[str]]]) -> None:

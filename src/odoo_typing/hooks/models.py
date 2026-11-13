@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
+from typing import Final
 
 from mypy.errorcodes import ErrorCode
-from mypy.nodes import Context, TypeInfo
+from mypy.nodes import Context, MypyFile, TypeInfo
 from mypy.plugin import CheckerPluginInterface
 from mypy.types import AnyType, Instance, TypeOfAny
 
@@ -27,6 +28,7 @@ from odoo_typing.compat import OdooProfile
 from odoo_typing.config import Settings
 from odoo_typing.guards import field_guard
 from odoo_typing.hooks.nodes import (
+    Incomplete,
     class_infos,
     field_sources,
     imported_view_class,
@@ -39,8 +41,10 @@ from odoo_typing.registry import Registry
 __all__ = [
     "ODOO_MODEL",
     "ODOO_MODEL_DEPENDS",
+    "PENDING",
     "Hooks",
     "Models",
+    "Pending",
     "ViewType",
     "not_in_dependencies",
 ]
@@ -54,6 +58,13 @@ ODOO_MODEL_DEPENDS = ErrorCode(
 )
 
 ViewType = Instance | AnyType | None
+
+
+class Pending:
+    """A view class whose classes semantic analysis has not finished (see view_type_in)."""
+
+
+PENDING: Final = Pending()
 
 
 class Models:
@@ -78,31 +89,65 @@ class Models:
             merged class (created in the module being checked); ``Any`` if none of its
             classes is loaded in this mypy run; ``None`` if no visible addon defines it.
         """
+        checker = type_checker(api)
+        found = self.view_type_in(model, addon_name, checker.modules, checker.tree)
+        return None if isinstance(found, Pending) else found
+
+    def view_type_in(
+        self,
+        model: str,
+        addon_name: str,
+        modules: dict[str, MypyFile],
+        tree: MypyFile,
+        incomplete: Incomplete = lambda module: False,
+    ) -> ViewType | Pending:
+        """:meth:`view_type` for a module (``tree``), also during semantic analysis.
+
+        Args:
+            model: Odoo model name.
+            addon_name: The view.
+            modules: mypy's modules.
+            tree: The module a merged class goes into.
+            incomplete: Which modules semantic analysis has not finished yet (none, once
+                type checking runs).
+
+        Returns:
+            As :meth:`view_type`, or :data:`PENDING` if a class it needs is not analyzed
+            yet (only during semantic analysis: ask again on mypy's next pass).
+        """
         view = self.registry.view_class(model, addon_name)
         if view is None:
             return None
-        checker = type_checker(api)
         if view.tip is not None:
-            tip = class_infos([view.tip], checker.modules)
+            tip = class_infos([view.tip], modules, incomplete)
             if tip.infos:
                 return instance_of(tip.infos[0])
-        chain = class_infos(view.chain, checker.modules)
+            if tip.pending:
+                return PENDING
+        chain = class_infos(view.chain, modules, incomplete)
+        if chain.pending:
+            return PENDING
         own = [item for item in view.chain if item.model == model]
-        if not class_infos(own, checker.modules).infos:
+        if not class_infos(own, modules).infos:
             return AnyType(TypeOfAny.special_form)  # e.g. --follow-imports=skip
         imported = imported_view_class(
-            view_class_name(model, addon_name), checker, self.registry.addons.addon_for_module
+            view_class_name(model, addon_name), tree, modules, self.registry.addons.addon_for_module
         )
         if imported is not None:
             return instance_of(imported)
-        bases = class_infos(view.bases, checker.modules).infos
-        lookup = partial(lookup_class, checker.modules)
+        bases = class_infos(view.bases, modules, incomplete)
+        delegated: list[list[tuple[TypeInfo, tuple[str, ...]]] | None] = [
+            field_sources(self.registry.delegate_chain(delegate, addon_name), modules, incomplete)
+            for delegate in self.registry.delegate_closure(view.chain, model, addon_name)
+        ]
+        if bases.pending or None in delegated:
+            return PENDING
+        lookup = partial(lookup_class, modules)
         merged = create_view_class(
-            checker.tree, model, addon_name, chain.infos, bases, lookup, chain.missing
+            tree, model, addon_name, chain.infos, bases.infos, lookup, chain.missing
         )
-        for delegate in self.registry.delegate_closure(view.chain, model, addon_name):
-            classes = self.registry.delegate_chain(delegate, addon_name)
-            add_delegated_fields(merged, field_sources(classes, checker.modules) or [])
+        for sources in delegated:
+            add_delegated_fields(merged, sources or [])
         return instance_of(merged)
 
     def env_model(self, model: str, addon_name: str, api: CheckerPluginInterface) -> ViewType:

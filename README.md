@@ -51,6 +51,9 @@ error: Odoo model "crm.lead" is defined in addon "crm", which is not in the depe
   closure. A model used without its addon in `depends` is reported.
 - **Odoo-specific checks.** Model names, field references (`related=`, `compute=`,
   `@api.depends`), `create` / `write` values, domains and XML ids.
+- **Typed helper methods.** The annotations of the PyCharm plugin "Odoo IDE",
+  `"odoo.values.res_partner"` and `"odoo.model.res_partner"`, are real types: the keys
+  and value types of `vals` built in helpers are checked too.
 - **No Odoo runtime needed.** The plugin reads addons statically: no database, no import
   of Odoo.
 - **Fast on repeated runs.** It works with mypy's incremental cache and the `dmypy`
@@ -130,6 +133,37 @@ one line with `# type: ignore[odoo-domain]`. Code guarded by
 
 [What each check covers, and how to handle false positives →](docs/checks.md)
 
+## Annotating helpers
+
+`vals` and records that pass through helper methods have no type mypy could check.
+Annotate them the way the PyCharm plugin "Odoo IDE" does, and the plugin checks them:
+
+```python
+from typing import Annotated
+
+class SaleOrder(models.Model):
+    _inherit = "sale.order"
+
+    def _prepare_note(self) -> Annotated[dict, "odoo.values.sale_order"]:
+        return {"note": "x", "nmae": "y"}
+        # error: Extra key "nmae" for TypedDict "sale.order values"  [typeddict-unknown-key]
+
+    def _partners(self) -> "odoo.model.res_partner":   # records, as env["res.partner"]
+        return self.partner_id
+```
+
+- `odoo.values.<model>` is the model's `vals`: every key must be a field of the model,
+  and each value must fit the field. `create()` / `write()` take it (and lists of it,
+  except through `super().create(...)` on Odoo 18+), and values of an unrelated model
+  are reported there.
+- `odoo.model.<model>` is the model's records as the addon sees them.
+- The model is named with `_` for `.` (`sale_order`). The bare string works in
+  annotations of functions and variables in a module that has a regular class; in a
+  module of plain functions and in `cast(...)` use `Annotated[dict, "odoo.values.x"]`,
+  which other tools read as a plain `dict`. A type alias of either is a plain `dict`.
+
+[The rules, and what is not checked in them →](docs/checks.md#annotated-helpers-odoovalues-and-odoomodel)
+
 ## Using it in a project
 
 - **Editors**: `odoo-typing-stubs --addon my_addon --output typings` gives Pyright,
@@ -153,7 +187,8 @@ one line with `# type: ignore[odoo-domain]`. Code guarded by
 
 ## Limitations
 
-- `vals` and domains built by helper methods (`self._prepare_vals()`) are not checked.
+- `vals` returned by unannotated helpers (`self._prepare_vals()`) and domains built by
+  helpers are not checked; annotate the helper with `odoo.values.*`.
 - Model names known only at run time (`env[name]`) give `Any`.
 - Code outside any addon (scripts, Odoo's own `odoo/*.py`) is left as plain mypy sees
   it.

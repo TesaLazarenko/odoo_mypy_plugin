@@ -64,6 +64,7 @@ from functools import partial
 from mypy.nodes import MypyFile
 from mypy.options import Options
 from mypy.plugin import (
+    AnalyzeTypeContext,
     AttributeContext,
     ClassDefContext,
     FunctionContext,
@@ -74,10 +75,17 @@ from mypy.plugin import (
 )
 from mypy.types import FunctionLike, Type
 
+from odoo_typing.annotations import ANNOTATED_NAMES, TRIGGER_FULLNAME, rewrite_annotations
 from odoo_typing.compat import profile_for
 from odoo_typing.config import ConfigError, Settings, load_settings
 from odoo_typing.domains import DOMAIN_METHODS
 from odoo_typing.fingerprint import Fingerprints
+from odoo_typing.hooks.annotations import (
+    DICT_GET,
+    AnnotationHooks,
+    values_get,
+    values_get_signature,
+)
 from odoo_typing.hooks.domains import DomainHooks
 from odoo_typing.hooks.env import EnvHooks, request_env
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
@@ -154,6 +162,12 @@ class OdooPlugin(Plugin):
         self._domains = DomainHooks(models, self._recordsets)
         self._fields = FieldDefinitionHooks(models, self._domains)
         self._values = FieldValueHooks(models)
+        annotations = AnnotationHooks(models)
+        self._type_hooks: dict[str, Callable[[AnalyzeTypeContext], Type]] = {
+            name: partial(annotations.annotated, name) for name in ANNOTATED_NAMES
+        }
+        self._type_hooks[TRIGGER_FULLNAME] = annotations.rewritten
+        self._rewritten: dict[str, MypyFile] = {}  # module -> the tree rewritten last
 
     def _new_registry(self, settings: Settings) -> Registry:
         """A registry for the settings, and the fingerprints that follow it."""
@@ -245,6 +259,34 @@ class OdooPlugin(Plugin):
         modules.discard(file.fullname)
         return [(DEPENDENCY_PRIORITY, module, -1) for module in sorted(modules)]
 
+    # -- annotations: odoo.values.* / odoo.model.* -----------------------------------------
+
+    def _rewrite_module_of(self, class_fullname: str) -> None:
+        """Rewrite the bare ``odoo.values.*`` strings of a class's module, once per tree.
+
+        See :mod:`odoo_typing.annotations`. Called when semantic analysis reaches a
+        regular top-level class (:meth:`get_customize_class_mro_hook`), before its body:
+        on every path where mypy analyzes a module from source (a parsed file, a cached
+        one whose dependency changed, the modules of an import cycle, a daemon update,
+        ``--num-workers``), which no hook that sees the parsed file covers. mypy calls
+        the hook for no class-syntax ``TypedDict`` / ``NamedTuple`` and no class whose
+        bases it rejects; classes defined in functions are skipped here. A module
+        without such a class is never rewritten (``Annotated`` works there).
+        """
+        if "@" in class_fullname:
+            return  # a class defined in a function (``Name@12``): not a top-level class
+        module = class_fullname.rpartition(".")[0]
+        tree = self._modules.get(module) if self._modules else None
+        if tree is None or self._rewritten.get(module) is tree:
+            return
+        self._rewritten[module] = tree
+        if self._models.registry.annotation_aliases(tree.path):
+            rewrite_annotations(tree)
+
+    def get_type_analyze_hook(self, fullname: str) -> Callable[[AnalyzeTypeContext], Type] | None:
+        """Type ``odoo.values.*`` / ``odoo.model.*`` annotations (odoo_typing.annotations)."""
+        return self._type_hooks.get(fullname)
+
     # -- hook lookup -----------------------------------------------------------------------
     # mypy asks for a hook at every call, attribute and class (about 200,000 times on the
     # account addon); the answer depends only on the name, the profile and the registry,
@@ -253,7 +295,13 @@ class OdooPlugin(Plugin):
     def get_customize_class_mro_hook(
         self, fullname: str
     ) -> Callable[[ClassDefContext], None] | None:
-        """Give Odoo model classes the MRO of their registry class."""
+        """Give Odoo model classes the MRO of their registry class.
+
+        Also rewrites the annotations of the class's module (:meth:`_rewrite_module_of`): mypy
+        analyzes a module's classes before their bodies, and defers what it cannot look
+        up yet, so the module's functions see the rewritten names on the next pass.
+        """
+        self._rewrite_module_of(fullname)
         found = self._hooks.mro
         if fullname not in found:
             found[fullname] = self._find_customize_class_mro_hook(fullname)
@@ -315,6 +363,8 @@ class OdooPlugin(Plugin):
         the checks run in the same function).
         """
         profile = self._models.profile
+        if fullname == DICT_GET:
+            return values_get
         if fullname == profile.env_getitem:
             return self._env.getitem
         if fullname == f"{profile.environment}.ref":
@@ -363,6 +413,8 @@ class OdooPlugin(Plugin):
             return self._values.get
         if fullname.endswith(".__set__"):
             return self._vals.field_set
+        if fullname == DICT_GET:
+            return values_get_signature
         if not is_create(fullname):
             return None
         profile = self._models.profile

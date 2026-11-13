@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from conftest import PYPROJECT, write_addon
+from mypy.api import run as mypy_run
 
 THING = """
 from odoo import fields, models
@@ -59,8 +60,13 @@ class Daemon:
 
     def __init__(self, tmp_path: Path, config: Path, targets: list[Path]) -> None:
         self._status = tmp_path / "dmypy.json"
-        options = ["--config-file", str(config), "--cache-dir", str(tmp_path / "cache")]
-        self._run_args = ["run", "--timeout", "300", "--", *options, *map(str, targets)]
+        self.options = ["--config-file", str(config), "--cache-dir", str(tmp_path / "cache")]
+        self.targets = list(map(str, targets))
+        self.flags: list[str] = []
+
+    @property
+    def _run_args(self) -> list[str]:
+        return ["run", "--timeout", "300", "--", *self.options, *self.flags, *self.targets]
 
     def _dmypy(self, *args: str) -> subprocess.CompletedProcess[str]:
         command = [sys.executable, "-m", "mypy.dmypy", "--status-file", str(self._status)]
@@ -163,3 +169,81 @@ def test_dmypy_plugin_settings_follow_config_edits(daemon: Daemon, tmp_path: Pat
     assert second[-1] == (
         "user.py:30: note: Revealed type is \"Literal['a'] | Literal['b'] | Literal[False]\""
     )
+
+
+VALUES = """
+
+class Note(models.Model):
+    _name = "x.note"
+
+    def vals(self) -> "odoo.values.x_thing":
+        return {"name": "a", "extra": 1}
+
+    def thing(self) -> "odoo.model.x_thing":
+        return self.env["x.thing"]
+"""
+
+
+def test_dmypy_annotations_follow_edits(daemon: Daemon, tmp_path: Path) -> None:
+    root = tmp_path / "addons"
+    daemon.check()
+    _append(root / "my_mod/user.py", VALUES)  # rewritten again after the edit
+    before = daemon.check()
+    _append(root / "dep_mod/models.py", EXTENSION)  # a new key of odoo.values.x_thing
+    after = daemon.check()
+
+    extra = 'user.py:15: error: Extra key "extra" for TypedDict "x.thing values"'
+    assert before == [
+        'user.py:8: note: Revealed type is "dep_mod.models.Thing"',
+        f"{extra}  [typeddict-unknown-key]",
+    ]
+    assert after == ['user.py:8: note: Revealed type is "dep_mod.models.ThingExtra"']
+
+
+def test_dmypy_fine_grained_cache_keeps_annotations(daemon: Daemon, tmp_path: Path) -> None:
+    # The daemon starts from mypy's cache (no trees); an edit of dep_mod makes it parse
+    # user.py again, and the classes of its new analysis replace the cached ones.
+    root = tmp_path / "addons"
+    wrong = '\n    def wrong(self) -> "odoo.values.x_thing":\n        return {"nope": 1}\n'
+    _append(root / "my_mod/user.py", VALUES + wrong)
+    mypy_run([*daemon.options, "--cache-fine-grained", *daemon.targets])
+    daemon.flags = ["--use-fine-grained-cache"]
+    daemon.check()  # mypy reports nothing for modules it loaded from the cache
+    _append(root / "dep_mod/models.py", EXTENSION)
+
+    after = daemon.check()
+
+    assert after == [
+        'user.py:8: note: Revealed type is "dep_mod.models.ThingExtra"',
+        'user.py:21: error: Extra key "nope" for TypedDict "x.thing values"'
+        "  [typeddict-unknown-key]",
+    ]
+
+
+OTHER = """
+from odoo import fields, models
+
+class Thing(models.Model):
+    _inherit = "x.thing"
+"""
+
+
+def test_dmypy_values_keys_follow_an_addon_outside_the_view(daemon: Daemon, tmp_path: Path) -> None:
+    # other_mod is checked by the daemon but is no dependency of my_mod: its field is
+    # a key of odoo.values.x_thing all the same. Without an error, Note.vals is only
+    # analyzed again because it depends on the classes the keys come from.
+    root = tmp_path / "addons"
+    models = root / "other_mod/models.py"
+    write_addon(root / "other_mod", {"depends": ["dep_mod"], "models.py": OTHER})
+    models.write_text(models.read_text() + "    extra = fields.Integer()\n")  # in the class
+    daemon.targets.append(str(root / "other_mod"))
+    _append(root / "my_mod/user.py", VALUES)
+    before = daemon.check()
+    models.write_text(textwrap.dedent(OTHER))
+
+    after = daemon.check()
+
+    reveal = 'user.py:8: note: Revealed type is "dep_mod.models.Thing"'
+    extra = 'user.py:15: error: Extra key "extra" for TypedDict "x.thing values"'
+    assert before == [reveal]
+    assert after == [reveal, f"{extra}  [typeddict-unknown-key]"]

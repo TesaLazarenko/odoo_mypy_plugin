@@ -45,6 +45,23 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   `~` on Odoo 19+.
 - `odoo-xmlid` / `odoo-xmlid-depends`: XML ids of `env.ref(...)`.
 
+### Annotated helpers
+
+- The annotations of the PyCharm plugin "Odoo IDE" are types:
+  `Annotated[dict, "odoo.values.<model>"]` and `"odoo.values.<model>"` are the model's
+  `vals` (a named `TypedDict`: keys and value types checked wherever the values are
+  built; `vals.get(...)` typed per key), `"odoo.model.<model>"` its records as
+  `env[...]` gives them. Bare strings work in the annotations of functions, variables
+  and type comments of a module that has a regular class, on every path mypy analyzes
+  it (incremental runs, import cycles, `--num-workers`, the daemon). The keys are the
+  fields any addon on the addons paths gives the model and its `_inherit` parents and
+  mixins, so `super()` in a later addon keeps them; a field added anywhere makes mypy
+  check the annotating files again. `create` (also a list of values, except through
+  `super().create(...)` on Odoo 18+, where a `cast` is needed) / `write` / `copy` /
+  x2many commands report values of an unrelated model (`odoo-vals-type`; parents' and
+  `_inherits` models' values fit); unknown, ambiguous or out-of-`depends` model names
+  are `odoo-model` / `odoo-model-depends`.
+
 ### Performance
 
 - Addon scans are kept in `scan_cache_dir` (`~/.cache/odoo-typing/scans` by default),

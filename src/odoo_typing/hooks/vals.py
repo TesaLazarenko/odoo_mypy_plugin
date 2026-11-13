@@ -33,7 +33,8 @@ class ValsHooks(Hooks):
         if argument is not None and addon_name is not None and model is not None:
             target = self._vals_target(model, addon_name)
             checker = self._vals_checker(ctx.api, addon_name)
-            for vals in vals_dicts(argument, method == "create", local):
+            checker.check_values_model(model, method, argument, method == "create")
+            for vals in vals_dicts(argument, method == "create", local, typed=checker.typed):
                 checker.check(target, vals)
         call = ctx.context
         if (
@@ -90,6 +91,7 @@ class ValsHooks(Hooks):
             partial(self.registry.concrete, addon_name=addon_name),
             partial(self._vals_target, addon_name=addon_name),
             self._field_guarded(api.path),
+            partial(self.registry.accepted_values, addon_name=addon_name),
         )
 
     def _vals_target(self, model: str, addon_name: str) -> ValsTarget:

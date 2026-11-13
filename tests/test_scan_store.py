@@ -122,7 +122,7 @@ def test_unreached_files_read_back_until_they_change(tmp_path: Path, mocker: Moc
     test_file.write_text('def f(env):\n    if "x.opt" in env:\n        env["x.base"]\n')
     store = RecordStore(tmp_path / "cache")
     first = _registry(settings, store).referenced_models(test_file)
-    parse = mocker.spy(registry_scans, "parse_source")
+    parse = mocker.spy(registry_scans, "parse_bytes")
 
     second = _registry(settings, store)
     again = second.referenced_models(test_file)
@@ -133,3 +133,17 @@ def test_unreached_files_read_back_until_they_change(tmp_path: Path, mocker: Moc
 
     assert (first, again, guarded, read_back) == ({"x.base"}, {"x.base"}, True, 0)
     assert changed == {"x.other"}
+
+
+def test_unreached_file_annotations_read_back(tmp_path: Path, mocker: MockerFixture) -> None:
+    settings = _odoo(tmp_path)
+    test_file = settings.odoo_path / "addons/my_mod/tests/test_y.py"
+    test_file.parent.mkdir()
+    test_file.write_text('VALS: "odoo.values.x_base" = {}\n')
+    store = RecordStore(tmp_path / "cache")
+    first = _registry(settings, store).annotation_aliases(test_file)
+    parse = mocker.spy(registry_scans, "parse_bytes")
+
+    again = _registry(settings, store).annotation_aliases(test_file)
+
+    assert (first, again, parse.call_count) == ({("values", "x_base")},) * 2 + (0,)

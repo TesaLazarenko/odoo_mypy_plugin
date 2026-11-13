@@ -15,7 +15,9 @@ __all__ = [
     "RELATIONAL_FIELDS",
     "callee_name",
     "comodel_argument",
+    "parse_bytes",
     "parse_source",
+    "read_source",
     "single_target",
     "string_literal",
 ]
@@ -38,10 +40,29 @@ def parse_source(path: Path) -> ast.Module:
     Raises:
         SourceError: If the file cannot be read or is not valid Python.
     """
+    return parse_bytes(read_source(path), path)
+
+
+def read_source(path: Path) -> bytes:
+    """The bytes of a source file.
+
+    Raises:
+        SourceError: If the file cannot be read.
+    """
     try:
-        return ast.parse(path.read_bytes(), filename=str(path))
+        return path.read_bytes()
     except OSError as exc:
         raise SourceError(path, exc.strerror or str(exc)) from exc
+
+
+def parse_bytes(source: bytes, path: Path) -> ast.Module:
+    """Parse the bytes of a source file (see :func:`parse_source`).
+
+    Raises:
+        SourceError: If the bytes are not valid Python.
+    """
+    try:
+        return ast.parse(source, filename=str(path))
     except SyntaxError as exc:
         raise SourceError(path, f"{exc.msg} (line {exc.lineno})") from exc
     except ValueError as exc:  # e.g. null bytes on older Python versions

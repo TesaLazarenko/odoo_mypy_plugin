@@ -4,6 +4,7 @@
 
 - [The registry](#the-registry)
 - [mypy hooks](#mypy-hooks)
+- [Annotations: `odoo.values` and `odoo.model`](#annotations-odoovalues-and-odoomodel)
 - [Incremental mode](#incremental-mode)
 - [Shared scan cache](#shared-scan-cache)
 - [The daemon (dmypy)](#the-daemon-dmypy)
@@ -115,6 +116,65 @@ file that cannot be parsed is reported once on stderr
   field is read, from the reading addon (or the record's own class, if the reading
   module does not load all the comodel's classes), so the result has every extension
   the reader sees. `Model.field` (read on the class) is the field itself.
+
+## Annotations: `odoo.values` and `odoo.model`
+
+How the [annotated helpers](checks.md#annotated-helpers-odoovalues-and-odoomodel) get
+their types:
+
+- **Which files.** The scan of each file records the `odoo.values.*` /
+  `odoo.model.*` names in it (a text search over the bytes it reads anyway). Their
+  models join the file's dependency edges, like the models of `env["..."]`.
+- **Bare strings.** mypy cannot look `"odoo.values.res_partner"` up: it would need a
+  name `odoo` in the module and a module `odoo.values`. So the plugin rewrites those
+  annotations to `__build_class__["values", "res_partner"]` (a name of `builtins`,
+  visible in every module and never an annotation of its own, whose type-analysis hook
+  the plugin owns). It does so when mypy's semantic analysis reaches the module's
+  first regular top-level class (the customize-MRO hook, called before the class's
+  body; mypy does not call it for a class-syntax `TypedDict` / `NamedTuple` or a class
+  whose bases it rejects, and the plugin skips classes defined in functions). mypy
+  analyzes a module from source on several paths that ask the plugin nothing else
+  first: a cached module whose dependency changed, the other modules of an import
+  cycle, `--num-workers`, a daemon update. An annotation analyzed before the first class
+  waits for mypy's next pass, as a name mypy cannot find yet does. A module without
+  such a class is never rewritten (`Annotated[...]` works there).
+  `Annotated[dict, "..."]` needs no rewriting: the plugin's hook for `typing.Annotated`
+  reads its metadata, and hands every other `Annotated` back to mypy unchanged.
+- **`odoo.values.<model>`** is a named `TypedDict` (`total=False`) created in the
+  module that uses it, the way merged view classes are (so the incremental cache keeps
+  it). Its bases are `typing._TypedDict` and `dict[str, Any]`, so the values go where
+  Odoo 19+ annotates a `dict`. Its name carries a digest of its keys: the daemon merges
+  a module analyzed again into its earlier symbols by name, and would otherwise keep the
+  earlier keys.
+- **The keys** are the fields any addon gives the model, its `_inherit` parents and
+  `base` (recursively), and the models it delegates to. A text index lists the files
+  whose `_name` / `_inherit` name each model (string literals; a file that assigns
+  anything else is read by the scanner, which evaluates its constants); only those
+  files are read, each on its own, and kept for their stamps. The index is kept too, with the stamps of every
+  source file and directory of the addons. The first time, building it reads every file
+  (about 0.4 s on Odoo's addons) and the files of `res.partner` and its parents take
+  0.6 s more; later runs stat the files and directories (a new, removed or renamed file
+  changes its directory's stamp) and read only what changed. The same keys in every
+  module and addon make the `TypedDict`s of one model compatible, which `super()`
+  needs.
+- **`odoo.model.<model>`** is made during semantic analysis by the code that types
+  `env["..."]`: the model's last class, or the merged class of the module. When a class
+  it needs is not analyzed yet (an import cycle), mypy is asked to analyze the
+  annotation again on its next pass.
+- **Incremental mode.** The config data of a file that uses `odoo.values.*` carries a
+  digest of the keys of every model its aliases may name (kept with the stamps of the
+  files they come from): a field added in any addon makes mypy check every such file
+  again, so a cached file and a checked one never see different keys. Checking the
+  index costs a run where nothing changed about 0.08 s on Odoo's addons (stats of
+  6,000 files), only when the checked files use `odoo.values.*`. A file whose
+  `odoo.model.*` names no model of its closure, like one that names models outside it,
+  also depends on the list of addons.
+- **Daemon.** An annotation is analyzed again when a class of its model in the view,
+  a class its keys come from (in any addon the daemon checks) or the namespace of their
+  modules changes. The registry starts over when a file of the index changes, so the
+  keys follow the disk. A key that an addon the daemon does not check adds shows only
+  in the annotations the daemon analyzes after that (the others keep the earlier keys,
+  so `super()` between them can be an error) until `dmypy restart`.
 
 ## Incremental mode
 

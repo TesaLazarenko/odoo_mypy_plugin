@@ -17,18 +17,22 @@ from odoo_typing.addons import Addon, AddonIndex, LoadKey
 from odoo_typing.config import Settings
 from odoo_typing.guards import Guard, is_guarded, model_guards
 from odoo_typing.node_index import index_nodes
+from odoo_typing.records import Record
 from odoo_typing.scanner import (
     AddonScan,
+    AnnotationAlias,
     Contribution,
     ModuleScan,
     SourceError,
-    parse_source,
+    annotation_aliases,
+    parse_bytes,
+    read_source,
     referenced_models,
     scan_addon,
 )
 from odoo_typing.stamps import Stamp, Stamps, read_index, scan_stamps, stamp, unchanged
 
-__all__ = ["IndexLoader", "ScanCache", "ScannedAddons"]
+__all__ = ["NO_REFERENCES", "FileReferences", "IndexLoader", "ScanCache", "ScannedAddons"]
 
 
 class ScanCache(Protocol):
@@ -40,18 +44,40 @@ class ScanCache(Protocol):
     def save(self, addon: Addon, load_key: LoadKey, scan: AddonScan, stamps: Stamps) -> None:
         """Keep a scan with the stamps of the files it read."""
 
-    def load_file(
-        self, path: Path, current: Stamp | None
-    ) -> tuple[frozenset[str], tuple[Guard, ...]] | None:
-        """What a file no scan reaches refers to (models, guards), if stored for its stamp."""
+    def load_file(self, path: Path, current: Stamp | None) -> FileReferences | None:
+        """What a file no scan reaches refers to, if stored for its stamp."""
 
-    def save_file(
-        self, path: Path, current: Stamp | None, models: frozenset[str], guards: tuple[Guard, ...]
-    ) -> None:
+    def save_file(self, path: Path, current: Stamp | None, found: FileReferences) -> None:
         """Keep what a file no scan reaches refers to, with its stamp."""
+
+    def load_classes(self, path: Path, current: Stamp | None) -> tuple[Contribution, ...] | None:
+        """The model classes of one file read on its own, if stored for its stamp."""
+
+    def save_classes(
+        self, path: Path, current: Stamp | None, classes: tuple[Contribution, ...]
+    ) -> None:
+        """Keep the model classes of one file read on its own, with its stamp."""
+
+    def load_record(self, key: str) -> Record | None:
+        """A record kept under a key (the text index of model files), if any."""
+
+    def save_record(self, key: str, record: Record) -> None:
+        """Keep a record under a key."""
 
 
 IndexLoader = Callable[[], tuple[AddonIndex, Stamps]]
+
+
+@dataclass(frozen=True, slots=True)
+class FileReferences:
+    """What a file the addon scans did not reach refers to (see :class:`ModuleScan`)."""
+
+    referenced_models: frozenset[str]
+    guards: tuple[Guard, ...]
+    annotations: frozenset[AnnotationAlias]
+
+
+NO_REFERENCES = FileReferences(frozenset(), (), frozenset())
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,8 +85,7 @@ class _UnreachedFile:
     """A file the addon scans did not reach, as it was when parsed (its stamp)."""
 
     stamp: Stamp | None
-    referenced_models: frozenset[str]
-    guards: tuple[Guard, ...]
+    found: FileReferences
 
 
 class ScannedAddons:
@@ -216,7 +241,23 @@ class ScannedAddons:
         scan = self._by_path.get(resolved)
         if scan is not None:
             return scan.referenced_models
-        return self._unreached_file(resolved).referenced_models
+        return self._unreached_file(resolved).found.referenced_models
+
+    def annotation_aliases(self, path: str | Path) -> frozenset[AnnotationAlias]:
+        """The ``odoo.values.*`` / ``odoo.model.*`` names a source file uses.
+
+        See :mod:`odoo_typing.scanner.annotations`; also for files the addon does not
+        import, like :meth:`referenced_models`.
+        """
+        addon = self.addons.addon_for_path(path)
+        if addon is None:
+            return frozenset()
+        self._models_of(addon.name)
+        resolved = self.addons.real_path(path)
+        scan = self._by_path.get(resolved)
+        if scan is not None:
+            return scan.annotations
+        return self._unreached_file(resolved).found.annotations
 
     def guarded(self, path: str | Path, model: str, line: int) -> bool:
         """Whether a line of a source file runs only when a model is installed.
@@ -229,7 +270,7 @@ class ScannedAddons:
             self._models_of(addon.name)  # scans the addon
         resolved = self.addons.real_path(path)
         scan = self._by_path.get(resolved)
-        guards = scan.guards if scan is not None else self._unreached_file(resolved).guards
+        guards = scan.guards if scan is not None else self._unreached_file(resolved).found.guards
         return is_guarded(guards, model, line)
 
     def _unreached_file(self, path: Path) -> _UnreachedFile:
@@ -244,19 +285,23 @@ class ScannedAddons:
             return known
         stored = self._scans.load_file(path, current) if self._scans else None
         if stored is not None:
-            found = self._unreached[path] = _UnreachedFile(current, *stored)
+            found = self._unreached[path] = _UnreachedFile(current, stored)
             return found
         try:
-            tree = parse_source(path)
+            source = read_source(path)
+            tree = parse_bytes(source, path)
         except SourceError:  # mypy reports unparsable files it checks itself
-            found = _UnreachedFile(current, frozenset(), ())
+            found = _UnreachedFile(current, NO_REFERENCES)
         else:
             nodes = index_nodes(tree)
-            found = _UnreachedFile(
-                current, frozenset(referenced_models(tree, nodes)), model_guards(nodes)
+            references = FileReferences(
+                frozenset(referenced_models(tree, nodes)),
+                model_guards(nodes),
+                annotation_aliases(source),
             )
+            found = _UnreachedFile(current, references)
             if self._scans is not None:
-                self._scans.save_file(path, current, found.referenced_models, found.guards)
+                self._scans.save_file(path, current, references)
         self._unreached[path] = found
         return found
 

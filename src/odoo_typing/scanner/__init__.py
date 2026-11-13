@@ -11,12 +11,19 @@ coding cookie is honoured.
 The scan of an addon is :func:`scan_addon` (:mod:`.walker`); its result types are in
 :mod:`.results`. The rest reads one part of the sources each: the syntax trees
 (:mod:`.syntax`), constant expressions (:mod:`.evaluation`), the body of a model class
-(:mod:`.class_bodies`), its field definitions (:mod:`.fields`) and the model names a
-file refers to (:mod:`.referenced`).
+(:mod:`.class_bodies`), its field definitions (:mod:`.fields`), the model names a
+file refers to (:mod:`.referenced`) and the ``odoo.values.*`` / ``odoo.model.*``
+annotations it uses (:mod:`.annotations`).
 """
 
 from __future__ import annotations
 
+from odoo_typing.scanner.annotations import (
+    MODEL,
+    VALUES,
+    AnnotationAlias,
+    annotation_aliases,
+)
 from odoo_typing.scanner.fields import POSITIONAL_PARAMETERS
 from odoo_typing.scanner.referenced import LOG_ACCESS_USERS, referenced_models
 from odoo_typing.scanner.results import (
@@ -26,18 +33,25 @@ from odoo_typing.scanner.results import (
     ModuleScan,
     SourceError,
 )
-from odoo_typing.scanner.syntax import parse_source
-from odoo_typing.scanner.walker import scan_addon
+from odoo_typing.scanner.syntax import parse_bytes, parse_source, read_source
+from odoo_typing.scanner.walker import scan_addon, scan_file_classes
 
 __all__ = [
     "LOG_ACCESS_USERS",
+    "MODEL",
     "POSITIONAL_PARAMETERS",
+    "VALUES",
     "AddonScan",
+    "AnnotationAlias",
     "Contribution",
     "FieldInfo",
     "ModuleScan",
     "SourceError",
+    "annotation_aliases",
+    "parse_bytes",
     "parse_source",
+    "read_source",
     "referenced_models",
     "scan_addon",
+    "scan_file_classes",
 ]

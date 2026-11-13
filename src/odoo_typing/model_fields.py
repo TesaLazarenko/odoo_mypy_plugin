@@ -34,6 +34,7 @@ __all__ = [
     "merge_definitions",
     "merge_keys",
     "service_definitions",
+    "stored",
 ]
 
 T = TypeVar("T")
@@ -242,3 +243,10 @@ def service_definitions(log_access: bool) -> Iterable[FieldInfo]:
     yield from MAGIC_FIELDS
     if log_access:
         yield from LOG_ACCESS_FIELDS
+
+
+def stored(info: FieldInfo) -> bool:
+    """Whether a field is stored: computed and related fields are not, by default."""
+    if info.store is not None:
+        return info.store
+    return info.compute is None and info.related is None and not info.dynamic & {"compute"}

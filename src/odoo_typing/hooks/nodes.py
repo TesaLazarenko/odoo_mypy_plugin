@@ -123,26 +123,26 @@ def field_sources(
 
 
 def imported_view_class(
-    name: str, checker: TypeChecker, in_addon: Callable[[str], object]
+    name: str, tree: MypyFile, modules: dict[str, MypyFile], in_addon: Callable[[str], object]
 ) -> TypeInfo | None:
-    """A merged view class of the module being checked or of an addon module it imports.
+    """A merged view class of a module (``tree``) or of an addon module it imports.
 
     One class per model and addon would be best, but a class stored in a module that is
     not loaded with the user could not be read back from the cache. A module that the
     user imports from is always loaded with it, and values (``RECS = env["x"]``) can
     only reach the user through such imports; so the class of such a module is reused.
     """
-    seen = {checker.tree.fullname}
-    stack = [checker.tree]
+    seen = {tree.fullname}
+    stack = [tree]
     while stack:
-        tree = stack.pop()
-        node = tree.names.get(name)
+        current = stack.pop()
+        node = current.names.get(name)
         if node is not None and isinstance(node.node, TypeInfo):
             return node.node
-        for module in _referenced_modules(tree, checker.modules) - seen:
+        for module in _referenced_modules(current, modules) - seen:
             seen.add(module)
             if in_addon(module):
-                stack.append(checker.modules[module])
+                stack.append(modules[module])
     return None
 
 

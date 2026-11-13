@@ -252,3 +252,31 @@ def test_load_index_stored_overlay_index_keeps_both_spellings(tmp_path: Path) ->
         index.canonical_module("cust.models"),
         index.addon_for_module("base.models"),
     ) == ("odoo.addons.cust", "odoo.addons.cust.models", None)
+
+
+def test_module_data_file_with_values_annotation_follows_the_list_of_addons(
+    tmp_path: Path,
+) -> None:
+    odoo = _odoo(tmp_path).odoo_path
+    root = tmp_path / "addons"
+    for name, source in (("user", 'V: "odoo.values.x_base" = {}\n'), ("plain", "X = 1\n")):
+        addon = root / name
+        addon.mkdir(parents=True)
+        (addon / "__manifest__.py").write_text("{'depends': ['base']}")
+        (addon / "__init__.py").write_text("from . import m\n")
+        (addon / "m.py").write_text(source)
+    settings = Settings(odoo_path=odoo, addons_paths=(root,))
+    store = RecordStore(tmp_path / "store")
+
+    def data(name: str) -> str | None:
+        return _fingerprints(settings, store).module_data(f"{name}.m", str(root / name / "m.py"))
+
+    before = (data("user"), data("plain"))
+    extra = root / "extra"
+    extra.mkdir()
+    (extra / "__manifest__.py").write_text("{'depends': ['base']}")
+    os.utime(root, ns=(10**18, 10**18))  # a new stamp of the root even within the clock
+    after = (data("user"), data("plain"))
+
+    assert after[0] != before[0]  # odoo.values keys may come from the new addon
+    assert after[1] == before[1]

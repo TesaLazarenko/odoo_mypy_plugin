@@ -22,8 +22,9 @@ an addon's files are scanned only when a view that contains the addon is queried
 The registry is built in layers, each a class that extends the one before it: what is
 read from disk (:mod:`.scans`), the classes of a model an addon sees (:mod:`.visible`),
 their MRO (:mod:`.linearization`), the model as the addon sees it and its ``_inherits``
-delegation (:mod:`.views`), its fields (:mod:`.fields`) and the modules mypy must load
-for it (:mod:`.edges`).
+delegation (:mod:`.views`), its fields (:mod:`.fields`), the models that
+``odoo.values.*`` / ``odoo.model.*`` annotations name (:mod:`.annotations`) and the
+modules mypy must load for it (:mod:`.edges`).
 """
 
 from __future__ import annotations

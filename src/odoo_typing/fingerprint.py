@@ -44,10 +44,12 @@ from odoo_typing.records import (
     source_digest,
 )
 from odoo_typing.registry import Registry
-from odoo_typing.scanner import AddonScan
+from odoo_typing.scanner import VALUES, AddonScan
 from odoo_typing.stamps import Stamp, Stamps, index_roots, stamp
 
 __all__ = ["Fingerprints", "scan_digest"]
+
+VALUES_PREFIX = f"odoo.{VALUES}."
 
 
 def scan_digest(scan: AddonScan) -> str:
@@ -116,6 +118,13 @@ class Fingerprints:
         addon anywhere rechecks only the files that name such models. Stored per file,
         valid while the file and the roots are unchanged; empty for the usual file.
 
+        So do an ``odoo.model.*`` annotation that names no model of the closure and
+        every ``odoo.values.*`` one: the keys of ``odoo.values.<model>`` are the fields
+        every addon gives the model (:mod:`odoo_typing.registry.annotations`), so their
+        digest, taken on each run, is part of the file's data
+        (:meth:`odoo_typing.registry.Registry.values_digest`); otherwise a field added
+        anywhere would give the file checked again other keys than a cached one.
+
         Not for Odoo's own addons: their files name models of other addons (often
         guarded), their errors are usually silenced (``follow_imports``), and making
         them depend on the list of addons would recheck them whenever one is added.
@@ -137,8 +146,20 @@ class Fingerprints:
                 for model in registry.referenced_models(path)
                 if not registry.visible(model, addon_name)
             )
+            found += sorted(
+                f"odoo.{kind}.{alias}"
+                for kind, alias in registry.annotation_aliases(path)
+                if kind == VALUES or registry.resolve_alias(alias, addon_name).model is None
+            )
             self._store.save(key, {"stamp": recorded, "models": found})
-        return digest([found, self._roots_digest])[:16] if found else ""
+        if not found:
+            return ""
+        values = [
+            self._registry.values_digest(name.removeprefix(VALUES_PREFIX))
+            for name in found
+            if name.startswith(VALUES_PREFIX)
+        ]
+        return digest([found, self._roots_digest, values])[:16]
 
     def addon_digest(self, addon_name: str) -> str:
         """Digest of everything the plugin may use for a file of the addon."""

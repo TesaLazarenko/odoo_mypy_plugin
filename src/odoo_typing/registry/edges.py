@@ -10,14 +10,14 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from odoo_typing.config import Settings
-from odoo_typing.registry.fields import ModelFields
+from odoo_typing.registry.annotations import AnnotatedModels
 from odoo_typing.registry.scans import IndexLoader, ScanCache
 from odoo_typing.scanner import Contribution
 
 __all__ = ["DependencyEdges"]
 
 
-class DependencyEdges(ModelFields):
+class DependencyEdges(AnnotatedModels):
     """Which modules make up the registry classes a module relies on."""
 
     def __init__(
@@ -34,8 +34,9 @@ class DependencyEdges(ModelFields):
     def covered_models(self, module: str, path: str | Path | None = None) -> frozenset[str]:
         """Models whose whole registry class a module's dependency edges cover.
 
-        Those named by ``env[...]`` or comodel literals in the file, and the comodels of
-        the relational fields that its classes' chains declare (``self.partner_id``).
+        Those named by ``env[...]`` or comodel literals in the file, by its
+        ``odoo.values.*`` / ``odoo.model.*`` annotations, and the comodels of the
+        relational fields that its classes' chains declare (``self.partner_id``).
 
         Args:
             module: Module name, as mypy sees it.
@@ -47,7 +48,7 @@ class DependencyEdges(ModelFields):
             addon = self.addon_name_for_path(source) if source is not None else None
             if addon is None or source is None:
                 return frozenset()
-            models = set(self.referenced_models(source))
+            models = set(self.referenced_models(source)) | self.annotation_models(source)
             for contribution in scan.contributions if scan else ():
                 models |= self.chain_comodels(contribution)
             self._covered[module] = self._same_names(frozenset(models))

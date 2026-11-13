@@ -12,7 +12,7 @@ from pathlib import Path
 
 from odoo_typing.config import Settings
 from odoo_typing.registry.scans import IndexLoader, ScanCache, ScannedAddons
-from odoo_typing.scanner import Contribution
+from odoo_typing.scanner import Contribution, SourceError, read_source
 
 __all__ = ["TipsKey", "VisibleClasses", "defines"]
 
@@ -214,8 +214,10 @@ def _defined_names(directory: Path) -> set[str]:
         subdirs[:] = [name for name in subdirs if name not in SKIPPED_DIRS]
         for name in files:
             if name.endswith(".py"):
-                with open(os.path.join(root, name), "rb") as source:  # every file of every addon
-                    data = source.read()
+                try:  # every file of every addon
+                    data = read_source(Path(root, name))
+                except SourceError:
+                    continue  # a broken symlink, a file that cannot be read
                 if b"_name" in data:
                     names.update(match.decode(errors="replace") for match in findall(data))
     return names

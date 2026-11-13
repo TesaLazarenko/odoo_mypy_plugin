@@ -9,7 +9,7 @@ also gives ``Any``. These hooks restore the declared signatures and the receiver
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, TypeGuard
 
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import (
@@ -17,9 +17,13 @@ from mypy.nodes import (
     CallExpr,
     ConditionalExpr,
     Decorator,
+    DictExpr,
+    DictionaryComprehension,
     Expression,
     FuncDef,
     IndexExpr,
+    ListComprehension,
+    ListExpr,
     MemberExpr,
     NameExpr,
     OpExpr,
@@ -46,6 +50,7 @@ from mypy.typevars import fill_typevars
 from mypy.checker import TypeChecker
 
 from odoo_typing.local_values import MAX_DEPTH, LocalValues
+from odoo_typing.vals import values_model_of
 
 __all__ = [
     "SELF_METHODS",
@@ -141,10 +146,11 @@ def is_create(fullname: str) -> bool:
 def create_signature(base_model: str, ctx: MethodSigContext, untyped: bool = False) -> FunctionLike:
     """``create(vals_list: list[X])`` also accepts one ``X``, as ``model_create_multi`` does.
 
-    ``BaseModel.create`` is declared with a list, but its decorator wraps a single dict
-    into a list at runtime, and most code passes one dict. With ``untyped`` (Odoo 17,
-    where ``vals_list`` is unannotated) the argument gets Odoo 18's type,
-    ``dict[str, Any] | list[dict[str, Any]]``.
+    ``BaseModel.create`` is declared with a list (Odoo 18; Odoo 19+ declares both), but
+    its decorator wraps a single dict into a list at runtime, and most code passes one
+    dict. With ``untyped`` (Odoo 17, where ``vals_list`` is unannotated) the argument
+    gets Odoo 18's type, ``dict[str, Any] | list[dict[str, Any]]``. A list of
+    ``odoo.values.*`` is accepted too (:func:`_values_list`).
     """
     signature = ctx.default_signature
     receiver = get_proper_type(ctx.type)
@@ -162,10 +168,41 @@ def create_signature(base_model: str, ctx: MethodSigContext, untyped: bool = Fal
         vals = ctx.api.named_generic_type(
             "builtins.list", [ctx.api.named_generic_type("builtins.dict", [text, any_type])]
         )
-    if not isinstance(vals, Instance) or vals.type.fullname != "builtins.list":
+    if _is_list(vals):
+        accepted = [vals.args[0], vals]  # Odoo 17 and 18
+    elif isinstance(vals, UnionType) and any(_is_list(item) for item in vals.items):
+        accepted = [vals]
+    else:
         return signature
-    accepted = UnionType.make_union([vals.args[0], vals])
-    return signature.copy_modified(arg_types=[accepted, *signature.arg_types[1:]])
+    if (listed := _values_list(ctx)) is not None:
+        accepted.append(listed)  # list is invariant: list[values] is no list[dict[str, Any]]
+    union = UnionType.make_union(accepted)
+    return signature.copy_modified(arg_types=[union, *signature.arg_types[1:]])
+
+
+def _is_list(typ: Type) -> TypeGuard[Instance]:
+    proper = get_proper_type(typ)
+    return isinstance(proper, Instance) and proper.type.fullname == "builtins.list"
+
+
+# Arguments mypy infers in the context of the parameter's type: a list display of values
+# fits ``list[dict[str, Any]]`` there (the type of a variable or a call does not).
+IN_CONTEXT = (DictExpr, ListExpr, ListComprehension, DictionaryComprehension)
+
+
+def _values_list(ctx: MethodSigContext) -> Type | None:
+    """The type of a first argument that is a list of ``odoo.values.*``, if it is one.
+
+    Inferred ahead of mypy, without its errors or recorded types (as mypy tries the
+    items of an overload); displays and comprehensions are left to mypy.
+    """
+    first = ctx.args[0] if ctx.args else []
+    checker = ctx.api
+    if len(first) != 1 or isinstance(first[0], IN_CONTEXT) or not isinstance(checker, TypeChecker):
+        return None
+    with checker.msg.filter_errors(), checker.local_type_map:
+        found = checker.get_expression_type(first[0])
+    return found if _is_list(found) and values_model_of(found, many=True) is not None else None
 
 
 def keep_receiver(base_model: str, ctx: MethodContext) -> Type:

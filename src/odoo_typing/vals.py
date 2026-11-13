@@ -52,6 +52,7 @@ from mypy.types import (
     NoneType,
     ProperType,
     Type,
+    TypedDictType,
     TypeOfAny,
     UnionType,
     get_proper_type,
@@ -61,7 +62,9 @@ from mypy.types import (
 # After mypy.types: mypy.checker and mypy.types import each other at import time.
 from mypy.checker import TypeChecker
 
+from odoo_typing.classes import values_class_model
 from odoo_typing.local_values import MAX_DEPTH, Change, LocalValues
+from odoo_typing.model_fields import stored
 from odoo_typing.scanner import FieldInfo
 
 __all__ = [
@@ -79,6 +82,7 @@ __all__ = [
     "context_defaults",
     "stored",
     "vals_dicts",
+    "values_model_of",
 ]
 
 ODOO_VALS = ErrorCode("odoo-vals", "Check the vals of create() and write()", "Odoo")
@@ -152,34 +156,46 @@ class ValsTarget:
 
 
 def vals_dicts(
-    argument: Expression, many: bool, local: LocalValues | None = None, depth: int = 0
+    argument: Expression,
+    many: bool,
+    local: LocalValues | None = None,
+    depth: int = 0,
+    typed: Callable[[Expression], bool] = lambda node: False,
 ) -> Iterator[DictExpr]:
     """The dict displays of a ``vals`` argument (``many``: ``create``, also a list).
 
     Also ``dict(k=v, ...)``, and, with the function's :class:`LocalValues`, a variable built
     before the call: its literal value and what was added to it in place
-    (``vals["k"] = v``, ``vals.update(...)``, ``vals_list.append({...})``...).
+    (``vals["k"] = v``, ``vals.update(...)``, ``vals_list.append({...})``...). An
+    expression for which ``typed`` is true is left out: its type already checks it
+    (``odoo.values.*``, see :mod:`odoo_typing.annotations`).
     """
+    if typed(argument):
+        return
     if isinstance(argument, DictExpr):
         yield argument
     elif isinstance(argument, CallExpr) and _is_dict_call(argument):
         for value, kind in zip(argument.args, argument.arg_kinds, strict=True):
             if kind == ARG_POS:  # dict(other, k=v): the keys of ``other`` too
-                yield from vals_dicts(value, False, local, depth + 1)
+                yield from vals_dicts(value, False, local, depth + 1, typed)
         yield from _keyword_dicts(argument.args, argument.arg_names)
     elif many and isinstance(argument, (ListExpr, TupleExpr)):
         for item in argument.items:
-            yield from vals_dicts(item, False, local, depth + 1)
+            yield from vals_dicts(item, False, local, depth + 1, typed)
     elif isinstance(argument, NameExpr) and local is not None and depth < MAX_DEPTH:
         built = local.built(argument, argument.line)
         if built.value is not None:
-            yield from vals_dicts(built.value, many, local, depth + 1)
+            yield from vals_dicts(built.value, many, local, depth + 1, typed)
         for change in built.changes:
-            yield from _changed_dicts(change, many, local, depth + 1)
+            yield from _changed_dicts(change, many, local, depth + 1, typed)
 
 
 def _changed_dicts(
-    change: Change, many: bool, local: LocalValues, depth: int
+    change: Change,
+    many: bool,
+    local: LocalValues,
+    depth: int,
+    typed: Callable[[Expression], bool],
 ) -> Iterator[DictExpr]:
     """The dicts an in-place change adds to a vals variable (a dict, or a list of them)."""
     args = change.args
@@ -189,14 +205,14 @@ def _changed_dicts(
     elif change.method in {"update", "__ior__"}:
         for value, name in zip(args, change.arg_names, strict=True):
             if name is None:
-                yield from vals_dicts(value, False, local, depth)
+                yield from vals_dicts(value, False, local, depth, typed)
         yield from _keyword_dicts(args, change.arg_names)
     elif many and change.method == "append" and len(args) == 1:
-        yield from vals_dicts(args[0], False, local, depth)
+        yield from vals_dicts(args[0], False, local, depth, typed)
     elif many and change.method == "insert" and len(args) == 2:
-        yield from vals_dicts(args[1], False, local, depth)
+        yield from vals_dicts(args[1], False, local, depth, typed)
     elif many and change.method in {"extend", "__iadd__"} and len(args) == 1:
-        yield from vals_dicts(args[0], True, local, depth)
+        yield from vals_dicts(args[0], True, local, depth, typed)
 
 
 def _keyword_dicts(args: Sequence[Expression], names: Sequence[str | None]) -> Iterator[DictExpr]:
@@ -235,6 +251,8 @@ class ValsChecker:
         target_for: The vals target of a model (for the vals of x2many commands).
         guarded: Whether a field name is guarded on a line of the checked file
             (``if "f" in self._fields:``, :func:`odoo_typing.guards.field_guard`).
+        values_of: The models whose ``odoo.values.*`` a model takes
+            (:meth:`odoo_typing.registry.Registry.accepted_values`).
     """
 
     checker: TypeChecker
@@ -244,6 +262,42 @@ class ValsChecker:
     concrete: Callable[[str], bool]
     target_for: Callable[[str], ValsTarget]
     guarded: Callable[[str, int], bool]
+    values_of: Callable[[str], frozenset[str]]
+
+    def typed(self, node: Expression) -> bool:
+        """Whether an expression's type is the values of a model (``odoo.values.*``).
+
+        mypy checks such values against their ``TypedDict`` itself; only their model is
+        left to check here (:meth:`check_values_model`).
+        """
+        return self.values_model(node) is not None
+
+    def values_model(self, node: Expression) -> str | None:
+        """The model whose values (``odoo.values.*``) an expression is, if it is that."""
+        typ = self.checker.lookup_type_or_none(node)
+        return values_model_of(typ) if typ is not None else None
+
+    def check_values_model(self, model: str, method: str, argument: Expression, many: bool) -> None:
+        """Report values of another model (``odoo.values.*``) given to a model's method.
+
+        ``many``: ``create``, which also takes a list of them.
+        """
+        if not self.concrete(model):
+            return  # a mixin's method runs on the records of other models
+        nodes = list(argument.items) if many and isinstance(argument, ListExpr | TupleExpr) else []
+        found: list[tuple[str, Expression]] = []
+        for node in nodes or [argument]:
+            typ = self.checker.lookup_type_or_none(node)
+            other = values_model_of(typ, many and not nodes) if typ is not None else None
+            if other is not None:
+                found.append((other, node))
+        for other, node in found:
+            if other not in self.values_of(model):
+                self.checker.fail(
+                    f'Values of Odoo model "{other}" given to {method}() of Odoo model "{model}"',
+                    node,
+                    code=ODOO_VALS_TYPE,
+                )
 
     def check(self, target: ValsTarget, vals: DictExpr) -> None:
         """Report the problems of one dict display."""
@@ -315,7 +369,22 @@ class ValsChecker:
             if info.field_type in X2MANY_CLASSES and isinstance(value, ListExpr):
                 target = self.target_for(info.comodel)
                 for vals in _command_vals(value):
-                    self.check(target, vals)
+                    if isinstance(vals, DictExpr):
+                        self.check(target, vals)
+                    else:
+                        self._check_command_values(model, info, vals)
+
+    def _check_command_values(self, model: str, info: FieldInfo, vals: Expression) -> None:
+        """Report the values of another model (``odoo.values.*``) in an x2many command."""
+        other = self.values_model(vals)
+        comodel = info.comodel
+        if other is not None and comodel is not None and other not in self.values_of(comodel):
+            self.checker.fail(
+                f'Values of Odoo model "{other}" in a command of field "{info.name}" of Odoo '
+                f'model "{model}", which takes "{comodel}" values',
+                vals,
+                code=ODOO_VALS_TYPE,
+            )
 
     def _check_selection_keys(
         self, model: str, info: FieldInfo, items: Sequence[ProperType], value: Expression
@@ -391,20 +460,32 @@ def _literal_strings(items: Sequence[ProperType]) -> Iterator[str]:
             yield literal.value
 
 
-def _command_vals(commands: ListExpr) -> Iterator[DictExpr]:
-    """The comodel vals of an x2many value: ``Command.create({...})``, ``(0, 0, {...})``."""
+def _command_vals(commands: ListExpr) -> Iterator[Expression]:
+    """The comodel vals of an x2many value: ``Command.create({...})``, ``(0, 0, vals)``."""
     for item in commands.items:
         if isinstance(item, CallExpr):
             position = COMMAND_VALS.get(_command_name(item.callee) or "")
             if position is not None and len(item.args) > position:
-                argument = item.args[position]
-                if isinstance(argument, DictExpr):
-                    yield argument
+                yield item.args[position]
         elif isinstance(item, TupleExpr) and len(item.items) == 3:
             code, _, vals = item.items
             command = code.value if isinstance(code, IntExpr) else None
-            if command in TUPLE_COMMANDS and isinstance(vals, DictExpr):
+            if command in TUPLE_COMMANDS:
                 yield vals
+
+
+def values_model_of(typ: Type, many: bool = False) -> str | None:
+    """The model whose values (``odoo.values.*``) a type is; ``many``: a list of them."""
+    proper = get_proper_type(typ)
+    if many and isinstance(proper, Instance) and proper.args:
+        if proper.type.fullname in {"builtins.list", "builtins.tuple"}:
+            return values_model_of(proper.args[0])
+        return None
+    if isinstance(proper, TypedDictType):
+        return values_class_model(proper.fallback.type)
+    if isinstance(proper, Instance):
+        return values_class_model(proper.type)
+    return None
 
 
 def _command_name(callee: Expression) -> str | None:
@@ -461,10 +542,3 @@ def context_defaults(
                         field = key.value.removeprefix(DEFAULT_PREFIX)
                         found.append(ContextDefault(key.value, field, item, key))
     return found
-
-
-def stored(info: FieldInfo) -> bool:
-    """Whether a field is stored: computed and related fields are not, by default."""
-    if info.store is not None:
-        return info.store
-    return info.compute is None and info.related is None and not info.dynamic & {"compute"}

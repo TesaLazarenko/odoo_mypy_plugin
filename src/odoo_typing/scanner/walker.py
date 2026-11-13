@@ -15,6 +15,7 @@ from pathlib import Path
 from odoo_typing.addons import Addon, LoadKey, find_manifest
 from odoo_typing.guards import model_guards
 from odoo_typing.node_index import index_nodes
+from odoo_typing.scanner.annotations import annotation_aliases
 from odoo_typing.scanner.class_bodies import (
     abstract,
     as_names,
@@ -29,10 +30,10 @@ from odoo_typing.scanner.evaluation import UNKNOWN, assign, class_attributes
 from odoo_typing.scanner.fields import declared_fields
 from odoo_typing.scanner.referenced import referenced_models
 from odoo_typing.scanner.results import AddonScan, Contribution, ModuleScan, SourceError
-from odoo_typing.scanner.syntax import parse_source
+from odoo_typing.scanner.syntax import parse_bytes, parse_source, read_source
 from odoo_typing.xmlids import scan_data
 
-__all__ = ["scan_addon"]
+__all__ = ["scan_addon", "scan_file_classes"]
 
 
 def scan_addon(addon: Addon, load_key: LoadKey) -> AddonScan:
@@ -50,6 +51,25 @@ def scan_addon(addon: Addon, load_key: LoadKey) -> AddonScan:
     walker.visit_module(addon.module_prefix, addon.path)
     data = scan_data(addon.name, addon.path, find_manifest(addon.path))
     return AddonScan(modules=tuple(walker.scans), errors=tuple(walker.errors), data=data)
+
+
+def scan_file_classes(addon: Addon, path: Path) -> tuple[Contribution, ...]:
+    """The model classes of one file of an addon, read on its own (no import followed).
+
+    For questions about every addon on the addons paths at once (the keys of
+    ``odoo.values.*``, :mod:`odoo_typing.registry.annotations`), where scanning each
+    whole addon would cost seconds. Without the other files of the addon, a model name
+    or argument taken from another module's constant is unknown, and the classes'
+    positions mean nothing. A file that cannot be parsed has no classes.
+    """
+    walker = _FileWalker(addon, (0, addon.name))
+    try:
+        tree = parse_source(path)
+    except SourceError:
+        return ()
+    file = _File(module=addon.module_prefix, package=addon.module_prefix)
+    walker._walk(tree.body, file)
+    return tuple(file.contributions)
 
 
 @dataclass(slots=True)
@@ -94,7 +114,8 @@ class _ImportWalker:
             return
         self._seen.add(path)
         try:
-            tree = parse_source(path)
+            source = read_source(path)
+            tree = parse_bytes(source, path)
         except SourceError as error:
             self.errors.append(error)
             return
@@ -109,6 +130,7 @@ class _ImportWalker:
                 contributions=tuple(file.contributions),
                 referenced_models=frozenset(referenced_models(tree, nodes)),
                 guards=model_guards(nodes),
+                annotations=annotation_aliases(source),
             )
         )
 
@@ -186,6 +208,13 @@ class _ImportWalker:
                 abstract=abstract(node, attrs),
             )
         )
+
+
+class _FileWalker(_ImportWalker):
+    """Walks one file's top-level statements without running its imports."""
+
+    def _import(self, dotted: list[str]) -> None:
+        return None
 
 
 def _executed_blocks(node: ast.stmt) -> list[list[ast.stmt]]:

@@ -124,6 +124,8 @@ class ModuleScan:
         referenced_models: Model names used as string literals in ``env[...]``
             and as relational field comodels.
         guards: Lines where a model is checked to be installed (``odoo_typing.guards``).
+        annotations: The ``odoo.values.*`` / ``odoo.model.*`` names the file uses, as
+            ``(kind, alias)`` pairs (``odoo_typing.scanner.annotations``).
     """
 
     module: str
@@ -133,6 +135,10 @@ class ModuleScan:
     # Only the file's own checks read it, so a shifted line must not change the
     # fingerprint of the addons that depend on this one (see fingerprint._canonical).
     guards: tuple[Guard, ...] = field(default=(), metadata={"fingerprint": False})
+    # Only the file's own analysis and edges use them (a change is a change of the file).
+    annotations: frozenset[tuple[str, str]] = field(
+        default=frozenset(), metadata={"fingerprint": False}
+    )
 
 
 class SourceError(Exception):

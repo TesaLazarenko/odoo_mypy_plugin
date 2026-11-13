@@ -26,7 +26,7 @@ from odoo_typing.registry.views import ModelViews
 from odoo_typing.registry.visible import defines
 from odoo_typing.scanner import Contribution, FieldInfo
 
-__all__ = ["ModelFields"]
+__all__ = ["ModelFields", "chain_log_access"]
 
 
 class ModelFields(ModelViews):
@@ -112,7 +112,7 @@ class ModelFields(ModelViews):
         if view is None:
             return {}
         definitions = {
-            info.name: [info] for info in service_definitions(_chain_log_access(view.chain, model))
+            info.name: [info] for info in service_definitions(chain_log_access(view.chain, model))
         }
         for name, found in chain_definitions(view.chain).items():
             definitions.setdefault(name, []).extend(found)
@@ -152,7 +152,7 @@ class ModelFields(ModelViews):
         the fields that every model using it has. Never for ``base``: its class is in
         the MRO of every model, which would give the fields to models without them too.
         """
-        return _chain_log_access(self.linearization(contribution), contribution.model)
+        return chain_log_access(self.linearization(contribution), contribution.model)
 
 
 def _related_only(info: FieldInfo) -> bool:
@@ -160,7 +160,7 @@ def _related_only(info: FieldInfo) -> bool:
     return info.field_type in RELATIONAL and info.comodel is None and bool(info.related)
 
 
-def _chain_log_access(chain: Sequence[Contribution], model: str) -> bool:
+def chain_log_access(chain: Sequence[Contribution], model: str) -> bool:
     """Whether a model's classes leave ``_log_access`` on (see :meth:`Registry.log_access`).
 
     As ``MetaModel`` does: each class that defines a model (of any model in the chain,

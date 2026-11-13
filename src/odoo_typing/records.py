@@ -18,7 +18,7 @@ from typing import TypeGuard
 
 from odoo_typing.addons import Addon, AddonIndex
 from odoo_typing.config import Settings
-from odoo_typing.stamps import Stamps, index_roots, read_index, unchanged
+from odoo_typing.stamps import Stamp, Stamps, index_roots, read_index, unchanged
 
 __all__ = [
     "Record",
@@ -29,6 +29,7 @@ __all__ = [
     "is_str_list",
     "load_index",
     "package_source_hash",
+    "parse_stamp",
     "parse_stamps",
     "source_digest",
 ]
@@ -181,12 +182,14 @@ def parse_stamps(value: object) -> Stamps | None:
         return None
     stamps: Stamps = {}
     for path, item in value.items():
-        if not isinstance(path, str):
+        if not isinstance(path, str) or (item is not None and parse_stamp(item) is None):
             return None
-        if item is None:
-            stamps[path] = None
-        elif isinstance(item, list) and len(item) == 2 and all(type(n) is int for n in item):
-            stamps[path] = (item[0], item[1])
-        else:
-            return None
+        stamps[path] = parse_stamp(item)
     return stamps
+
+
+def parse_stamp(value: object) -> Stamp | None:
+    """A stamp from JSON (``[mtime_ns, size]``); ``None`` for ``null`` or anything else."""
+    if isinstance(value, list) and len(value) == 2 and all(type(n) is int for n in value):
+        return (value[0], value[1])
+    return None
