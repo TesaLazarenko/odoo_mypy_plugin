@@ -34,6 +34,8 @@ class VisibleClasses(ScannedAddons):
         super().__init__(settings, index, scans)
         self._candidate_memo: dict[tuple[str, str], tuple[Contribution, ...]] = {}
         self._tips: dict[TipsKey, tuple[Contribution, ...]] = {}
+        # Equal answers kept once (by the identity of the classes: hashing them is costly).
+        self._class_tuples: dict[tuple[int, ...], tuple[Contribution, ...]] = {}
         self._definers: dict[str, tuple[str, ...]] = {}
         self._definition_index: dict[str, list[str]] | None = None
 
@@ -69,7 +71,7 @@ class VisibleClasses(ScannedAddons):
                 key=lambda item: item.position,
             )
             first = next((i for i, item in enumerate(found) if defines(item)), len(found))
-            self._candidate_memo[key] = tuple(found[first:])
+            self._candidate_memo[key] = self._same_classes(tuple(found[first:]))
         return self._candidate_memo[key]
 
     def model_tips(
@@ -100,7 +102,8 @@ class VisibleClasses(ScannedAddons):
                 ]
             )
             covered = set().union(*(self._predecessors(item) for item in live))
-            self._tips[key] = tuple(item for item in reversed(live) if item not in covered)
+            tips = tuple(item for item in reversed(live) if item not in covered)
+            self._tips[key] = self._same_classes(tips)
         return self._tips[key]
 
     def _predecessors(self, contribution: Contribution) -> frozenset[Contribution]:
@@ -128,6 +131,10 @@ class VisibleClasses(ScannedAddons):
         """
         definition = self.definition(model, addon_name)
         return definition is not None and definition.abstract is False
+
+    def _same_classes(self, classes: tuple[Contribution, ...]) -> tuple[Contribution, ...]:
+        """An equal tuple of classes the registry already keeps, if there is one."""
+        return self._class_tuples.setdefault(tuple(map(id, classes)), classes)
 
     def addons_outside_defining(self, model: str, addon_name: str) -> tuple[str, ...]:
         """Addons outside an addon's dependency closure that define a model.

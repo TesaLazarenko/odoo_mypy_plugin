@@ -53,6 +53,10 @@ License: LGPL-3.0-or-later.
 - Scanning sorts the nodes of a file by class once (guards, model references), encodes
   stored scans and fingerprints faster, and keeps each hook lookup per name: cold runs
   take 3–6 % less time.
+- Less memory: equal field maps, fields, MROs, tips and name sets are kept once, method
+  names are looked up instead of stored per view, and scan strings are interned. The data
+  the plugin keeps drops from 18 to 12.5 MB on `sale`; peak RSS of a cold run 6–9 MB lower
+  (sale 298 → 292 MB, account 355 → 349 MB), about a fifth of what the plugin adds.
 
 ### Tooling
 

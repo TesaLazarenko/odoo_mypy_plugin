@@ -15,6 +15,7 @@ their class name (only the scan's own classes are rebuilt).
 from __future__ import annotations
 
 import dataclasses
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
@@ -86,6 +87,8 @@ def decode(value: object) -> object:
     Raises:
         DecodeError: If the value was not made by :func:`encode` (an older format).
     """
+    if isinstance(value, str):
+        return sys.intern(value)  # names repeat in every scan: one object each
     if isinstance(value, list):
         return [decode(item) for item in value]
     if not isinstance(value, dict):

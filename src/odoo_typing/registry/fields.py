@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from types import MappingProxyType
 
 from odoo_typing.addons import BASE
 from odoo_typing.config import Settings
@@ -38,7 +39,10 @@ class ModelFields(ModelViews):
         self._fields: dict[tuple[str, str], Mapping[str, FieldInfo]] = {}
         self._unresolved_fields: dict[tuple[str, str], Mapping[str, FieldInfo]] = {}
         self._related_comodels: dict[tuple[str, str, str], str | None] = {}
-        self._methods: dict[tuple[str, str], frozenset[str]] = {}
+        # One object for equal answers: the views of a model from many addons mostly
+        # see the same fields (memory: each view would hold its own copies otherwise).
+        self._field_pool: dict[FieldInfo, FieldInfo] = {}
+        self._fields_pool: dict[tuple[tuple[str, FieldInfo], ...], Mapping[str, FieldInfo]] = {}
 
     def fields(self, model: str, addon_name: str) -> Mapping[str, FieldInfo]:
         """The fields of a model's registry class as an addon sees it (``_fields``).
@@ -53,19 +57,29 @@ class ModelFields(ModelViews):
         """
         key = (model, addon_name)
         if key not in self._fields:
-            fields = dict(self._merged_fields(model, addon_name))
-            for name, info in fields.items():
-                if _related_only(info):
-                    fields[name] = replace(info, comodel=self._comodel(model, name, addon_name))
-            self._fields[key] = fields
+            merged = self._merged_fields(model, addon_name)
+            resolved = {
+                name: replace(info, comodel=self._comodel(model, name, addon_name))
+                for name, info in merged.items()
+                if _related_only(info)
+            }
+            self._fields[key] = self._shared({**merged, **resolved}) if resolved else merged
         return self._fields[key]
+
+    def _shared(self, fields: dict[str, FieldInfo]) -> Mapping[str, FieldInfo]:
+        """A read-only mapping equal to ``fields``, the same object for equal ones."""
+        pool = self._field_pool
+        items = tuple((name, pool.setdefault(info, info)) for name, info in fields.items())
+        if items not in self._fields_pool:
+            self._fields_pool[items] = MappingProxyType(dict(items))
+        return self._fields_pool[items]
 
     def _merged_fields(self, model: str, addon_name: str) -> Mapping[str, FieldInfo]:
         """:meth:`fields` before the comodels of ``related=`` fields are known."""
         key = (model, addon_name)
         if key not in self._unresolved_fields:
             self._unresolved_fields[key] = {}  # a model in a delegation cycle sees no fields there
-            self._unresolved_fields[key] = self._compute_fields(model, addon_name)
+            self._unresolved_fields[key] = self._shared(self._compute_fields(model, addon_name))
         return self._unresolved_fields[key]
 
     def _comodel(self, model: str, name: str, addon_name: str) -> str | None:
@@ -93,7 +107,7 @@ class ModelFields(ModelViews):
             self._related_comodels[key] = current
         return self._related_comodels[key]
 
-    def _compute_fields(self, model: str, addon_name: str) -> Mapping[str, FieldInfo]:
+    def _compute_fields(self, model: str, addon_name: str) -> dict[str, FieldInfo]:
         view = self.view_class(model, addon_name)
         if view is None:
             return {}
@@ -112,14 +126,20 @@ class ModelFields(ModelViews):
             fields.setdefault(name, info)
         return fields
 
+    def has_method(self, model: str, addon_name: str, name: str) -> bool:
+        """Whether a class of a model's view defines a method (not BaseModel's).
+
+        Looked up in the classes each time: a set of every view's method names would be
+        the registry's largest cache, for one membership test per field definition.
+        """
+        view = self.view_class(model, addon_name)
+        return view is not None and any(name in item.methods for item in view.chain)
+
     def methods(self, model: str, addon_name: str) -> frozenset[str]:
-        """Names of the methods the classes of a model's view define (not BaseModel's)."""
-        key = (model, addon_name)
-        if key not in self._methods:
-            view = self.view_class(model, addon_name)
-            chain = view.chain if view is not None else ()
-            self._methods[key] = frozenset(name for item in chain for name in item.methods)
-        return self._methods[key]
+        """Names of the methods the classes of a model's view define (for messages)."""
+        view = self.view_class(model, addon_name)
+        chain = view.chain if view is not None else ()
+        return frozenset(name for item in chain for name in item.methods)
 
     def log_access(self, contribution: Contribution) -> bool:
         """Whether Odoo adds ``create_uid``/``create_date``/... to the model's class.

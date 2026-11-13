@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from collections.abc import Mapping
 from typing import Final
 
@@ -76,21 +77,26 @@ def _field_info(
     return FieldInfo(
         name=name,
         field_type=field_type,
-        comodel=text("comodel_name"),
-        inverse_name=text("inverse_name"),
+        comodel=_interned(text("comodel_name")),
+        inverse_name=_interned(text("inverse_name")),
         selection=selection,
         selection_method=selection_method,
         selection_add=_selection_keys(arguments, "selection_add", scope, dynamic),
-        related=text("related"),
-        compute=method("compute"),
-        inverse=method("inverse"),
-        search=method("search"),
+        related=_interned(text("related")),
+        compute=_interned(method("compute")),
+        inverse=_interned(method("inverse")),
+        search=_interned(method("search")),
         readonly=flag("readonly"),
         required=flag("required"),
         store=flag("store"),
         delegate=flag("delegate"),
         dynamic=frozenset(dynamic),
     )
+
+
+def _interned(text: str | None) -> str | None:
+    """One object per text: model names and paths repeat in every addon's fields."""
+    return sys.intern(text) if text is not None else None
 
 
 def _field_arguments(field_type: str, call: ast.Call) -> dict[str, ast.expr]:

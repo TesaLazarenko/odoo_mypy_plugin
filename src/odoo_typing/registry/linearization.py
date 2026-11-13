@@ -51,6 +51,7 @@ class Linearization(VisibleClasses):
     ) -> None:
         super().__init__(settings, index, scans)
         self._mros: dict[TipsKey, Nodes] = {}
+        self._node_tuples: dict[tuple[int | str, ...], Nodes] = {}  # equal MROs kept once
         self._merged: dict[tuple[str, tuple[str, ...]], Nodes] = {}
         self._conflicts: set[tuple[str, tuple[str, ...]]] = set()
         self._explored: dict[str, set[str]] = {}  # per addon: models classified for cycles
@@ -97,7 +98,9 @@ class Linearization(VisibleClasses):
             # the rest is the C3 merge of the parents' registry classes.
             leaves = tuple(node for node in bases if isinstance(node, Contribution))
             parents = tuple(node for node in bases if isinstance(node, str))
-            self._mros[key] = (model, *leaves, *self._merge_parents(addon_name, parents))
+            nodes: Nodes = (model, *leaves, *self._merge_parents(addon_name, parents))
+            key_nodes = tuple(node if isinstance(node, str) else id(node) for node in nodes)
+            self._mros[key] = self._node_tuples.setdefault(key_nodes, nodes)
         return self._mros[key]
 
     def _merge_parents(self, addon_name: str, parents: tuple[str, ...]) -> Nodes:

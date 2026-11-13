@@ -29,6 +29,7 @@ class DependencyEdges(ModelFields):
         self._covered: dict[str, frozenset[str]] = {}
         self._edge_addon_memo: dict[str, frozenset[str]] = {}
         self._view_addon_memo: dict[tuple[str, str], frozenset[str]] = {}
+        self._name_sets: dict[frozenset[str], frozenset[str]] = {}  # equal sets kept once
 
     def covered_models(self, module: str, path: str | Path | None = None) -> frozenset[str]:
         """Models whose whole registry class a module's dependency edges cover.
@@ -49,7 +50,7 @@ class DependencyEdges(ModelFields):
             models = set(self.referenced_models(source))
             for contribution in scan.contributions if scan else ():
                 models |= self.chain_comodels(contribution)
-            self._covered[module] = frozenset(models)
+            self._covered[module] = self._same_names(frozenset(models))
         return self._covered[module]
 
     def dependency_modules(self, module: str, path: str | Path) -> frozenset[str]:
@@ -95,12 +96,17 @@ class DependencyEdges(ModelFields):
         edges = self.dependency_modules(module, source) if source is not None else frozenset()
         return needed <= reachable | {self._module_addon(name) for name in edges}
 
+    def _same_names(self, names: frozenset[str]) -> frozenset[str]:
+        """An equal set of names the registry already keeps, if there is one."""
+        return self._name_sets.setdefault(names, names)
+
     def _view_addons(self, model: str, addon_name: str) -> frozenset[str]:
         """The addons of the modules that make up a model's registry class (cached)."""
         key = (model, addon_name)
         if key not in self._view_addon_memo:
             modules = self.view_modules(model, addon_name)
-            self._view_addon_memo[key] = frozenset(self._module_addon(name) for name in modules)
+            addons = frozenset(self._module_addon(name) for name in modules)
+            self._view_addon_memo[key] = self._same_names(addons)
         return self._view_addon_memo[key]
 
     def _edge_addons(self, addon_name: str) -> frozenset[str]:
@@ -124,12 +130,13 @@ class DependencyEdges(ModelFields):
         if key not in self._view_modules:
             nodes = self._registry_mro(model, addon_name, None)
             chain = [node for node in nodes if isinstance(node, Contribution)]
-            self._view_modules[key] = frozenset(
+            modules = frozenset(
                 tip.module
                 for node in nodes
                 if isinstance(node, str)
                 for tip in self.model_tips(node, addon_name)
             ) | self._delegate_modules(chain, model, addon_name)
+            self._view_modules[key] = self._same_names(modules)
         return self._view_modules[key]
 
     def class_modules(self, contribution: Contribution) -> frozenset[str]:
@@ -159,7 +166,8 @@ class DependencyEdges(ModelFields):
     def chain_comodels(self, contribution: Contribution) -> frozenset[str]:
         """Comodels of the relational fields that the classes of a linearization declare."""
         if contribution.fullname not in self._comodels:
-            self._comodels[contribution.fullname] = frozenset(
+            comodels = frozenset(
                 comodel for item in self.linearization(contribution) for comodel in item.comodels
             )
+            self._comodels[contribution.fullname] = self._same_names(comodels)
         return self._comodels[contribution.fullname]

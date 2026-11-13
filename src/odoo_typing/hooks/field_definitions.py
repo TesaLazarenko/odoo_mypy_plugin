@@ -90,8 +90,9 @@ class FieldDefinitionHooks(Hooks):
             elif argument in METHOD_ARGUMENTS and not (
                 argument == "selection" and field_class.name not in {"Selection", "Reference"}
             ):
-                methods = self.registry.methods(model, addon_name)
-                if value.value not in methods and owner.get(value.value) is None:
+                known = owner.get(value.value) is not None
+                if not known and not self.registry.has_method(model, addon_name, value.value):
+                    methods = self.registry.methods(model, addon_name)
                     message = missing_method_message(model, argument, value.value, methods)
                     api.fail(message, value, code=ODOO_FIELD_REF)
 
