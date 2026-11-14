@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from functools import partial
-
 from mypy.nodes import Expression, MemberExpr, NameExpr, StrExpr, TempNode
 from mypy.plugin import MethodContext
 from mypy.types import (
@@ -62,7 +60,7 @@ class RecordsetHooks(Hooks):
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
         if model is None or addon_name is None:
             return ctx.default_return_type
-        fields = self.registry.fields(model, addon_name)
+        fields = self._fields_of(addon_name, ctx.api)(model)
         checker = type_checker(ctx.api)
         items: dict[str, Type] = {"id": checker.named_type("builtins.int")}
         for node in names:
@@ -134,7 +132,7 @@ class RecordsetHooks(Hooks):
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
         if model is None or addon_name is None or not self.registry.concrete(model, addon_name):
             return True
-        fields_of = partial(self.registry.fields, addon_name=addon_name)
+        fields_of = self._fields_of(addon_name, ctx.api)
         guarded = self._field_guarded(ctx.api.path)
         valid = True
         for path in paths:

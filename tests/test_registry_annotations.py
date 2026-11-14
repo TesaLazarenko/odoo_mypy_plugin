@@ -13,7 +13,7 @@ from pytest_mock import MockerFixture
 from odoo_typing.config import Settings
 from odoo_typing.records import RecordStore
 from odoo_typing.registry import Registry
-from odoo_typing.registry.annotations import UNCHECKED, AliasResolution
+from odoo_typing.registry.annotations import UNCHECKED, AliasResolution, SearchMethod
 from odoo_typing.scan_store import ScanStore
 from odoo_typing.scanner import annotation_aliases
 
@@ -104,6 +104,69 @@ def test_annotation_aliases_text_search_finds_both_kinds() -> None:
     found = annotation_aliases(source)
 
     assert found == {("values", "res_partner"), ("values", "sale.order"), ("model", "res_partner")}
+
+
+def test_annotation_aliases_text_search_finds_domains() -> None:
+    source = (
+        b'def f() -> "odoo.domain.sale_order": ...\nX: Annotated[list, "odoo.domain.res.partner"]\n'
+    )
+
+    assert annotation_aliases(source) == {("domain", "sale_order"), ("domain", "res.partner")}
+    assert annotation_aliases(b'"odoo.domains.x" odoo.dom') == frozenset()
+
+
+def test_annotation_models_leave_domains_out(tmp_path: Path) -> None:
+    registry = _registry(tmp_path)
+    path = tmp_path / "addons" / "user" / "domains.py"
+    path.write_text('def f() -> "odoo.domain.shop_order_line": ...\n')
+
+    # A domain's type needs no class of its model, so no dependency edge.
+    assert registry.annotation_models(path) == frozenset()
+    assert registry.annotation_aliases(path) == {("domain", "shop_order_line")}
+
+
+SEARCH_METHODS = """
+    from odoo import fields, models
+
+    class Order(models.Model):
+        _inherit = "shop.order"
+        total = fields.Float(compute="_compute", search="_search_total")
+        other = fields.Float(compute="_compute", search=lambda self, operator, value: [])
+
+        def _compute(self):
+            pass
+
+        def _search_total(self, operator, value):
+            return []
+
+        def _search_display_name(self, operator, value):
+            return []
+
+    class Line(models.Model):
+        _inherit = "shop.order_line"
+
+        def _search_total(self, operator, value):
+            return []
+"""
+
+
+def test_search_methods_of_a_module(tmp_path: Path) -> None:
+    root = tmp_path
+    odoo = root / "odoo"
+    (odoo / "addons").mkdir(parents=True)
+    (odoo / "release.py").write_text("")
+    _addon(odoo / "addons", "base", [], BASE)
+    _addon(root / "addons", "shop", ["base"], SHOP)
+    files = {"__init__.py": "from . import models\n", "models.py": SEARCH_METHODS}
+    _addon(root / "addons", "searcher", ["shop"], files)
+    registry = Registry(Settings(odoo_path=odoo, addons_paths=(root / "addons",)))
+
+    found = registry.search_methods("searcher.models")
+
+    # Line's _search_total is no search method of its model's fields.
+    method = SearchMethod("shop.order", concrete=True)
+    assert found == {"Order": {"_search_total": method, "_search_display_name": method}}
+    assert registry.model_classes("searcher.models") == {"Order", "Line"}
 
 
 def test_annotation_aliases_of_scanned_and_unreached_files(tmp_path: Path) -> None:

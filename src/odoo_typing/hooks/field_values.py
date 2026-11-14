@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from functools import partial
-
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import MemberExpr, TypeInfo
 from mypy.plugin import AttributeContext, CheckerPluginInterface, MethodSigContext
@@ -128,7 +126,7 @@ class FieldValueHooks(Hooks):
             return signature
         comodel = info.comodel if "comodel" not in info.dynamic else None
         if comodel is None and info.related:  # fields.Many2one(related="a.b")
-            fields_of = partial(self.registry.fields, addon_name=addon_name)
+            fields_of = self._fields_of(addon_name, ctx.api)
             target = resolve_path(info.related, model, fields_of, "").field
             comodel = target.comodel if target is not None else None
         if comodel is None:
@@ -143,7 +141,7 @@ class FieldValueHooks(Hooks):
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
         if not isinstance(member, MemberExpr) or model is None or addon_name is None:
             return None
-        return self.registry.fields(model, addon_name).get(member.name)
+        return self._fields_of(addon_name, ctx.api)(model).get(member.name)
 
     def _reference_types(
         self, info: FieldInfo | None, records: Instance, api: CheckerPluginInterface

@@ -67,10 +67,11 @@ class Order(models.Model):
 """
 
 
-def test_search_domains_checked(run_mypy: RunMypy) -> None:
-    assert _messages(run_mypy, SEARCH) == [
+def test_search_domains_checked(run_mypy: RunMypy, odoo_version: int) -> None:
+    expected = [
         '9: error: Odoo model "t.order" has no field "nmae" in domain; did you mean "name"?  '
         "[odoo-domain]",
+        '9: error: Domain operator "&" needs 2 terms, has 1  [odoo-domain]',
         '10: error: Field "name" of Odoo model "t.order" in domain is not relational  '
         "[odoo-domain]",
         '11: error: "year_numbr" of date field "date" of Odoo model "t.order" in domain is not '
@@ -80,12 +81,26 @@ def test_search_domains_checked(run_mypy: RunMypy) -> None:
         '12: error: Value "dun" is not in the selection of field "state" of Odoo model '
         '"t.order" ("draft", "done")  [odoo-domain]',
         '13: error: Unknown domain operator "equals"  [odoo-domain]',
+        '13: error: Unknown domain operator "IN"; did you mean "in"?  [odoo-domain]',
         '14: error: Odoo model "t.line" has no field "labl" in domain; did you mean "label"?  '
         "[odoo-domain]",
         '16: error: Unknown domain operator "^" (not "&", "|", "!")  [odoo-domain]',
         '17: error: Odoo model "t.order" has no field "stat" in domain; did you mean "state"?  '
         "[odoo-domain]",
     ]
+    if odoo_version == 19:  # Odoo 19 lowers the operator (with a warning)
+        expected.remove(
+            '13: error: Unknown domain operator "IN"; did you mean "in"?  [odoo-domain]'
+        )
+    if odoo_version == 17:  # no date parts in Odoo 17 domains
+        date = (
+            'error: Field "date" of Odoo model "t.order" in domain is not relational (Odoo 17 '
+            "domains have no date parts)  [odoo-domain]"
+        )
+        expected[3] = f"11: {date}"
+        expected.insert(3, f"10: {date}")
+
+    assert _messages(run_mypy, SEARCH) == expected
 
 
 FIELD_DOMAINS = """
@@ -227,4 +242,56 @@ def _domain_errors(messages: list[str]) -> list[str]:
         line.split(";")[0].removesuffix("  [odoo-domain]")
         for line in messages
         if "[odoo-domain]" in line
+    ]
+
+
+OTHER_SEARCH = """
+from odoo import models
+
+class Index:
+    def search(self, items: list[object]) -> None:
+        pass
+
+    def name_search(self, args: list[object]) -> None:
+        pass
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self) -> None:
+        Index().search(["a", None, ("x",)])
+        Index().name_search(args=["|"])
+"""
+
+
+def test_search_methods_of_other_classes_are_not_domains(run_mypy: RunMypy) -> None:
+    assert _messages(run_mypy, OTHER_SEARCH) == []
+
+
+STRUCTURE = """
+from odoo import models
+
+class Mixin(models.AbstractModel):
+    _inherit = "t.mixin"
+
+    def check(self, items: list[tuple[str, str, int]], info: dict[str, int]) -> None:
+        self.search([("name", "=")])
+        self.search([(2, "=", 1), (1, "=", 1), (0, "=", 1), ("anything", "=", 1)])
+        self.search(["!", "|", ("a", "=", 1)])
+        self.search([items, info, 5, *items])
+        self.search(["|"] + [("a", "=", 1), ("b", "=", 1)])
+"""
+
+
+def test_structure_is_checked_on_any_model(run_mypy: RunMypy) -> None:
+    # A mixin's domains name fields of the models that use it: only their structure.
+    assert _messages(run_mypy, STRUCTURE) == [
+        "8: error: Domain term must be (field, operator, value), not 2 items  [odoo-domain]",
+        "9: error: Domain term must start with a field name, not 2  [odoo-domain]",
+        '10: error: Domain operator "|" needs 2 terms, has 1  [odoo-domain]',
+        '11: error: Domain item of type "list[tuple[str, str, int]]" is not a term or an '
+        "operator  [odoo-domain]",
+        '11: error: Domain item of type "dict[str, int]" is not a term or an operator  '
+        "[odoo-domain]",
+        '11: error: Domain item of type "int" is not a term or an operator  [odoo-domain]',
     ]

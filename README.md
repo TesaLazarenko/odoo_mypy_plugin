@@ -124,7 +124,9 @@ notes for Odoo 19 and 20.
 | ↳ `odoo-model-depends` | a model whose addon is missing from `depends` |
 | `odoo-field-ref` | a wrong field or method name in `related=`, `compute=`, `@api.depends`, `mapped()`... |
 | `odoo-vals` | wrong `create()` / `write()` values: `odoo-vals-key` (no such field), `odoo-vals-type` (wrong value type) |
-| `odoo-domain` | a wrong field, operator or selection value in a domain |
+| `odoo-domain` | a wrong field, operator, value or structure in a domain |
+| ↳ `odoo-domain-model` | a domain of another model than the one that takes it |
+| ↳ `odoo-domain-search` | a term that Odoo's search rejects or silently ignores (an unsearchable field...) |
 | `odoo-xmlid` | an `env.ref()` id that no data file in the closure creates |
 
 Turn a code off with `disable_error_code = ["odoo-domain"]` in `[tool.mypy]`, or silence
@@ -135,8 +137,9 @@ one line with `# type: ignore[odoo-domain]`. Code guarded by
 
 ## Annotating helpers
 
-`vals` and records that pass through helper methods have no type mypy could check.
-Annotate them the way the PyCharm plugin "Odoo IDE" does, and the plugin checks them:
+`vals`, records and domains that pass through helper methods have no type mypy could
+check. Annotate them the way the PyCharm plugin "Odoo IDE" does (`odoo.values.*`,
+`odoo.model.*`; `odoo.domain.*` is this plugin's), and the plugin checks them:
 
 ```python
 from typing import Annotated
@@ -150,6 +153,15 @@ class SaleOrder(models.Model):
 
     def _partners(self) -> "odoo.model.res_partner":   # records, as env["res.partner"]
         return self.partner_id
+
+    def _open_domain(self) -> "odoo.domain.sale_order":
+        return [("stte", "=", "draft")]
+        # error: Odoo model "sale.order" has no field "stte" in domain; did you mean "state"?
+
+    def action(self) -> None:
+        self.env["account.move"].search(self._open_domain())
+        # error: Domain of Odoo model "sale.order" given to search() of Odoo model
+        # "account.move"  [odoo-domain-model]
 ```
 
 - `odoo.values.<model>` is the model's `vals`: every key must be a field of the model,
@@ -157,10 +169,16 @@ class SaleOrder(models.Model):
   except through `super().create(...)` on Odoo 18+), and values of an unrelated model
   are reported there.
 - `odoo.model.<model>` is the model's records as the addon sees them.
+- `odoo.domain.<model>` is a domain of the model: its literals are checked where they
+  are written (a `return`, an annotated variable or parameter), and its model where it
+  goes (`search()`, a parameter, `any`, `domain=`). A domain of a parent model, a mixin
+  or a delegated model fits too. `Annotated[list, ...]` and, on Odoo 19+,
+  `Annotated[Domain, ...]` are the forms for variables that use `.append()` or `&`.
 - The model is named with `_` for `.` (`sale_order`). The bare string works in
   annotations of functions and variables in a module that has a regular class; in a
-  module of plain functions and in `cast(...)` use `Annotated[dict, "odoo.values.x"]`,
-  which other tools read as a plain `dict`. A type alias of either is a plain `dict`.
+  module of plain functions and in `cast(...)` use `Annotated[dict, "odoo.values.x"]`
+  (`Annotated[list, "odoo.domain.x"]`), which other tools read as a plain `dict`
+  (`list`). A type alias of either is a plain `dict` (`list`).
 
 [The rules, and what is not checked in them →](docs/checks.md#annotated-helpers-odoovalues-and-odoomodel)
 
@@ -187,8 +205,9 @@ class SaleOrder(models.Model):
 
 ## Limitations
 
-- `vals` returned by unannotated helpers (`self._prepare_vals()`) and domains built by
-  helpers are not checked; annotate the helper with `odoo.values.*`.
+- `vals` and domains returned by unannotated helpers (`self._prepare_vals()`,
+  `self._get_domain()`) are not checked; annotate the helper with `odoo.values.*` /
+  `odoo.domain.*`.
 - Model names known only at run time (`env[name]`) give `Any`.
 - Code outside any addon (scripts, Odoo's own `odoo/*.py`) is left as plain mypy sees
   it.

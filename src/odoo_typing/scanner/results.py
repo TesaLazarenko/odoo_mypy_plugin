@@ -39,6 +39,9 @@ class FieldInfo:
         required: ``required`` flag.
         store: ``store`` flag.
         delegate: ``delegate`` flag (``Many2one``).
+        compute_sql: ``True`` if ``compute_sql`` is passed (Odoo 20; its value is often a
+            lambda, so only that it is passed).
+        attachment: ``attachment`` flag (``Binary``).
         dynamic: Arguments passed with values the scan cannot evaluate.
     """
 
@@ -57,6 +60,8 @@ class FieldInfo:
     required: bool | None = None
     store: bool | None = None
     delegate: bool | None = None
+    compute_sql: bool | None = None
+    attachment: bool | None = None
     dynamic: frozenset[str] = frozenset()
 
 

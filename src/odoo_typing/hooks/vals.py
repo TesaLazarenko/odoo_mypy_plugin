@@ -31,7 +31,7 @@ class ValsHooks(Hooks):
         model = self._models.model_of(receiver.type) if isinstance(receiver, Instance) else None
         local = self._local_values(ctx.api)
         if argument is not None and addon_name is not None and model is not None:
-            target = self._vals_target(model, addon_name)
+            target = self._vals_target(model, addon_name, ctx.api)
             checker = self._vals_checker(ctx.api, addon_name)
             checker.check_values_model(model, method, argument, method == "create")
             for vals in vals_dicts(argument, method == "create", local, typed=checker.typed):
@@ -50,7 +50,7 @@ class ValsHooks(Hooks):
                 receiver_node = built.value if built.value is not None else receiver_node
             defaults = context_defaults(receiver_node, local)
             if defaults:
-                target = self._vals_target(model, addon_name)
+                target = self._vals_target(model, addon_name, ctx.api)
                 self._vals_checker(ctx.api, addon_name).check_defaults(target, defaults)
         if is_self_method(method):
             return keep_receiver(base_model, ctx)
@@ -73,7 +73,7 @@ class ValsHooks(Hooks):
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
         if value is None or model is None or addon_name is None:
             return ctx.default_signature
-        info = self.registry.fields(model, addon_name).get(lvalue.name)
+        info = self._fields_of(addon_name, ctx.api)(model).get(lvalue.name)
         if info is None:
             return ctx.default_signature
         checker = type_checker(ctx.api)
@@ -88,17 +88,27 @@ class ValsHooks(Hooks):
             self._profile.base_model,
             self._profile.new_id,
             self._models.model_of,
-            partial(self.registry.concrete, addon_name=addon_name),
-            partial(self._vals_target, addon_name=addon_name),
+            partial(self._concrete, addon_name=addon_name, api=api),
+            partial(self._vals_target, addon_name=addon_name, api=api),
             self._field_guarded(api.path),
-            partial(self.registry.accepted_values, addon_name=addon_name),
+            partial(self._accepted_values, addon_name=addon_name, api=api),
         )
 
-    def _vals_target(self, model: str, addon_name: str) -> ValsTarget:
+    def _vals_target(self, model: str, addon_name: str, api: CheckerPluginInterface) -> ValsTarget:
         """The fields the vals of a model are checked against, as an addon sees them."""
         return ValsTarget(
             model,
-            self.registry.fields(model, addon_name),
-            check_keys=self.registry.concrete(model, addon_name),
+            self._fields_of(addon_name, api)(model),
+            check_keys=self._concrete(model, addon_name, api),
             ignore_keys=self._settings.vals_ignore_keys,
         )
+
+    def _concrete(self, model: str, addon_name: str, api: CheckerPluginInterface) -> bool:
+        self._depend_on(model, addon_name, api)
+        return self.registry.concrete(model, addon_name)
+
+    def _accepted_values(
+        self, model: str, addon_name: str, api: CheckerPluginInterface
+    ) -> frozenset[str]:
+        self._depend_on(model, addon_name, api)
+        return self.registry.accepted_values(model, addon_name)

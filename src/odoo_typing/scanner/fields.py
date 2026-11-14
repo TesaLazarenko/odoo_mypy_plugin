@@ -90,6 +90,8 @@ def _field_info(
         required=flag("required"),
         store=flag("store"),
         delegate=flag("delegate"),
+        compute_sql=True if "compute_sql" in arguments else None,
+        attachment=flag("attachment"),
         dynamic=frozenset(dynamic),
     )
 

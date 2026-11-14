@@ -247,3 +247,191 @@ def test_dmypy_values_keys_follow_an_addon_outside_the_view(daemon: Daemon, tmp_
     extra = 'user.py:15: error: Extra key "extra" for TypedDict "x.thing values"'
     assert before == [reveal]
     assert after == [reveal, f"{extra}  [typeddict-unknown-key]"]
+
+
+# -- stage 8: checks that read fields of other modules, and of variables ----------------
+
+FIELDS_USER = """
+
+class Order(models.Model):
+    _name = "x.order"
+
+    base_id = fields.Many2one("x.thing", required=True, ondelete="cascade", delegate=True)
+    thing_id = fields.Many2one("x.thing")
+
+    def check(self) -> None:
+        self.search([("thing_id.name", "=", "a")])
+        self.env["x.thing"].search([("name", "=", "a")])
+        self.env["x.thing"].create({"name": "a"})
+        self.search([("name", "=", "a")])
+"""
+
+
+def _fields_daemon(daemon: Daemon, tmp_path: Path) -> Path:
+    root = tmp_path / "addons"
+    user = root / "my_mod/user.py"
+    user.write_text(
+        user.read_text().replace("from odoo import models", "from odoo import fields, models")
+    )
+    _append(user, FIELDS_USER)
+    return root / "dep_mod/models.py"
+
+
+def _rename(models: Path, old: str, new: str) -> None:
+    models.write_text(models.read_text().replace(f"    {old} = ", f"    {new} = "))
+
+
+def test_dmypy_field_checks_follow_another_module(daemon: Daemon, tmp_path: Path) -> None:
+    models = _fields_daemon(daemon, tmp_path)
+    first = daemon.check()
+    _rename(models, "name", "label")
+    renamed = daemon.check()
+    _rename(models, "label", "name")
+    back = daemon.check()
+    _rename(models, "name", "label")
+    again = daemon.check()
+
+    errors = [line for line in renamed if "error" in line]
+    assert [line for line in first if "error" in line] == []
+    assert [line.split(": error: ")[1].split(";")[0].split("  [")[0] for line in errors] == [
+        'Odoo model "x.thing" has no field "name" in domain',
+        'Odoo model "x.thing" has no field "name" in domain',
+        'Odoo model "x.thing" has no field "name"',
+        'Odoo model "x.order" has no field "name" in domain',
+    ]
+    assert [line for line in back if "error" in line] == []
+    assert [line for line in again if "error" in line] == errors
+
+
+def test_dmypy_field_checks_follow_another_module_from_the_cache(
+    daemon: Daemon, tmp_path: Path
+) -> None:
+    models = _fields_daemon(daemon, tmp_path)
+    mypy_run([*daemon.options, "--cache-fine-grained", *daemon.targets])
+    daemon.flags = ["--use-fine-grained-cache"]
+    daemon.check()
+    _rename(models, "name", "label")
+    renamed = daemon.check()
+    _rename(models, "label", "name")
+    back = daemon.check()
+
+    assert len([line for line in renamed if "error" in line]) == 4
+    assert [line for line in back if "error" in line] == []
+
+
+def _cached_data(cache: Path, module_path: str) -> bytes:
+    (found,) = cache.rglob(f"{module_path}.data.*")
+    return found.read_bytes()
+
+
+def test_fields_digest_only_in_fine_grained_runs(daemon: Daemon, tmp_path: Path) -> None:
+    # Only the daemon's triggers read the digest; a full run checks again what an edit
+    # of fields changes through the addons' fingerprints, so it does not pay for it.
+    plain, fine = tmp_path / "plain", tmp_path / "fine"
+    files = ["--no-sqlite-cache"]  # a file per module, not mypy 2.4's database
+    mypy_run([*daemon.options, *files, "--cache-dir", str(plain), *daemon.targets])
+    mypy_run(
+        [*daemon.options, *files, "--cache-dir", str(fine), "--cache-fine-grained", *daemon.targets]
+    )
+
+    assert b"__odoo_fields" not in _cached_data(plain, "dep_mod/models")
+    assert b"__odoo_fields" in _cached_data(fine, "dep_mod/models")
+
+
+STORED = """
+
+class Stored(models.Model):
+    _inherit = "x.thing"
+
+    total = fields.Float(compute="_compute_total", store=True)
+
+    def _compute_total(self) -> None:
+        pass
+"""
+SEARCH_TOTAL = """
+
+class Counter(models.Model):
+    _name = "x.counter"
+
+    def check(self) -> None:
+        self.env["x.thing"].search([("total", "=", 1)])
+"""
+
+
+def test_dmypy_field_arguments_of_another_module_are_followed(
+    daemon: Daemon, tmp_path: Path
+) -> None:
+    root = tmp_path / "addons"
+    models = root / "dep_mod/models.py"
+    _append(models, STORED)
+    _append(root / "my_mod/user.py", SEARCH_TOTAL)
+    stored = daemon.check()
+    models.write_text(models.read_text().replace("store=True", "store=False"))
+    computed = daemon.check()
+    models.write_text(models.read_text().replace("store=False", "store=True"))
+    again = daemon.check()
+
+    assert [line for line in stored if "error" in line] == []
+    assert [line.split(": error: ")[1].split(" (")[0] for line in computed if "error" in line] == [
+        'Field "total" of Odoo model "x.thing" cannot be searched'
+    ]
+    assert [line for line in again if "error" in line] == []
+
+
+VARIABLES = """
+
+class Built(models.Model):
+    _name = "x.built"
+
+    def check(self) -> None:
+        domain = [("nme", "=", 1)]
+        self.env["x.thing"].search(domain)
+        vals = {"name": "a"}
+        vals.update(nope="b")
+        self.env["x.thing"].create(vals)
+"""
+
+
+def test_dmypy_checks_of_variables_survive_edits_of_their_file(
+    daemon: Daemon, tmp_path: Path
+) -> None:
+    user = tmp_path / "addons/my_mod/user.py"
+    _append(user, VARIABLES)
+    first = daemon.check()
+    _append(user, "# a comment\n")
+    commented = daemon.check()
+    source = user.read_text()
+    user.write_text(source.replace('vals.update(nope="b")', 'vals.update(nope="c")'))
+    assert user.read_text() != source  # the same function, edited
+    edited = daemon.check()
+
+    errors = [line for line in first if "error" in line]
+    assert len(errors) == 2
+    assert [line for line in commented if "error" in line] == errors
+    assert [line for line in edited if "error" in line] == errors
+
+
+HELPER = """
+
+class Helper(models.Model):
+    _name = "x.helper"
+
+    def _domain(self) -> "odoo.domain.x_thing":
+        return [("name", "=", 1)]
+"""
+
+
+def test_dmypy_returns_of_annotated_helpers_follow_edits(daemon: Daemon, tmp_path: Path) -> None:
+    user = tmp_path / "addons/my_mod/user.py"
+    _append(user, HELPER)
+    first = daemon.check()
+    user.write_text(user.read_text().replace('[("name", "=", 1)]', '[("nme", "=", 1)]'))
+    edited = daemon.check()
+    user.write_text(user.read_text().replace('[("nme", "=", 1)]', '[("name", "=", 1)]'))
+    fixed = daemon.check()
+
+    assert [line for line in first if "error" in line] == []
+    assert [line.split("; did")[0] for line in edited if "error" in line] == [
+        'user.py:15: error: Odoo model "x.thing" has no field "nme" in domain'
+    ]
+    assert [line for line in fixed if "error" in line] == []

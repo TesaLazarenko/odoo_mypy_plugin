@@ -76,7 +76,9 @@ Every check has its own error code; a sub-code is also disabled with its parent.
 | `odoo-vals` | the `vals` of `create` / `write` / `copy(default=)`, x2many commands, field assignments |
 | ↳ `odoo-vals-key` | a key that is not a field of the model |
 | ↳ `odoo-vals-type` | a value the field does not take |
-| `odoo-domain` | field paths, operators and selection values of literal domains |
+| `odoo-domain` | the structure, field paths, operators and values of literal domains |
+| ↳ `odoo-domain-model` | a domain of another model than the one that takes it |
+| ↳ `odoo-domain-search` | terms that only Odoo's SQL search rejects or silently ignores |
 | `odoo-xmlid` | an `env.ref(...)` id that no data file of the closure creates |
 | ↳ `odoo-xmlid-depends` | an id that only an addon outside the closure creates |
 
@@ -90,6 +92,8 @@ Typical false positives and what to do about them:
 | `odoo-vals-type` | a value of a dynamic type the plugin cannot narrow | `typing.cast`, or `# type: ignore[odoo-vals-type]` |
 | `odoo-field-ref` | a method or field added by a later addon the declaring addon does not depend on (Odoo would not load it either) | add the dependency |
 | `odoo-domain` | an operator added by a custom `@operator_optimization` (Odoo 19+) | `# type: ignore[odoo-domain]` |
+| `odoo-domain-search` | a field that a custom field class makes searchable | `disable_error_code = ["odoo-domain-search"]` |
+| `odoo-domain-model` | a domain written for one model, run on another through code the plugin does not see | `cast(Annotated[list, "odoo.domain.x"], domain)` |
 | `odoo-xmlid` | an id created by Python code (hooks, `_create_xmlid`) in a closure addon | `raise_if_not_found=False`, or `# type: ignore[odoo-xmlid]` |
 | `odoo-xmlid-depends` | test code that runs only with that addon installed | guard it with `if env.ref("x.y", raise_if_not_found=False):` |
 
@@ -221,33 +225,97 @@ added to it in place (`vals["k"] = v`, `vals.update(...)`, `vals.setdefault(...)
 ## Domains: `odoo-domain`
 
 `odoo-domain` covers the `domain` of `search()`, `search_count()`, `search_read()`,
-`search_fetch()`, `filtered_domain()`, `read_group()`, `_read_group()` and `_search()`,
-and the `domain=` of relational fields (checked against the comodel).
+`search_fetch()`, `filtered_domain()`, `read_group()`, `_read_group()`, `_search()`, the
+domain parameter of `name_search()` / `_name_search()` (Odoo 17) /
+`_read_grouping_sets()` (Odoo 19+), the `domain=` of relational fields (checked against
+the comodel, also as `domain=lambda self: [...]`), what a field's `search=` method
+returns (a domain of its model), and the domains of
+[`odoo.domain.*` annotations](#annotated-domains-odoodomain).
 
 ```text
 error: Odoo model "res.partner" has no field "x_scroe" in domain; did you mean
 "x_score"?  [odoo-domain]
 error: Value "dun" is not in the selection of field "state" ...  [odoo-domain]
+error: Field "total" of Odoo model "sale.order" cannot be searched (not stored, no search
+method): Odoo 18 ignores the condition and the search matches every record
+[odoo-domain-search]
 ```
 
 **Domain forms understood:** a list, `[...] + [...]`, `expression.AND([...])` / `OR`,
-and on Odoo 19+ `Domain([...])`, `Domain(path, operator, value)`, `Domain.AND` / `OR`,
-`&`, `|`, `~`. Also a variable built before the call in the same function
-(`domain = [...]`, `domain += [...]`, `domain.append(term)`, `domain &= Domain(...)`),
-read in source order as for `vals`.
+`a if c else b`, `a or b`, and on Odoo 19+ `Domain([...])`, `Domain(path, operator,
+value)`, `Domain.AND` / `OR`, `&`, `|`, `~`. Also a variable built before the call in
+the same function (`domain = [...]`, `domain += [...]`, `domain.append(term)`,
+`domain &= Domain(...)`), read in source order as for `vals`, and a helper, parameter or
+variable [annotated](#annotated-domains-odoodomain) with its model.
 
-**Each term with a literal path is checked:**
+**Structure**, in every domain of an addon file, whatever its model (also of a mixin):
 
-- its fields, through the comodels (a date field may end with a date part such as
-  `date.year_number`);
-- its operator: the operators of the configured Odoo version (`<>` is gone in 20, `any!`
-  is new in 19); logical operators other than `&`, `|`, `!` are errors;
-- `any` / `not any` sub-domains, against the comodel;
-- a string value of a `Selection` field with literal keys.
+- a term has three items (`Domain term must be (field, operator, value), not 2 items`)
+  and starts with a field name (`(1, "=", 1)` / `(0, "=", 1)` are Odoo's constants);
+- an item is a term or `&` / `|` / `!`: `None`, a dict, a number or a domain where a term
+  should be (`[[...], ...]`, a variable typed `list[tuple[...]]`) is an error;
+- in a whole domain (an argument, a returned value, an item of `AND([...])`, a branch of
+  `a if c else b`), `&` and `|` have two terms after them and `!` one
+  (`Domain operator "|" needs 2 terms, has 1`). A piece joined with `+`
+  (`["|"] + a + b`) is not a whole domain; a variable extended in place with lists is
+  checked as the list it becomes.
+
+**Each term with a literal path is checked** on a concrete model (or the model of an
+annotation):
+
+- its fields, through the comodels;
+- its operator: the operators of the configured Odoo version, case-sensitive except in
+  Odoo 19, which lowers them (`"IN"` is an error in 17, 18 and 20); Odoo's rewrites
+  come first (`<>` to `!=` before 20, `==` to `=` in 19, `=` with a list to `in`);
+- `any` / `not any` sub-domains, against the comodel (`("id", "any", ...)` against the
+  model itself on Odoo 19+);
+- a string value of a `Selection` field with literal keys;
+- the rules below, taken from Odoo's code where it raises or silently does something
+  else, on literal values (and, for records as a value, on the value's type).
+
+Some terms fail only in Odoo's SQL search: `filtered_domain()` runs its own Python code
+in Odoo 17/18 and accepts them. Those rules have the `odoo-domain-search` code and are
+checked only in domains that a search takes (the search methods, `domain=` of fields,
+what a `search=` method returns), not in `filtered_domain()` nor in what an annotated
+helper returns, which may go to either.
+
+| Rule | Versions | Code |
+|---|---|---|
+| a date part after a date field (`date.month_number`): none in 17; the `READ_GROUP_NUMBER_GRANULARITY` names in 18; with `tz` in 19; with `hour`, `day`, `week`, `month`, `quarter`, `year` in 20 | all | `odoo-domain` |
+| a date part with `=?`, `child_of`, `parent_of` | 18 | `odoo-domain` |
+| a `Properties` path: exactly `field.property` (17/18); the operators a property takes | all | `odoo-domain` |
+| a `Binary` / `Image` path may end with `.size` / `.filename` | 20 | (allowed) |
+| `any` / `not any` with a domain on a non-relational field | all | `odoo-domain` |
+| `any` with a domain on `id` | 17, 18 | `odoo-domain-search` |
+| `child_of` / `parent_of` on a non-relational field other than `id` | all | `odoo-domain` |
+| `<`, `>`, `<=`, `>=` on a One2many / Many2many field | all | `odoo-domain-search` |
+| `<`, `>`, `<=`, `>=` with a string on a Many2one field | 17, 18 / 19, 20 | `odoo-domain-search` / `odoo-domain` |
+| `<`, `>`, `<=`, `>=`, or a `like` operator with a value, on a Boolean field | 19, 20 | `odoo-domain` |
+| `=like` / `=ilike` (and `not ...`) with a value that is not a string | 19, 20 | `odoo-domain` |
+| a string that is no number for an Integer / Float field | all | `odoo-domain-search` |
+| `in` / `not in` with a scalar (or a set) on a stored non-relational field or `id` | 17, 18 | `odoo-domain-search` |
+| records as the value of a field other than an x2many (`id` too), with a comparison operator | 17, 18 | `odoo-domain-search` |
+| an integer for a Date / Datetime field (not `=?` with `0`, which Odoo makes a true condition) | 19, 20 | `odoo-domain` |
+| `access` on a field other than a Many2one or `id`, or with a value other than `read`, `write`, `create`, `unlink` | 20 | `odoo-domain` |
+| `any!` / `not any!` in a list term (allowed in `Domain(path, "any!", value)` and in what a `search=` method returns) | 19, 20 | `odoo-domain` |
+| `inselect` / `not inselect` anywhere but in what a `search=` method returns (Odoo reads that as an internal domain) | 17 | `odoo-domain` |
+| a field of the path that cannot be searched: not stored, no `search=` (or `compute_sql=` in 20), not a related field whose path can be searched; `display_name` in 17 | all | `odoo-domain-search` |
+| a stored `Binary` / `Image` kept as an attachment (any stored `Binary` in 20) with anything but an existence check (`=` / `!=` with a falsy value, `in` / `not in` of falsy values) | all | `odoo-domain-search` |
+
+Not checked, on purpose: a Boolean compared with a string (Odoo reads `"True"` /
+`"False"` differently between versions, and `"True"` works everywhere), selection keys
+outside a literal selection, the text of date values (`"2024-13-01"`, Odoo 19's
+`"today +3d"`), `having=` of `_read_group`, and terms whose failure depends on the data
+(`child_of` on a comodel without a parent field).
 
 A string domain (`domain="[('nme', '=', 'x')]"` of a field) is evaluated by the client,
 so only its field paths and operators are checked, and `parent.x` is skipped. Terms
-built from variables, `(1, "=", 1)` and domains of abstract models are not checked.
+built from variables and the terms of domains of abstract models are not checked.
+
+On Odoo 19+, the parameters Odoo annotates `DomainType` (`search(domain=...)`...) take a
+`list` of any items in addon files: a domain built in a variable is inferred as
+`list[tuple[str, str, str]]`, which plain mypy rejects there (`list` is invariant). The
+items are the plugin's checks.
 
 ## XML ids: `odoo-xmlid`
 
@@ -414,6 +482,86 @@ Their keys are not checked again there (mypy checked them where the values were 
 **Records of `odoo.model.x` from different addons** are different classes, as
 `env["x"]` ones are (see [Not yet supported](#not-yet-supported)).
 
+## Annotated domains: `odoo.domain`
+
+A domain that a helper returns or that comes as a parameter has no model mypy could
+see. Annotate it with the model, in the style of `odoo.values` (this annotation is the
+plugin's own: neither "Odoo IDE" nor odoo-ls has one):
+
+| Annotation | Type |
+|---|---|
+| `"odoo.domain.res_partner"` | `list[Any]` (Odoo 17/18), `Domain \| list[Any]` (19+), with a marker of the model |
+| `Annotated[list, "odoo.domain.res_partner"]` (any item type) | `list[Any]` with the marker: for variables that use `.append()` / `+=` |
+| `Annotated[Domain, "odoo.domain.res_partner"]` (Odoo 19+) | `Domain` with the marker: for `&`, `\|`, `~` |
+| `Annotated[DomainType, ...]`, `Annotated[DomainType \| None, ...]` (19+) | their members, `list[...]` as `list[Any]` |
+
+```python
+def _open_domain(self) -> "odoo.domain.sale_order":
+    return [("stte", "=", "draft")]
+    # error: Odoo model "sale.order" has no field "stte" in domain; ...
+
+def _lines(self, domain: "odoo.domain.sale_order_line") -> None: ...
+
+def action(self) -> None:
+    self._lines(self._open_domain())
+    # error: Domain of Odoo model "sale.order" given to parameter "domain" of "_lines",
+    # which takes a domain of Odoo model "sale.order.line"  [odoo-domain-model]
+```
+
+**Where its literals are checked** (against the annotation's model, with the rules that
+hold everywhere): a `return` of a function annotated to return a domain (also
+`-> "odoo.domain.x | None"`, not in nested functions), the value of an annotated
+variable (in a module, a function or an Odoo model class), the changes of an annotated
+variable or parameter (`domain = AND([domain, [...]])`, `domain.append(...)`), and an
+argument of an annotated parameter (of a method, also inherited, or a function). The
+literals of an annotated variable that reach a search through it get the search rules
+too.
+
+**Where its model is checked** (`odoo-domain-model`): a search method on records, a
+returned value, an annotated assignment, an argument of an annotated parameter, an
+`any` sub-domain, `domain=` of a field. A domain of the model itself, of a model its
+registry class inherits (`_inherit` parents and mixins) or of a model it delegates to
+(`_inherits`) fits; a domain of a model that inherits the expected one does not (a
+mixin has none of its fields). A method whose parameter is annotated with a model that
+the receiver's model inherits (a mixin, or a model it extends with `_name` and
+`_inherit`), called on the receiver, takes a domain of the receiver's model: at run time
+`self` is the receiver.
+
+The model of a domain comes from a declaration: a call of an annotated helper, a cast to
+an annotated type, a name or attribute with an annotation. A variable without one (also
+`d = other_domain`: mypy's inferred type is no declaration) has the model of its
+assignments before the line when they all agree (each a call of an annotated helper, a
+cast, an annotated name, or another such variable, of the same model); a parameter without an annotation, a
+global, a conditional value, an assignment in another branch, and one later in a loop
+around the line make it unknown (only its literals are checked then). A statement that
+spans several lines and holds the variable it binds (`domain = [("a", "any", domain)]`
+written over three lines) reads the earlier value.
+
+The model is written with `_` for `.` (`sale_order`) or with dots; an unknown,
+ambiguous or invisible model is reported as for `odoo.values`.
+
+**Not supported:**
+
+| What | Why | Instead |
+|---|---|---|
+| the bare string in a module without a regular top-level class | the rewrite runs from a class's analysis, as for `odoo.values` | `Annotated[list, "odoo.domain.x"]` (its type and the consumers' checks work; a `return` there is not checked) |
+| the bare string in an expression (`cast("odoo.domain.x", d)`), a type alias | an expression becomes a type later; mypy drops `Annotated` metadata in an alias | `cast(Annotated[list, "odoo.domain.x"], d)`, annotate the helper or variable |
+| `Annotated[dict \| Sequence \| ..., "odoo.domain.x"]` | a `Sequence` does not go to `search()` on Odoo 19+ | `list` or `Domain` (another base is a `valid-type` error) |
+| literals in nested positions (`"list[odoo.domain.x]"`, dict values) | only expressions that are a domain are checked | annotate a variable or helper that holds one domain |
+| a literal default of a parameter | rare (a mutable default) | — |
+| a literal in an annotated attribute of a class that is no Odoo model (dataclass...) | the check would hide the value from those classes' plugins | the consumers check it |
+| arguments of `super()._helper(domain)` | mypy calls no plugin hook for `super()` calls | assign the literal to an annotated variable first |
+| domains in action dicts (`{"res_model": ..., "domain": [...]}`) | another mechanism | — |
+
+A `search=` method annotated with `odoo.domain.*` is checked as a search method (the
+search rules, an internal domain) against its annotation's model; one with another
+return annotation is not checked (the check passes no type context, so a precise
+annotation would reject literals).
+`reveal_type(self._domain())` prints the type without the marker (mypy simplifies the
+type of a call), and on Odoo 19+ a variable annotated with the bare string has no
+`.append()` / `&` until narrowed, as with Odoo's `DomainType`: use one of the
+`Annotated` forms there.
+
 ## Code outside any addon
 
 Scripts, and Odoo's own `odoo/*.py` modules (which mypy always analyzes), have no
@@ -439,9 +587,10 @@ With real recordset types, some plain mypy codes appear more often:
   [`odoo.values.*`](#annotated-helpers-odoovalues-and-odoomodel)
   (`self._prepare_vals()`), or assigned in another branch than the last assignment
   before the call (source order stands for the flow).
-- Domains returned by a helper (`self._get_domain()`) or taken as a parameter, and
-  string arguments of `mapped()` / `filtered()` known only at run time (not a literal or
-  a `Final` / `Literal` str).
+- Domains returned by a helper or taken as a parameter without an
+  [`odoo.domain.*` annotation](#annotated-domains-odoodomain), and string arguments of
+  `mapped()` / `filtered()` known only at run time (not a literal or a `Final` /
+  `Literal` str).
 - An unannotated override of a `-> Self` method (`create`, `copy`, `search`, `sudo`...)
   is typed `(self: Self, ...) -> Self` only when each `return` gives its own records by
   syntax (`self`, `super().create(...)`, `records.sudo()`, `a | b`, a variable bound to

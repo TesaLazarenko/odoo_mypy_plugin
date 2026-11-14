@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from test_registry_mro import BASE, _cls, _files
@@ -194,3 +195,61 @@ def test_concrete_models_but_not_mixins_or_unknown(tmp_path: Path) -> None:
     assert registry.concrete("t.order", "t_core") is True
     assert registry.concrete("t.mixin", "t_core") is False
     assert registry.concrete("t.nothing", "t_core") is False
+
+
+ARGUMENTS = _cls(
+    "Doc",
+    "t.doc",
+    body=(
+        '    total = fields.Float(compute="_compute", compute_sql=lambda self, alias: None)\n'
+        "    datas = fields.Binary(attachment=False)\n"
+        "    image = fields.Image()\n"
+        "    flag = fields.Binary(attachment=IMPORTED)\n"
+    ),
+).replace("class Doc", "from .consts import IMPORTED\n\nclass Doc") + _cls(
+    "DocExtension", inherit=["t.doc"], body="    datas = fields.Binary(attachment=True)\n"
+)
+
+
+def test_fields_compute_sql_and_attachment_are_merged(tmp_path: Path) -> None:
+    registry = _build(tmp_path, base=BASE, addons={"t_core": ([], _files(ARGUMENTS))})
+
+    fields = registry.fields("t.doc", "t_core")
+
+    assert fields["total"].compute_sql is True
+    assert fields["datas"].attachment is True  # the later definition wins
+    assert fields["image"].attachment is None  # Odoo's default: True
+    assert "attachment" in fields["flag"].dynamic
+
+
+RELATED = _cls(
+    "Holder",
+    "t.holder",
+    body=(
+        '    child_id = fields.Many2one("t.child")\n'
+        '    grand_ref_id = fields.Many2one(related="child_id.grand_id")\n'
+        '    name = fields.Char(related="child_id.label")\n'
+    ),
+)
+
+
+def test_field_sources_are_the_model_its_delegates_and_related_comodels(tmp_path: Path) -> None:
+    registry = _build(tmp_path, base=BASE, addons={"t_core": ([], _files(DELEGATION + RELATED))})
+
+    assert registry.field_sources("t.child", "t_core") == ("t.child", "t.parent", "t.grand")
+    # grand_ref_id takes its comodel from the path: t.child (and its delegate t.parent)
+    assert set(registry.field_sources("t.holder", "t_core")) == {
+        "t.holder",
+        "t.child",
+        "t.parent",
+        "t.grand",
+    }
+    assert registry.field_sources("t.grand", "t_core") == ("t.grand",)
+
+
+def test_service_fields_of_odoo_17_have_no_display_name_search(tmp_path: Path) -> None:
+    registry = _build(tmp_path, base=BASE, addons={"t_core": ([], _files(DELEGATION))})
+    registry_17 = Registry(replace(registry._settings, odoo_version=17))
+
+    assert registry.fields("t.grand", "t_core")["display_name"].search == "_search_display_name"
+    assert registry_17.fields("t.grand", "t_core")["display_name"].search is None

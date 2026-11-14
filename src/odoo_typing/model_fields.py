@@ -28,6 +28,7 @@ from odoo_typing.scanner import Contribution, FieldInfo
 __all__ = [
     "LOG_ACCESS_FIELDS",
     "MAGIC_FIELDS",
+    "MAGIC_FIELDS_17",
     "chain_definitions",
     "delegated_field",
     "delegation_fields",
@@ -53,13 +54,20 @@ OVERRIDABLE: Final = (
     "required",
     "store",
     "delegate",
+    "compute_sql",
+    "attachment",
 )
-# Added by MetaModel to every class that defines a model.
+# Added by MetaModel to every class that defines a model (Odoo 18+: ``display_name``
+# has a search method; in Odoo 17 it has none, see :func:`service_definitions`).
 MAGIC_FIELDS: Final = (
     FieldInfo("id", "Id"),
     FieldInfo(
         "display_name", "Char", compute="_compute_display_name", search="_search_display_name"
     ),
+)
+MAGIC_FIELDS_17: Final = (
+    MAGIC_FIELDS[0],
+    FieldInfo("display_name", "Char", compute="_compute_display_name"),
 )
 # Added with them unless ``_log_access`` is off.
 LOG_ACCESS_FIELDS: Final = (
@@ -179,6 +187,8 @@ def _override(merged: FieldInfo | None, definition: FieldInfo) -> FieldInfo:
         required=take(merged.required, definition.required, "required"),
         store=take(merged.store, definition.store, "store"),
         delegate=take(merged.delegate, definition.delegate, "delegate"),
+        compute_sql=take(merged.compute_sql, definition.compute_sql, "compute_sql"),
+        attachment=take(merged.attachment, definition.attachment, "attachment"),
         dynamic=frozenset(dynamic - {"selection_add"}),
     )
 
@@ -196,6 +206,8 @@ def _arguments(info: FieldInfo) -> dict[str, str | bool | None]:
         "required": info.required,
         "store": info.store,
         "delegate": info.delegate,
+        "compute_sql": info.compute_sql,
+        "attachment": info.attachment,
     }
 
 
@@ -238,9 +250,9 @@ def delegated_field(info: FieldInfo, delegate_field: str) -> FieldInfo:
     )
 
 
-def service_definitions(log_access: bool) -> Iterable[FieldInfo]:
-    """The fields Odoo adds to a model besides those its classes declare."""
-    yield from MAGIC_FIELDS
+def service_definitions(log_access: bool, version: int | None = None) -> Iterable[FieldInfo]:
+    """The fields Odoo adds to a model besides those its classes declare (in an Odoo version)."""
+    yield from MAGIC_FIELDS_17 if version == 17 else MAGIC_FIELDS
     if log_access:
         yield from LOG_ACCESS_FIELDS
 

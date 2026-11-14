@@ -215,3 +215,20 @@ def test_scan_abstract_from_base_class_or_attribute(tmp_path: Path) -> None:
     kinds = [_get(registry, f"t_core.m.{name}").abstract for name in ("Mixin", "Wizard")]
     others = [_get(registry, f"t_core.m.{name}").abstract for name in ("Explicit", "Custom")]
     assert (kinds, others) == ([True, False], [False, None])
+
+
+def test_scan_fields_compute_sql_is_passed_and_attachment_is_a_flag(tmp_path: Path) -> None:
+    source = (
+        "from odoo import fields, models\n\nclass Doc(models.Model):\n"
+        '    _name = "t.doc"\n'
+        '    total = fields.Float(compute="_c", compute_sql=lambda self, alias: None)\n'
+        "    datas = fields.Binary(attachment=False)\n"
+        "    plain = fields.Char()\n"
+    )
+    registry = _build(tmp_path, base=BASE, addons={"t_core": ([], _files(source))})
+    doc = _get(registry, "t_core.m.Doc")
+
+    assert _field(doc, "total").compute_sql is True
+    assert _field(doc, "total").dynamic == frozenset()  # passed, its value does not matter
+    assert _field(doc, "datas").attachment is False
+    assert _field(doc, "plain") == FieldInfo("plain", "Char")

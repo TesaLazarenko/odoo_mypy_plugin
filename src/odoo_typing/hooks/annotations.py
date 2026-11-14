@@ -1,13 +1,21 @@
-"""Types for ``odoo.values.*`` and ``odoo.model.*`` annotations (type-analysis hooks).
+"""Types for ``odoo.values.*``, ``odoo.model.*`` and ``odoo.domain.*`` annotations.
 
-See :mod:`odoo_typing.annotations` for the forms and how bare strings reach mypy. The
-types are made during semantic analysis, in the view of the annotating file's addon:
+Type-analysis hooks. See :mod:`odoo_typing.annotations` for the forms and how bare
+strings reach mypy. The types are made during semantic analysis, in the view of the
+annotating file's addon:
 
 * ``odoo.values.<model>``: a named ``TypedDict`` of the model's values
   (:func:`odoo_typing.classes.create_values_class`), whose keys are the fields any addon
   gives the model (:meth:`odoo_typing.registry.Registry.values_fields`);
 * ``odoo.model.<model>``: the model's records, as ``env["<model>"]`` gives them
-  (:meth:`odoo_typing.hooks.models.Models.view_type_in`).
+  (:meth:`odoo_typing.hooks.models.Models.view_type_in`);
+* ``odoo.domain.<model>``: the types a domain has (``list[Any]``, and ``Domain`` in Odoo
+  19+, as Odoo's ``DomainType`` but with ``list[Any]``, so that a variable holding a list
+  passes) in a union with a marker of the model
+  (:func:`odoo_typing.classes.create_domain_class`): the checks read the model from the
+  declaration (:mod:`odoo_typing.domain_parts`). ``Annotated[list[...], ...]`` is
+  ``list[Any]`` too: the wrapper of checked expressions passes no type context, so a
+  precise item type would reject literals it accepts without the plugin.
 
 An alias that names no model of the view is reported where it is written, as
 ``env[...]`` reports an unknown name. Files outside any addon keep plain mypy's view:
@@ -30,10 +38,13 @@ from mypy.types import (
     CallableType,
     FunctionLike,
     Instance,
+    NoneType,
     Type,
     TypedDictType,
     TypeOfAny,
     UnboundType,
+    UnionType,
+    flatten_nested_unions,
     get_proper_type,
 )
 
@@ -42,7 +53,7 @@ from mypy.types import (
 from mypy.semanal import SemanticAnalyzer
 
 from odoo_typing.annotations import TRIGGER, ItemTypes, annotation_alias, trigger_alias
-from odoo_typing.classes import create_values_class, values_class_model
+from odoo_typing.classes import create_domain_class, create_values_class, values_class_model
 from odoo_typing.hooks.models import (
     ODOO_MODEL,
     ODOO_MODEL_DEPENDS,
@@ -52,7 +63,7 @@ from odoo_typing.hooks.models import (
 )
 from odoo_typing.records import digest
 from odoo_typing.registry.annotations import normalized_alias
-from odoo_typing.scanner import VALUES
+from odoo_typing.scanner import DOMAIN, VALUES
 
 __all__ = ["DICT_GET", "AnnotationHooks", "values_get", "values_get_signature"]
 
@@ -67,18 +78,24 @@ DICT_CLASSES = frozenset(
 
 
 class AnnotationHooks(Hooks):
-    """Turn ``odoo.values.*`` / ``odoo.model.*`` annotations into types."""
+    """Turn ``odoo.values.*`` / ``odoo.model.*`` / ``odoo.domain.*`` annotations into types."""
 
     def annotated(self, fullname: str, ctx: AnalyzeTypeContext) -> Type:
-        """``Annotated[...]``: the values of a model if its metadata names them, else mypy's."""
-        alias = _values_alias(ctx.type)
+        """``Annotated[...]``: the values or a domain of a model if its metadata names them.
+
+        Otherwise what mypy makes of ``Annotated[...]``.
+        """
+        found = _annotated_alias(ctx.type)
         analyzer = _type_analyzer(ctx)
-        if alias is None or analyzer is None or self._place(ctx) is None:
+        if found is None or analyzer is None or self._place(ctx) is None:
             default = (
                 analyzer.try_analyze_special_unbound_type(ctx.type, fullname) if analyzer else None
             )
             return default if default is not None else AnyType(TypeOfAny.from_error)
+        kind, alias = found
         base = ctx.api.analyze_type(ctx.type.args[0])
+        if kind == DOMAIN:
+            return self._annotated_domain(alias, base, ctx)
         if not _is_dict(base):
             ctx.api.fail(
                 f'"odoo.values.{alias}" needs a dict type in Annotated[...]',
@@ -99,6 +116,8 @@ class AnnotationHooks(Hooks):
             )
             return AnyType(TypeOfAny.from_error)
         kind, alias = found
+        if kind == DOMAIN:
+            return self._domain(alias, None, ctx)
         return self._values(alias, ctx) if kind == VALUES else self._records(alias, ctx)
 
     # -- types -------------------------------------------------------------------------------
@@ -142,6 +161,64 @@ class AnnotationHooks(Hooks):
                 analyzer.defer()  # a class of the model is not analyzed yet
             return AnyType(TypeOfAny.special_form)
         return found if found is not None else AnyType(TypeOfAny.special_form)
+
+    def _annotated_domain(self, alias: str, base: Type, ctx: AnalyzeTypeContext) -> Type:
+        """``Annotated[list | Domain | DomainType, "odoo.domain.x"]``; reported for another base."""
+        if _domain_base(base, self._profile.domain_class) is None:
+            needs = "a list or Domain type" if self._profile.domain_class else "a list type"
+            ctx.api.fail(
+                f'"odoo.domain.{alias}" needs {needs} in Annotated[...]',
+                ctx.context,
+                code=VALID_TYPE,
+            )
+            return base
+        return self._domain(alias, base, ctx)
+
+    def _domain(self, alias: str, base: Type | None, ctx: AnalyzeTypeContext) -> Type:
+        """A domain of a model: its types (``base``, else a bare string's) and the marker.
+
+        A bare string is ``list[Any] | M`` (Odoo 17/18), ``Domain | list[Any] | M`` (19+);
+        ``Annotated`` keeps its base's members, with ``list[...]`` as ``list[Any]``. An
+        alias that names no model gives the types without the marker.
+        """
+        place = self._place(ctx)
+        api = ctx.api
+        any_type = AnyType(TypeOfAny.special_form)
+        any_list = api.named_type("builtins.list", [any_type])
+        domain_class = self._profile.domain_class
+        domain: Instance | None = None
+        if place is not None and domain_class is not None:
+            analyzer = place[0]
+            node = analyzer.lookup_fully_qualified_or_none(domain_class)
+            if node is not None and isinstance(node.node, TypeInfo):
+                domain = Instance(node.node, [])
+            elif not analyzer.final_iteration:
+                analyzer.defer()  # odoo.orm.domains is not analyzed yet
+                return any_type
+        if base is not None:
+            members = _domain_base(base, domain_class)
+            if members is None or isinstance(get_proper_type(base), AnyType):
+                return base
+            types = [any_list if _is_list(member) else member for member in members]
+        else:
+            types = [any_list] if domain is None else [domain, any_list]
+        model = self._model(alias, ctx) if place is not None else None
+        if place is not None and model is not None:
+            analyzer, tree, addon_name = place
+            self._depend_on_model(analyzer, model, addon_name)
+            bases = [any_list] if domain is None else [any_list, domain]
+            types.append(create_domain_class(tree, model, bases))
+        return UnionType.make_union(_unique(types))
+
+    def _depend_on_model(self, analyzer: SemanticAnalyzer, model: str, addon_name: str) -> None:
+        """Make the daemon analyze a domain annotation again when its model may go away.
+
+        The type has no fields in it: only the classes of the model's view (a class that
+        disappears, or a renamed model, changes how the alias resolves).
+        """
+        view = self.registry.view_class(model, addon_name)
+        for item in sorted(view.chain if view is not None else (), key=lambda c: c.fullname):
+            analyzer.add_plugin_dependency(make_trigger(item.fullname))
 
     # -- model names -------------------------------------------------------------------------
 
@@ -212,8 +289,8 @@ class AnnotationHooks(Hooks):
             analyzer.add_plugin_dependency(make_wildcard_trigger(module))
 
 
-def _values_alias(typ: UnboundType) -> str | None:
-    """The alias of the first ``odoo.values.*`` string in ``Annotated[...]`` metadata.
+def _annotated_alias(typ: UnboundType) -> tuple[str, str] | None:
+    """The kind and alias of the first ``odoo.values.*`` / ``odoo.domain.*`` string in metadata.
 
     The metadata of an annotation that the plugin rewrote is rewritten too (it is
     parsed as a type): ``__build_class__["values", "x"]``.
@@ -222,15 +299,56 @@ def _values_alias(typ: UnboundType) -> str | None:
         if isinstance(meta, UnboundType):
             rewritten = meta.name == TRIGGER
             found = trigger_alias(meta) if rewritten else annotation_alias(meta.name)
-            if found is not None and found[0] == VALUES:
-                return found[1]
+            if found is not None and found[0] in {VALUES, DOMAIN}:
+                return found
     return None
 
 
 def _kind(typ: UnboundType) -> str:
-    """``values`` or ``model``: what an annotation being analyzed stands for."""
+    """``values``, ``model`` or ``domain``: what an annotation being analyzed stands for."""
     found = trigger_alias(typ)
+    if found is None:
+        found = _annotated_alias(typ)
     return found[0] if found is not None else VALUES
+
+
+def _domain_base(base: Type, domain_class: str | None) -> list[Type] | None:
+    """The members of an ``Annotated`` base a domain may have, ``None`` for another base.
+
+    ``list[...]``, ``Domain`` (Odoo 19+), ``Any``, or a union of ``list[...]``, ``Domain``
+    and ``None`` (Odoo's ``DomainType``, ``DomainType | None``).
+    """
+    proper = get_proper_type(base)
+    if isinstance(proper, AnyType):
+        return [proper]
+    members = (
+        [get_proper_type(item) for item in flatten_nested_unions(proper.items)]
+        if isinstance(proper, UnionType)
+        else [proper]
+    )
+    for member in members:
+        if isinstance(member, NoneType) and isinstance(proper, UnionType):
+            continue
+        if _is_list(member):
+            continue
+        if isinstance(member, Instance) and member.type.fullname == domain_class:
+            continue
+        return None
+    return list(members)
+
+
+def _is_list(typ: Type) -> bool:
+    proper = get_proper_type(typ)
+    return isinstance(proper, Instance) and proper.type.fullname == "builtins.list"
+
+
+def _unique(types: list[Type]) -> list[Type]:
+    """The types without repeats (``list[Any]`` twice from ``list[str] | list[int]``)."""
+    found: list[Type] = []
+    for item in types:
+        if not any(item == other for other in found):
+            found.append(item)
+    return found
 
 
 def _is_dict(typ: Type) -> bool:

@@ -39,10 +39,26 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   / `grouped` (literals and `Final` / `Literal` strings), fields of `read()`.
 - A field guarded by `"f" in self._fields`, `_fields.get("f")` or `hasattr(x, "f")` is
   not reported as unknown in vals, domains and record paths under the guard.
-- `odoo-domain`: field paths, operators (per Odoo version) and selection values of
-  literal domains, also `[...] + [...]`, `expression.AND/OR` and a variable built in the
-  function; `domain=` of relational fields; `Domain(...)`, `Domain.AND/OR`, `&`, `|`,
-  `~` on Odoo 19+.
+- `odoo-domain`: field paths, operators (per Odoo version, case-sensitive except in
+  Odoo 19) and selection values of literal domains, also `[...] + [...]`,
+  `expression.AND/OR`, `a if c else b`, `a or b` and a variable built in the function;
+  `domain=` of relational fields (also `domain=lambda self: [...]`), the domain of
+  `name_search()`, what a field's `search=` method returns; `Domain(...)`,
+  `Domain.AND/OR`, `&`, `|`, `~` on Odoo 19+. The structure of every domain of an addon
+  file (three-item terms starting with a field name, `&` / `|` / `!` with their terms,
+  no `None` / dict / nested domain as an item), and the rules of each Odoo version
+  where it raises or silently does something else: date parts, `Properties` and
+  `Binary` paths, `any` / `child_of` on non-relational fields, inequalities on
+  relational and Boolean fields, `=like` patterns, numbers, scalars for `in`, records as
+  values, dates, `access`, `any!`.
+- `odoo-domain-search`: terms that only Odoo's SQL search rejects or ignores, checked
+  only in domains a search takes: fields that cannot be searched (Odoo 17/18 silently
+  match every record), existence checks of `Binary` attachments, and the version rules
+  that `filtered_domain()` accepts.
+- `odoo-domain-model`: a domain of another model than the one that takes it (parents,
+  mixins and delegated models fit).
+- On Odoo 19+, a domain built in a variable goes to `search()` (and every parameter
+  Odoo annotates `DomainType`) without a false `arg-type`.
 - `odoo-xmlid` / `odoo-xmlid-depends`: XML ids of `env.ref(...)`.
 
 ### Annotated helpers
@@ -61,6 +77,21 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   x2many commands report values of an unrelated model (`odoo-vals-type`; parents' and
   `_inherits` models' values fit); unknown, ambiguous or out-of-`depends` model names
   are `odoo-model` / `odoo-model-depends`.
+- `"odoo.domain.<model>"` / `Annotated[list | Domain | DomainType, "odoo.domain.<model>"]`
+  (the plugin's own) is a domain of the model: its literals are checked in a `return`,
+  an annotated variable or parameter and the changes of either, its model wherever it
+  goes (search methods, annotated parameters, also of inherited methods and of a
+  mixin's method called on a model that inherits it, `any`, `domain=`, returns,
+  assignments); a variable without an annotation has the model its assignments agree
+  on.
+
+### Daemon
+
+- Checks of domains, `vals` and field paths follow edits of the fields they read in
+  other modules (a rename, `store=`, `search=`, a delegated model's field), from the
+  daemon's start or its fine-grained cache.
+- Checks of a domain or `vals` built in a variable no longer disappear after an edit of
+  the same file.
 
 ### Performance
 

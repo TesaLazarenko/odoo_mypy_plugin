@@ -16,9 +16,59 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 
-__all__ = ["SUPPORTED_VERSIONS", "OdooProfile", "profile_for"]
+__all__ = ["SUPPORTED_VERSIONS", "DomainRules", "OdooProfile", "profile_for"]
 
 SUPPORTED_VERSIONS = (17, 18, 19, 20)
+
+
+@dataclass(frozen=True, slots=True)
+class DomainRules:
+    """What Odoo accepts in a domain term, where versions differ (:mod:`odoo_typing.domains`).
+
+    Attributes:
+        date_parts: Names that may follow a date field as the last step of a path
+            (``date.year_number``); none in Odoo 17.
+        lower_case_operators: Whether an operator in upper case is taken in lower case
+            (Odoo 19, with a warning); elsewhere it is an unknown operator.
+        renamed_operators: Operators each version rewrites first (``<>`` to ``!=``).
+        properties_operators: The operators a ``Properties`` path takes.
+        properties_one_step: Whether a ``Properties`` path is exactly ``field.property``
+            (Odoo 17/18: a longer one is a wrong path).
+        binary_sub_paths: Names that may follow a ``Binary`` field (Odoo 20: ``size``,
+            ``filename``).
+        searchable_compute_sql: Whether a field with ``compute_sql=`` is searchable (20).
+        binary_check_all: Whether every ``Binary`` field takes only existence checks
+            (Odoo 20); before, only those stored as attachments.
+        strict_in: Whether ``in`` / ``not in`` with a scalar is an invalid term (17/18).
+        record_values: Whether records as a value are an error (17/18 assert it).
+        internal_any: Whether ``any!`` / ``not any!`` are rejected in a list term (19+).
+        python_filter: Whether ``filtered_domain`` runs Python code of its own (17/18)
+            rather than the optimized domain (19+): some terms then fail only in SQL.
+        unsearchable_raises: Whether a term on an unsearchable field raises (19+) rather
+            than matching every record (17/18).
+        access_operator: Whether ``access`` is an operator (Odoo 20).
+        date_part_operators: Operators a date part cannot take (Odoo 18 builds its SQL
+            from ``SQL_OPERATORS``, which has no ``=?``, ``child_of``, ``parent_of``).
+        internal_operators: Operators only an internal domain takes (Odoo 17's
+            ``inselect``): what a field's search method returns.
+    """
+
+    date_parts: frozenset[str]
+    lower_case_operators: bool
+    renamed_operators: Mapping[str, str]
+    properties_operators: frozenset[str]
+    properties_one_step: bool
+    binary_sub_paths: frozenset[str]
+    searchable_compute_sql: bool
+    binary_check_all: bool
+    strict_in: bool
+    record_values: bool
+    internal_any: bool
+    python_filter: bool
+    unsearchable_raises: bool
+    access_operator: bool
+    date_part_operators: frozenset[str] = frozenset()
+    internal_operators: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +103,7 @@ class OdooProfile:
             each with its short name: their arguments name fields of the model.
         domain_operators: The operators of a domain term (``"="``, ``"child_of"``...).
         domain_class: Full name of the ``Domain`` class (Odoo 19+), ``None`` before.
+        domain_rules: What a domain term accepts in this version (:class:`DomainRules`).
         sorted_order: Whether ``sorted("...")`` takes an order (``"name desc, id"``,
             Odoo 19+) rather than one field name.
         request_var: Full name of ``odoo.http.request`` when Odoo leaves it untyped
@@ -83,6 +134,7 @@ class OdooProfile:
     field_decorators: Mapping[str, str]
     domain_operators: frozenset[str]
     domain_class: str | None
+    domain_rules: DomainRules
     sorted_order: bool
     request_var: str | None
     request_class: str
@@ -118,6 +170,74 @@ _STANDARD_OPERATORS_19 = frozenset(
 )
 _OPERATORS_19 = _STANDARD_OPERATORS_19 | {"<>", "=", "!=", "==", "=?", "parent_of", "child_of"}
 _OPERATORS_20 = _STANDARD_OPERATORS_19 | {"=", "!=", "=?", "access", "parent_of", "child_of"}
+
+
+# READ_GROUP_NUMBER_GRANULARITY (Odoo 18-20): what may follow a date field in a path.
+_DATE_PARTS_18 = frozenset(
+    {"year_number", "quarter_number", "month_number", "iso_week_number", "day_of_year"}
+    | {"day_of_month", "day_of_week", "hour_number", "minute_number", "second_number"}
+)
+# odoo/orm/utils.py: SQL_OPERATORS (Odoo 19/20), the operators of a property path with "=?".
+_SQL_OPERATORS_19 = frozenset(
+    {"=", "!=", "in", "not in", "<", ">", "<=", ">=", "like", "ilike", "=like", "=ilike"}
+    | {"not like", "not ilike", "not =like", "not =ilike"}
+)
+DOMAIN_RULES_18 = DomainRules(
+    date_parts=_DATE_PARTS_18,
+    lower_case_operators=False,
+    renamed_operators=MappingProxyType({"<>": "!="}),
+    # expression.py, _expression_parse: the operators of a property condition.
+    properties_operators=frozenset(
+        {"=", "!=", ">", ">=", "<", "<=", "in", "not in", "like", "ilike", "not like"}
+        | {"not ilike"}
+    ),
+    properties_one_step=True,
+    binary_sub_paths=frozenset(),
+    searchable_compute_sql=False,
+    binary_check_all=False,
+    strict_in=True,
+    record_values=True,
+    internal_any=False,
+    python_filter=True,
+    unsearchable_raises=False,
+    access_operator=False,
+    date_part_operators=frozenset({"=?", "child_of", "parent_of"}),
+)
+# expression.py, is_leaf(internal=True): a search method's result may use "inselect".
+DOMAIN_RULES_17 = replace(
+    DOMAIN_RULES_18,
+    date_parts=frozenset(),
+    date_part_operators=frozenset(),
+    internal_operators=frozenset({"inselect", "not inselect"}),
+)
+DOMAIN_RULES_19 = DomainRules(
+    date_parts=_DATE_PARTS_18 | {"tz"},
+    lower_case_operators=True,
+    renamed_operators=MappingProxyType({"<>": "!=", "==": "="}),
+    properties_operators=_SQL_OPERATORS_19 | {"=?"},
+    properties_one_step=False,
+    binary_sub_paths=frozenset(),
+    searchable_compute_sql=False,
+    binary_check_all=False,
+    strict_in=False,
+    record_values=False,
+    internal_any=True,
+    python_filter=False,
+    unsearchable_raises=True,
+    access_operator=False,
+)
+# READ_GROUP_TIME_GRANULARITY joins the date parts; Binary has sub-paths and checks only
+# existence; compute_sql makes a field searchable; no operator is rewritten.
+DOMAIN_RULES_20 = replace(
+    DOMAIN_RULES_19,
+    date_parts=DOMAIN_RULES_19.date_parts | {"hour", "day", "week", "month", "quarter", "year"},
+    lower_case_operators=False,
+    renamed_operators=MappingProxyType({}),
+    binary_sub_paths=frozenset({"size", "filename"}),
+    searchable_compute_sql=True,
+    binary_check_all=True,
+    access_operator=True,
+)
 
 
 def _env_records(environment: str) -> Mapping[str, str]:
@@ -163,6 +283,7 @@ ODOO_18 = OdooProfile(
     field_decorators=_field_decorators("odoo.api"),
     domain_operators=_OPERATORS_18,
     domain_class=None,
+    domain_rules=DOMAIN_RULES_18,
     sorted_order=False,
     request_var="odoo.http.request",
     request_class="odoo.http.Request",
@@ -182,6 +303,7 @@ ODOO_17 = replace(
         | {"odoo.api.depends", "odoo.api.constrains"}
     ),
     identity_template=None,
+    domain_rules=DOMAIN_RULES_17,
     untyped_fields=True,
 )
 
@@ -223,6 +345,7 @@ ODOO_19 = OdooProfile(
     field_decorators=_field_decorators("odoo.orm.decorators"),
     domain_operators=_OPERATORS_19,
     domain_class="odoo.orm.domains.Domain",
+    domain_rules=DOMAIN_RULES_19,
     sorted_order=True,
     request_var="odoo.http.request",
     request_class="odoo.http.Request",
@@ -237,6 +360,7 @@ ODOO_20 = replace(
     version=20,
     min_python=(3, 12),
     domain_operators=_OPERATORS_20,
+    domain_rules=DOMAIN_RULES_20,
     request_var=None,
     request_class="odoo.http.requestlib.Request",
 )

@@ -249,3 +249,50 @@ def test_cache_addon_outside_closure_added_turns_unknown_into_depends(run_mypy: 
         ' the dependencies of "my_mod"  [odoo-model-depends]',
         '8: note: Revealed type is "Any"',
     ]
+
+
+COMPUTED = """
+from odoo import fields, models
+
+class Thing(models.Model):
+    _name = "x.thing"
+
+    total = fields.Float(compute="_compute_total")
+
+    def _compute_total(self) -> None:
+        pass
+"""
+
+SEARCHES = """
+from odoo import models
+
+class User(models.Model):
+    _name = "x.user"
+
+    def action(self) -> None:
+        self.env["x.thing"].search([("total", "=", 1)])
+        self.env["x.own"].search([("total", "=", 1)])
+"""
+
+
+def test_cache_field_argument_edited_in_another_module_rechecks_its_users(
+    run_mypy: RunMypy,
+) -> None:
+    # A field's type does not change with ``store=``; the addons' fingerprints tell mypy
+    # (outside the daemon, which uses the fields digest of hooks.model_classes).
+    def addons(arguments: str) -> dict[str, dict[str, object]]:
+        thing = COMPUTED.replace('compute="_compute_total"', arguments)
+        own = thing.replace("x.thing", "x.own")
+        return {
+            "dep_mod": {"models.py": thing},
+            "my_mod": {"depends": ["dep_mod"], "own.py": own, "user.py": SEARCHES},
+        }
+
+    first = run_mypy(addons('compute="_compute_total"'))
+    second = run_mypy(addons('compute="_compute_total", store=True'))
+
+    assert [line.split(" cannot be searched")[0] for line in first.messages("user.py")] == [
+        '8: error: Field "total" of Odoo model "x.thing"',
+        '9: error: Field "total" of Odoo model "x.own"',
+    ]
+    assert second.messages("user.py") == []

@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from functools import partial
 
 from mypy.nodes import CallExpr, StrExpr, TypeInfo
 from mypy.plugin import CheckerPluginInterface, FunctionContext
@@ -104,7 +103,7 @@ class FieldDefinitionHooks(Hooks):
         addon_name: str,
         api: CheckerPluginInterface,
     ) -> None:
-        fields_of = partial(self.registry.fields, addon_name=addon_name)
+        fields_of = self._fields_of(addon_name, api)
         result = resolve_path(path.value, model, fields_of, f'related="{path.value}"')
         if result.problem is not None:
             api.fail(result.problem, path, code=ODOO_FIELD_REF)
@@ -136,7 +135,7 @@ class FieldDefinitionHooks(Hooks):
         owner = self._field_owner(ctx)
         if owner is not None and self.registry.concrete(owner[0], owner[1]):
             model, addon_name, _ = owner
-            fields_of = partial(self.registry.fields, addon_name=addon_name)
+            fields_of = self._fields_of(addon_name, ctx.api)
             for argument in [item for arguments in ctx.args for item in arguments]:
                 if not isinstance(argument, StrExpr):
                     continue  # a lambda, ``*names``
@@ -185,7 +184,7 @@ class FieldDefinitionHooks(Hooks):
         path = dict(field_arguments(call, "")).get("related")
         if not isinstance(path, StrExpr):
             return None
-        fields_of = partial(self.registry.fields, addon_name=addon_name)
+        fields_of = self._fields_of(addon_name, ctx.api)
         target = resolve_path(path.value, model, fields_of, "").field
         if target is None or "comodel" in target.dynamic:
             return None

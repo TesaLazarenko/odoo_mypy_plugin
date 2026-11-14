@@ -176,6 +176,49 @@ their types:
   in the annotations the daemon analyzes after that (the others keep the earlier keys,
   so `super()` between them can be an error) until `dmypy restart`.
 
+## Domains: `odoo.domain` and the checked expressions
+
+How [annotated domains](checks.md#annotated-domains-odoodomain) are typed and checked:
+
+- **The type.** `odoo.domain.<model>` is the types a domain has (`list[Any]`, and
+  `Domain` on Odoo 19+, like Odoo's `DomainType` but with `list[Any]`, so that a
+  variable holding a list passes) in a union with a marker: a class without members,
+  `<domain of res_partner>`, created in the module that uses the annotation (as the
+  `TypedDict` of `odoo.values`), a subclass of `list[Any]` (and of `Domain`) whose
+  metadata names the model. Literals and `Domain(...)` fit the union; the marker stays
+  in the declared types (a function's return type, a variable's, a parameter's) and in
+  the cache. mypy simplifies the type of a call, which drops the marker, so the model
+  is always read from the declaration: the callee's declared return type, the variable
+  of a name, the type of a `cast`. Its name has no digest: nothing in it can change.
+- **Where literals are checked.** mypy has no hook on a `return` or an assignment. The
+  pass that rewrites bare strings (see above) also wraps the expressions that are
+  domains: `return E` of a function annotated with a domain, the value of an annotated
+  assignment, and `return E` of a field's `search=` method (of a concrete model, in the
+  class's addon view) become `__build_class__(E, "<kind>", "<alias>")`. Python itself
+  calls `builtins.__build_class__` for every class statement; no code calls it, so the
+  plugin owns its hooks: a signature hook makes the call `def [T] (T, str, str) -> T`
+  (mypy types the statement as before; the expression keeps its lines and columns), a
+  function hook checks `E`. The wrapped places only have types whose members are
+  `list[Any]`, `Domain`, the marker, `None` or `Any`, for which the identity is
+  transparent (it passes no type context). The name is bound to the builtin by hand:
+  the statements of a module above its first class are analyzed before the rewrite.
+  Annotated class attributes are wrapped only in Odoo model classes (a dataclass's
+  plugin reads the value of a field). Whether an annotated variable is a whole domain
+  where it is assigned (no later `+=`, `append`, `extend`, `insert` in its scope, nor a
+  rebinding that uses it as a piece of a list: `x = x + [...]`, `x = [*x, ...]`; one that
+  uses it as a whole domain, `x = AND([x, ...])`, keeps it whole) is decided by the same
+  pass, by name: some statements of the module are analyzed already, others
+  not, so the function walk of the checks (which keys variables by their symbol) could
+  not tell one variable apart there.
+- **The parts of a domain.** A consumer (a search method, the wrapper, an annotated
+  parameter, an `any` term, `domain=`) walks the expression into literal lists and
+  typed parts (`odoo_typing.domain_parts`): the literals are checked term by term, a
+  typed part only for its model. A method's hook is named after the receiver's class
+  (`addon.SaleOrder._helper`), so the declaration of an annotated parameter is found
+  in that class's MRO, once per name.
+- **Odoo 19+.** The parameters Odoo annotates `DomainType` get a signature with
+  `list[Any]` for the list member in addon files, found the same way.
+
 ## Incremental mode
 
 mypy's cache only knows a module's own source and imports, but the plugin's result for a
@@ -238,3 +281,38 @@ The daemon only rechecks the code that changed (and its dependents), so the new
 registry or settings show in what is checked again. After editing only a manifest or
 the `[tool.odoo_typing]` / `[odoo_typing]` settings, run `dmypy restart` to see their
 effect everywhere.
+
+**Checks that read fields of other modules.** A check of a domain, of `vals` or of a
+field path reads the fields of models that other modules define. The daemon reruns a
+target (a function, or a module's top level) only for its dependencies, so each check
+makes the target depend on the classes of the view of every model it read (the model,
+the models it delegates to, the comodels its `related=` paths go through): `<C>` fires
+when a class goes away, `<C[wildcard]>` when one of its members changes. A field's type
+does not change with its arguments (`store=`, `search=`, `related=`...), so every module
+with model classes also gets a hidden attribute `__odoo_fields` whose type is a
+`Literal` digest of its classes' field definitions (and of what the registry reads of
+them: `_name`, `_inherit`, `_inherits`...): changing an argument fires
+`<module.__odoo_fields>`. (A module attribute: mypy would make every class that inherits
+a class member depend on it.) These triggers lead to one trigger per checked module and
+model view, on which the module's targets depend; mypy follows a trigger to the triggers
+that depend on it, so a target adds one dependency per model, not one per class. The
+dependencies and the digest exist only in fine-grained mode (the daemon,
+`--cache-fine-grained`; a full run checks again what such an edit changes through the
+addons' fingerprints), and no dependencies are written for modules whose errors mypy does
+not show (`follow_imports = "silent"`, such as Odoo's own addons). On `sale` (Odoo 18) the fine-grained cache grows by 2 % and the
+daemon's peak memory by 2 %.
+
+Their limits: mypy reads these dependencies when it processes a whole module (the first
+build, the fine-grained cache, a file parsed again), not when it rechecks one target
+for a trigger. A model that a function starts to read without an edit of its file (a
+helper in another file got another annotation), and a new class of a model in a
+module the view did not have, show after an edit of the function's file or
+`dmypy restart`. An error that a change elsewhere removes always goes away: mypy
+rechecks the targets with errors on each update. A fine-grained cache written with
+`--num-workers` carries no dependencies at all (mypy's own neither). Whether a method is
+a field's `search=` method is decided when its module is analyzed: a `search=` added in
+another file wraps the method after an edit of its module or `dmypy restart`.
+
+The variables of a function (`domain = [...]; domain.append(...)`) are kept for the
+function being checked; the daemon merges a changed function into the old function
+object with a new body, so they are kept for the body too.

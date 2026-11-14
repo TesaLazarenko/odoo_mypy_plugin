@@ -21,7 +21,10 @@ analysis.
   with ``<subclass ``, which ``mypy.lookup.lookup_fully_qualified`` resolves even with
   dots in it.
 * The ``TypedDict`` of a model's values (``odoo.values.<model>``) is created the same
-  way, in the module that uses the annotation (``<values of res_partner>``: no dots).
+  way, in the module that uses the annotation (``<values of res_partner>``: no dots), and
+  so is the marker of a model's domains (``odoo.domain.<model>``, ``<domain of
+  res_partner>``): a subclass of ``list[Any]`` (and of ``Domain`` in Odoo 19+) whose
+  metadata names the model, in a union with the types a domain has.
 
 * Odoo 19+ declares relational fields as ``Field[BaseModel]``: the classes listed in
   the profile get a type variable for the comodel, as Odoo 18 declares them.
@@ -47,7 +50,17 @@ from mypy.nodes import (
     TypeInfo,
     Var,
 )
-from mypy.types import AnyType, Instance, Type, TypedDictType, TypeOfAny, TypeVarId, TypeVarType
+from mypy.types import (
+    AnyType,
+    Instance,
+    Type,
+    TypedDictType,
+    TypeOfAny,
+    TypeVarId,
+    TypeVarType,
+    UnionType,
+    get_proper_type,
+)
 from mypy.typestate import type_state
 from mypy.typevars import fill_typevars_with_any
 
@@ -59,8 +72,11 @@ __all__ = [
     "Merge",
     "add_delegated_fields",
     "add_log_access_fields",
+    "create_domain_class",
     "create_values_class",
     "create_view_class",
+    "domain_class_model",
+    "domain_type_model",
     "install_mro",
     "instance_of",
     "make_comodel_generic",
@@ -75,6 +91,7 @@ __all__ = [
 METADATA_KEY = "odoo_typing"
 VIEW_CLASS_PREFIX = "<subclass of "
 VALUES_CLASS_PREFIX = "<values of "
+DOMAIN_CLASS_PREFIX = "<domain of "
 
 Lookup = Callable[[str], TypeInfo | None]
 
@@ -267,6 +284,52 @@ def create_values_class(
         tree.names[name] = SymbolTableNode(GDEF, info, module_hidden=True, plugin_generated=True)
     assert info.special_alias is not None  # set by update_typeddict_type
     return info.special_alias.target
+
+
+def create_domain_class(tree: MypyFile, model: str, bases: list[Instance]) -> Instance:
+    """Create (or reuse) the marker of a model's domains in a module (``odoo.domain.<model>``).
+
+    A class without members, shown as ``"<model> domain"``, whose metadata names the
+    model; its bases (``list[Any]``, and ``Domain`` in Odoo 19+) let it stand in a union
+    with them without narrowing anything they allow. Its name has no digest: nothing in
+    it can change, so the daemon may merge it by name.
+
+    Args:
+        tree: The module that uses the annotation; the class goes into its symbol table.
+        model: Odoo model name.
+        bases: ``list[Any]``, and ``Domain`` where Odoo has it.
+    """
+    name = f"{DOMAIN_CLASS_PREFIX}{model.replace('.', '_')}>"
+    existing = tree.names.get(name)
+    if existing is not None and isinstance(existing.node, TypeInfo):
+        return Instance(existing.node, [])
+    defn = ClassDef(f"{model} domain", Block([]))
+    defn.fullname = f"{tree.fullname}.{name}"
+    info = TypeInfo(SymbolTable(), defn, tree.fullname)
+    defn.info = info
+    info.bases = bases
+    calculate_mro(info)
+    info.metadata[METADATA_KEY] = {"domain_model": model}
+    tree.names[name] = SymbolTableNode(GDEF, info, module_hidden=True, plugin_generated=True)
+    return Instance(info, [])
+
+
+def domain_class_model(info: TypeInfo) -> str | None:
+    """The model whose domains a marker class stands for, if it is such a class."""
+    model = info.metadata.get(METADATA_KEY, {}).get("domain_model")
+    return model if isinstance(model, str) else None
+
+
+def domain_type_model(typ: Type | None) -> str | None:
+    """The model a declared type is a domain of (``list[Any] | <res.partner domain>``)."""
+    if typ is None:
+        return None
+    proper = get_proper_type(typ)
+    for item in proper.items if isinstance(proper, UnionType) else [proper]:
+        found = get_proper_type(item)
+        if isinstance(found, Instance) and (model := domain_class_model(found.type)) is not None:
+            return model
+    return None
 
 
 def add_delegated_fields(info: TypeInfo, sources: Sequence[tuple[TypeInfo, Sequence[str]]]) -> None:

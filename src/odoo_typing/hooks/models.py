@@ -8,13 +8,15 @@ hooks is a :class:`Hooks` around it.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from functools import partial
 from typing import Final
 
 from mypy.errorcodes import ErrorCode
 from mypy.nodes import Context, MypyFile, TypeInfo
+from mypy.options import Options
 from mypy.plugin import CheckerPluginInterface
+from mypy.server.trigger import make_trigger, make_wildcard_trigger
 from mypy.types import AnyType, Instance, TypeOfAny
 
 from odoo_typing.classes import (
@@ -37,8 +39,10 @@ from odoo_typing.hooks.nodes import (
 )
 from odoo_typing.local_values import LocalValues
 from odoo_typing.registry import Registry
+from odoo_typing.scanner import FieldInfo
 
 __all__ = [
+    "FIELDS_DIGEST",
     "ODOO_MODEL",
     "ODOO_MODEL_DEPENDS",
     "PENDING",
@@ -46,6 +50,7 @@ __all__ = [
     "Models",
     "Pending",
     "ViewType",
+    "fine_grained",
     "not_in_dependencies",
 ]
 
@@ -58,6 +63,12 @@ ODOO_MODEL_DEPENDS = ErrorCode(
 )
 
 ViewType = Instance | AnyType | None
+
+# The hidden module attribute with a digest of the field definitions of the module's
+# model classes (odoo_typing.hooks.model_classes), and the prefix of the trigger of a model
+# view that a checked module's targets depend on (Hooks._depend_on).
+FIELDS_DIGEST: Final = "__odoo_fields"
+VIEW_TRIGGER: Final = "__odoo_view "
 
 
 class Pending:
@@ -225,6 +236,15 @@ class Models:
         return contribution.model if contribution else None
 
 
+def fine_grained(options: Options) -> bool:
+    """Whether mypy keeps fine-grained dependencies (the daemon, ``--cache-fine-grained``).
+
+    Only then do the daemon's dependencies of the checks matter: a full run checks every
+    module whose addon fingerprint changed (``report_config_data``).
+    """
+    return bool(options.fine_grained_incremental or options.cache_fine_grained)
+
+
 def not_in_dependencies(addons: tuple[str, ...], addon: str) -> str:
     """``addon "sale", which is not in the dependencies of "my_addon"``."""
     names = ", ".join(f'"{name}"' for name in addons)
@@ -239,12 +259,80 @@ class Hooks:
         self._models = models
         self._local: LocalValues | None = None
 
+    def _fields_of(
+        self, addon_name: str, api: CheckerPluginInterface
+    ) -> Callable[[str], Mapping[str, FieldInfo]]:
+        """The fields of a model as an addon sees it, for a check of the code being checked.
+
+        Each model asked about becomes a dependency of the target being checked in the
+        daemon (:meth:`_depend_on`).
+        """
+
+        def fields_of(model: str) -> Mapping[str, FieldInfo]:
+            self._depend_on(model, addon_name, api)
+            return self.registry.fields(model, addon_name)
+
+        return fields_of
+
+    def _depend_on(self, model: str, addon_name: str, api: CheckerPluginInterface) -> None:
+        """Make the daemon check the current target again when a model's fields change.
+
+        A check reads the fields of the models of a view, which other modules define: the
+        daemon reruns a target only for the dependencies it has. The classes of the view
+        of each model whose fields the target read (the model, the models it delegates
+        to, the comodels of its ``related=`` fields) fire the change: ``<C>`` when a class
+        goes away, ``<C[wildcard]>`` when one of its members changes, and
+        ``<module.__odoo_fields>`` (:mod:`odoo_typing.hooks.model_classes`) when an
+        argument of a field of the module changes (``store=``). They lead to one trigger
+        per checked module and model view, ``<module.__odoo_view ...>``, on which the
+        targets depend: mypy follows a trigger to the triggers that depend on it, so
+        each target adds one dependency per model, not one per class.
+
+        Only in fine-grained mode (the daemon, ``--cache-fine-grained``), and not in a
+        module whose errors mypy does not show (``follow_imports = "silent"``): checking it
+        again would show nothing. mypy reads these dependencies when it processes a whole
+        module (see docs/how-it-works.md).
+        """
+        checker = type_checker(api)
+        if not fine_grained(checker.options):
+            return
+        if checker.path in checker.errors.ignored_files:
+            return  # follow_imports=silent (Odoo's own addons): its errors are not shown
+        tree = checker.tree
+        function = checker.scope.top_level_function()
+        target = function.fullname if function is not None else tree.fullname
+        deps = tree.plugin_deps
+        view = make_trigger(f"{tree.fullname}.{VIEW_TRIGGER}{model}@{addon_name}")
+        if view not in deps:
+            self._link_view(view, model, addon_name, deps)
+        deps[view].add(target)
+
+    def _link_view(self, view: str, model: str, addon_name: str, deps: dict[str, set[str]]) -> None:
+        """Make the triggers of a model view's classes fire a module's trigger of the view."""
+        registry = self.registry
+        deps[view] = set()
+        for source in registry.field_sources(model, addon_name):
+            found = registry.view_class(source, addon_name)
+            for item in found.chain if found is not None else ():
+                triggers = (
+                    make_trigger(item.fullname),
+                    make_wildcard_trigger(item.fullname),
+                    make_trigger(f"{item.module}.{FIELDS_DIGEST}"),
+                )
+                for trigger in triggers:
+                    deps.setdefault(trigger, set()).add(view)
+
     def _local_values(self, api: CheckerPluginInterface) -> LocalValues | None:
-        """The variables of the function being checked (kept for its next calls)."""
+        """The variables of the function being checked (kept for its next calls).
+
+        Kept for the function object and its body: the daemon reuses the object of a
+        changed function with the new body (``astmerge``).
+        """
         function = type_checker(api).scope.current_function()
         if function is None:
             return None
-        if self._local is None or self._local.function is not function:
+        local = self._local
+        if local is None or local.function is not function or local.body is not function.body:
             self._local = LocalValues(function)
         return self._local
 

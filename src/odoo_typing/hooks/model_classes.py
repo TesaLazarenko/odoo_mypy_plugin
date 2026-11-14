@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from functools import partial
 
-from mypy.nodes import AssignmentStmt, ClassDef, Expression, NameExpr, TypeInfo
+from mypy.nodes import (
+    GDEF,
+    AssignmentStmt,
+    ClassDef,
+    Expression,
+    NameExpr,
+    SymbolTableNode,
+    TypeInfo,
+    Var,
+)
 from mypy.plugin import ClassDefContext
-from mypy.types import AnyType, Instance, TypeOfAny
+from mypy.types import AnyType, Instance, LiteralType, TypeOfAny
 
 from odoo_typing.classes import (
     Lookup,
@@ -22,15 +31,19 @@ from odoo_typing.compat import OdooProfile
 from odoo_typing.hooks.env import type_request
 from odoo_typing.hooks.meta_attributes import normalize_meta_attributes
 from odoo_typing.hooks.models import (
+    FIELDS_DIGEST,
     ODOO_MODEL,
     ODOO_MODEL_DEPENDS,
     Hooks,
     Models,
+    fine_grained,
     not_in_dependencies,
 )
 from odoo_typing.hooks.nodes import class_infos, field_sources, incomplete_modules, lookup_class
 from odoo_typing.methods import annotate_self_overrides
+from odoo_typing.records import digest
 from odoo_typing.registry import MissingParent
+from odoo_typing.scan_store import encode
 from odoo_typing.scanner import Contribution
 
 __all__ = ["ModelClassHooks"]
@@ -115,6 +128,46 @@ class ModelClassHooks(Hooks):
             self._delegate_fields(contribution, ctx)
             if self.registry.log_access(contribution):
                 add_log_access_fields(ctx.cls.info, _log_access_types(ctx, self._profile))
+            self._add_fields_digest(ctx)
+
+    def _add_fields_digest(self, ctx: ClassDefContext) -> None:
+        """Give the module of a model class a hidden attribute: a digest of its fields.
+
+        The type of a field (``fields.Float(...)``) does not change with its arguments
+        (``store=``, ``search=``, ``related=``...), so neither does the module's snapshot in
+        the daemon, which then would not check again what the arguments decide (a domain
+        on a field that is no longer stored). A ``Literal`` digest of the module's model
+        classes (their fields and what the registry reads of them: ``_name``,
+        ``_inherit``, ``_inherits``...) makes such a change a change of
+        ``<module.__odoo_fields>``. A module attribute, not a class member: mypy would
+        make every class that inherits a member depend on it. Only in fine-grained mode,
+        like the dependencies on it (:meth:`Hooks._depend_on`): a full run would spend time
+        (about 1 % on the account addon) on an attribute nothing reads.
+        """
+        if not fine_grained(ctx.api.options):
+            return
+        info = ctx.cls.info
+        tree = ctx.api.modules.get(info.module_name)
+        scan = self.registry.module_scan(info.module_name)
+        if tree is None or scan is None:
+            return
+        parts = [
+            [item.class_name, item.model, item.parents, item.inherits, item.delegates]
+            for item in scan.contributions
+        ]
+        details = [[item.log_access, item.abstract] for item in scan.contributions]
+        fields = [item.fields for item in scan.contributions]
+        value = digest([encode(tuple(map(tuple, parts))), details, encode(tuple(fields))])[:16]
+        existing = tree.names.get(FIELDS_DIGEST)
+        if existing is not None and isinstance(existing.node, Var):
+            found = existing.node.type
+            if isinstance(found, LiteralType) and found.value == value:
+                return
+        var = Var(FIELDS_DIGEST, LiteralType(value, ctx.api.named_type("builtins.str")))
+        var._fullname = f"{tree.fullname}.{FIELDS_DIGEST}"
+        tree.names[FIELDS_DIGEST] = SymbolTableNode(
+            GDEF, var, module_hidden=True, plugin_generated=True
+        )
 
     def _delegate_fields(self, contribution: Contribution, ctx: ClassDefContext) -> None:
         """Add the fields of the models a class delegates to (``_inherits``).

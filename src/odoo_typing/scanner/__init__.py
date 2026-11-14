@@ -19,6 +19,8 @@ annotations it uses (:mod:`.annotations`).
 from __future__ import annotations
 
 from odoo_typing.scanner.annotations import (
+    DOMAIN,
+    KINDS,
     MODEL,
     VALUES,
     AnnotationAlias,
@@ -37,6 +39,8 @@ from odoo_typing.scanner.syntax import parse_bytes, parse_source, read_source
 from odoo_typing.scanner.walker import scan_addon, scan_file_classes
 
 __all__ = [
+    "DOMAIN",
+    "KINDS",
     "LOG_ACCESS_USERS",
     "MODEL",
     "POSITIONAL_PARAMETERS",

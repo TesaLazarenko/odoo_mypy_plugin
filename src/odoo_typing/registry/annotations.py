@@ -29,10 +29,10 @@ from odoo_typing.records import Record, digest, parse_stamps
 from odoo_typing.registry.class_index import ClassFileIndex, module_of
 from odoo_typing.registry.fields import ModelFields, chain_log_access
 from odoo_typing.registry.scans import IndexLoader, ScanCache
-from odoo_typing.scanner import Contribution, scan_file_classes
+from odoo_typing.scanner import DOMAIN, Contribution, scan_file_classes
 from odoo_typing.stamps import Stamp
 
-__all__ = ["UNCHECKED", "AliasResolution", "AnnotatedModels", "normalized_alias"]
+__all__ = ["UNCHECKED", "AliasResolution", "AnnotatedModels", "SearchMethod", "normalized_alias"]
 
 # The field class of a field whose values are not checked: a computed binary field that
 # is not stored holds any value for a widget (see odoo_typing.vals).
@@ -61,6 +61,19 @@ class AliasResolution:
     candidates: tuple[str, ...] = ()
     outside_model: str | None = None
     outside: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SearchMethod:
+    """A method that a field names in ``search=``.
+
+    Attributes:
+        model: The model of its class.
+        concrete: Whether the model is concrete (not a mixin).
+    """
+
+    model: str
+    concrete: bool
 
 
 class AnnotatedModels(ModelFields):
@@ -107,13 +120,57 @@ class AnnotatedModels(ModelFields):
         return AliasResolution(None)
 
     def annotation_models(self, path: str | Path) -> frozenset[str]:
-        """The models that a file's ``odoo.values.*`` / ``odoo.model.*`` names resolve to."""
-        aliases = self.annotation_aliases(path)
+        """The models that a file's ``odoo.values.*`` / ``odoo.model.*`` names resolve to.
+
+        Not those of ``odoo.domain.*``: a domain's type needs no class of its model, only
+        the registry.
+        """
+        aliases = [alias for kind, alias in self.annotation_aliases(path) if kind != DOMAIN]
         addon = self.addon_name_for_path(path) if aliases else None
         if addon is None:
             return frozenset()
-        models = (self.resolve_alias(alias, addon).model for _, alias in aliases)
+        models = (self.resolve_alias(alias, addon).model for alias in aliases)
         return frozenset(model for model in models if model is not None)
+
+    def search_methods(self, module: str) -> dict[str, dict[str, SearchMethod]]:
+        """The methods of a module's model classes that fields name in ``search=``.
+
+        Class name to method name to its model: a method a merged field of the class's
+        model (in the class's addon view) names as its search method, and that the class
+        defines; not for a ``search`` the scan cannot evaluate. A mixin's (abstract
+        model's) too, with ``concrete`` false: its domains name fields of the models that
+        use it, so only one annotated with a domain is checked.
+        """
+        scan = self.module_scan(module)
+        found: dict[str, dict[str, SearchMethod]] = {}
+        for item in scan.contributions if scan is not None else ():
+            if not item.methods or not self._may_name_methods(item):
+                continue
+            concrete = self.concrete(item.model, item.addon)
+            fields = self.fields(item.model, item.addon).values()
+            names = {info.search for info in fields if info.search and "search" not in info.dynamic}
+            method = SearchMethod(item.model, concrete)
+            methods = {name: method for name in item.methods if name in names}
+            if methods:
+                found[item.class_name] = methods
+        return found
+
+    def _may_name_methods(self, contribution: Contribution) -> bool:
+        """Whether a field definition of the model's view names a method of the class.
+
+        A cheap test before the merged fields: the ``search=`` of the definitions of the
+        view's classes (and of the service fields).
+        """
+        view = self.view_class(contribution.model, contribution.addon)
+        chain = view.chain if view is not None else ()
+        named = {info.search for item in chain for info in item.fields if info.search}
+        named.add("_search_display_name")
+        return any(name in named for name in contribution.methods)
+
+    def model_classes(self, module: str) -> frozenset[str]:
+        """The names of the Odoo model classes a module defines (at its top level)."""
+        scan = self.module_scan(module)
+        return frozenset(item.class_name for item in scan.contributions) if scan else frozenset()
 
     def addon_modules(self, addon_name: str) -> tuple[str, ...]:
         """The modules of an addon that its scan reached, sorted."""

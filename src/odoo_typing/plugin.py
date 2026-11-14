@@ -38,9 +38,10 @@ What it does:
 * ``create({...})`` / ``write({...})``: the keys of a literal dict must be fields of the
   model (``odoo-vals-key``) and the values must fit them (``odoo-vals-type``), see
   :mod:`odoo_typing.vals`.
-* ``search([...])`` and the other domain methods, ``domain=`` of relational fields: the
-  paths, operators and selection values of literal terms (``odoo-domain``), see
-  :mod:`odoo_typing.domains`.
+* ``search([...])`` and the other domain methods, ``domain=`` of relational fields, the
+  returns, variables and parameters annotated ``odoo.domain.<model>``: the structure,
+  paths, operators and values of literal terms (``odoo-domain``, ``odoo-domain-search``)
+  and the model of typed domains (``odoo-domain-model``), see :mod:`odoo_typing.domains`.
 
 * Incremental mode: each module's cache entry carries a digest of its addon closure
   (``report_config_data``, see :mod:`odoo_typing.fingerprint`); in the daemon, the
@@ -61,13 +62,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 
-from mypy.nodes import MypyFile
+from mypy.lookup import lookup_fully_qualified
+from mypy.nodes import Decorator, FuncDef, MypyFile, TypeInfo
 from mypy.options import Options
 from mypy.plugin import (
     AnalyzeTypeContext,
     AttributeContext,
     ClassDefContext,
     FunctionContext,
+    FunctionSigContext,
     MethodContext,
     MethodSigContext,
     Plugin,
@@ -75,10 +78,15 @@ from mypy.plugin import (
 )
 from mypy.types import FunctionLike, Type
 
-from odoo_typing.annotations import ANNOTATED_NAMES, TRIGGER_FULLNAME, rewrite_annotations
+from odoo_typing.annotations import (
+    ANNOTATED_NAMES,
+    TRIGGER_FULLNAME,
+    Wrapping,
+    rewrite_annotations,
+)
 from odoo_typing.compat import profile_for
 from odoo_typing.config import ConfigError, Settings, load_settings
-from odoo_typing.domains import DOMAIN_METHODS
+from odoo_typing.domains import DOMAIN_METHODS, PARAMETER_DOMAIN_METHODS
 from odoo_typing.fingerprint import Fingerprints
 from odoo_typing.hooks.annotations import (
     DICT_GET,
@@ -86,7 +94,12 @@ from odoo_typing.hooks.annotations import (
     values_get,
     values_get_signature,
 )
-from odoo_typing.hooks.domains import DomainHooks
+from odoo_typing.hooks.domains import (
+    DomainHooks,
+    domain_parameters,
+    has_domain_type,
+    wrapper_signature,
+)
 from odoo_typing.hooks.env import EnvHooks, request_env
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
 from odoo_typing.hooks.field_values import FieldValueHooks
@@ -262,7 +275,7 @@ class OdooPlugin(Plugin):
     # -- annotations: odoo.values.* / odoo.model.* -----------------------------------------
 
     def _rewrite_module_of(self, class_fullname: str) -> None:
-        """Rewrite the bare ``odoo.values.*`` strings of a class's module, once per tree.
+        """Rewrite the bare ``odoo.<kind>.*`` strings of a class's module, once per tree.
 
         See :mod:`odoo_typing.annotations`. Called when semantic analysis reaches a
         regular top-level class (:meth:`get_customize_class_mro_hook`), before its body:
@@ -272,6 +285,9 @@ class OdooPlugin(Plugin):
         the hook for no class-syntax ``TypedDict`` / ``NamedTuple`` and no class whose
         bases it rejects; classes defined in functions are skipped here. A module
         without such a class is never rewritten (``Annotated`` works there).
+
+        The same pass wraps the expressions whose domains are checked: those of
+        ``odoo.domain.*`` annotations and the returns of fields' search methods.
         """
         if "@" in class_fullname:
             return  # a class defined in a function (``Name@12``): not a top-level class
@@ -280,8 +296,17 @@ class OdooPlugin(Plugin):
         if tree is None or self._rewritten.get(module) is tree:
             return
         self._rewritten[module] = tree
-        if self._models.registry.annotation_aliases(tree.path):
-            rewrite_annotations(tree)
+        registry = self._models.registry
+        aliases = registry.annotation_aliases(tree.path)
+        search = registry.search_methods(module) if registry.addon_name_for_path(tree.path) else {}
+        if not aliases and not search:
+            return
+        builtins = self._modules.get("builtins") if self._modules else None
+        wrapper = builtins.names.get("__build_class__") if builtins is not None else None
+        wrapping = None
+        if wrapper is not None and wrapper.node is not None:
+            wrapping = Wrapping(wrapper.node, registry.model_classes(module), search)
+        rewrite_annotations(tree, wrapping)
 
     def get_type_analyze_hook(self, fullname: str) -> Callable[[AnalyzeTypeContext], Type] | None:
         """Type ``odoo.values.*`` / ``odoo.model.*`` annotations (odoo_typing.annotations)."""
@@ -320,6 +345,12 @@ class OdooPlugin(Plugin):
         if fullname not in found:
             found[fullname] = self._find_function_hook(fullname)
         return found[fullname]
+
+    def get_function_signature_hook(
+        self, fullname: str
+    ) -> Callable[[FunctionSigContext], FunctionLike] | None:
+        """Make the wrapper of checked domain expressions an identity (odoo_typing.annotations)."""
+        return wrapper_signature if fullname == TRIGGER_FULLNAME else None
 
     def get_method_signature_hook(
         self, fullname: str
@@ -374,15 +405,19 @@ class OdooPlugin(Plugin):
             return partial(self._vals.check, name)
         if name in DOMAIN_METHODS:
             return partial(self._domains.check, name)
+        if name in PARAMETER_DOMAIN_METHODS:
+            return partial(self._domains.check_parameter, name, PARAMETER_DOMAIN_METHODS[name])
         if name == "read":
             return partial(self._recordsets.read_result, name)
         if name in RECORD_PATH_METHODS:
             return partial(self._recordsets.record_path, name)
         if profile.untyped_fields and name == "__iter__":
             return self._recordsets.iterate  # Odoo 17: unannotated
-        if is_self_method(fullname):
-            return partial(keep_receiver, profile.base_model)
-        return None
+        then = partial(keep_receiver, profile.base_model) if is_self_method(fullname) else None
+        parameters = domain_parameters(self._declared_signature(fullname, method=True))
+        if parameters:
+            return partial(self._domains.annotated_parameters, parameters, name, then)
+        return then
 
     def _find_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
         """Bind relational field constructors to their comodel; see through decorators."""
@@ -401,6 +436,13 @@ class OdooPlugin(Plugin):
         )
         if fullname in profile.field_decorators:
             return partial(fields.decorator_fields, profile.field_decorators[fullname], factory)
+        if fullname == TRIGGER_FULLNAME:
+            return self._domains.wrapped
+        if factory is None:
+            parameters = domain_parameters(self._declared_signature(fullname, method=False))
+            if parameters:
+                name = fullname.rpartition(".")[2]
+                return partial(self._domains.annotated_parameters, parameters, name, None)
         return factory
 
     def _find_method_signature_hook(
@@ -415,10 +457,37 @@ class OdooPlugin(Plugin):
             return self._vals.field_set
         if fullname == DICT_GET:
             return values_get_signature
-        if not is_create(fullname):
-            return None
         profile = self._models.profile
-        return partial(create_signature, profile.base_model, untyped=profile.untyped_fields)
+        if is_create(fullname):
+            return partial(create_signature, profile.base_model, untyped=profile.untyped_fields)
+        domain_class = profile.domain_class  # Odoo 19+: DomainType parameters
+        if domain_class is not None and has_domain_type(
+            self._declared_signature(fullname, method=True), domain_class
+        ):
+            return partial(self._domains.widen_signature, None)
+        return None
+
+    def _declared_signature(self, fullname: str, method: bool) -> Type | None:
+        """The declared type of the method or function a hook is asked for, if mypy has it.
+
+        mypy names a method's hooks after the receiver's class (``addon.SaleOrder.search``),
+        so the method is looked up in that class's MRO.
+        """
+        modules = self._modules
+        if not modules:
+            return None
+        found: object
+        if method:
+            owner, _, name = fullname.rpartition(".")
+            node = lookup_fully_qualified(owner, modules)
+            info = node.node if node is not None else None
+            found = info.get_method(name) if isinstance(info, TypeInfo) else None
+        else:
+            node = lookup_fully_qualified(fullname, modules)
+            found = node.node if node is not None else None
+        if isinstance(found, Decorator):
+            found = found.func
+        return found.type if isinstance(found, FuncDef) else None
 
     def _find_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
         """Resolve record-typed attributes of model classes from the reading addon."""

@@ -39,6 +39,7 @@ class ModelFields(ModelViews):
         self._fields: dict[tuple[str, str], Mapping[str, FieldInfo]] = {}
         self._unresolved_fields: dict[tuple[str, str], Mapping[str, FieldInfo]] = {}
         self._related_comodels: dict[tuple[str, str, str], str | None] = {}
+        self._field_sources: dict[tuple[str, str], tuple[str, ...]] = {}
         # One object for equal answers: the views of a model from many addons mostly
         # see the same fields (memory: each view would hold its own copies otherwise).
         self._field_pool: dict[FieldInfo, FieldInfo] = {}
@@ -65,6 +66,57 @@ class ModelFields(ModelViews):
             }
             self._fields[key] = self._shared({**merged, **resolved}) if resolved else merged
         return self._fields[key]
+
+    def field_sources(self, model: str, addon_name: str) -> tuple[str, ...]:
+        """The models whose classes :meth:`fields` reads for a model, the model first.
+
+        The model, the models it delegates to (``_inherits``) and the models the paths of
+        its relational ``related=`` fields go through (their comodels come from there),
+        with their delegates: what a daemon check of the fields depends on.
+        """
+        key = (model, addon_name)
+        if key not in self._field_sources:
+            found = dict.fromkeys([model])
+            view = self.view_class(model, addon_name)
+            if view is not None:
+                found.update(dict.fromkeys(self.delegate_closure(view.chain, model, addon_name)))
+            seen: set[tuple[str, str]] = set()
+            for name, info in self._merged_fields(model, addon_name).items():
+                if _related_only(info):
+                    self._related_models(model, name, addon_name, found, seen)
+            for other in list(found)[1:]:  # a step's field may be one its delegate gives
+                other_view = self.view_class(other, addon_name)
+                chain = other_view.chain if other_view is not None else ()
+                found.update(dict.fromkeys(self.delegate_closure(chain, other, addon_name)))
+            self._field_sources[key] = tuple(found)
+        return self._field_sources[key]
+
+    def _related_models(
+        self,
+        model: str,
+        name: str,
+        addon_name: str,
+        found: dict[str, None],
+        seen: set[tuple[str, str]],
+    ) -> None:
+        """Add the models a relational ``related=`` field's path goes through (recursively)."""
+        if (model, name) in seen:
+            return
+        seen.add((model, name))
+        info = self._merged_fields(model, addon_name).get(name)
+        if info is None or info.related is None:
+            return
+        current: str | None = model
+        for step in info.related.split("."):
+            if current is None:
+                return
+            found[current] = None
+            step_info = self._merged_fields(current, addon_name).get(step)
+            if step_info is not None and _related_only(step_info):
+                self._related_models(current, step, addon_name, found, seen)
+            current = self._comodel(current, step, addon_name)
+        if current is not None:
+            found[current] = None
 
     def _shared(self, fields: dict[str, FieldInfo]) -> Mapping[str, FieldInfo]:
         """A read-only mapping equal to ``fields``, the same object for equal ones."""
@@ -112,7 +164,10 @@ class ModelFields(ModelViews):
         if view is None:
             return {}
         definitions = {
-            info.name: [info] for info in service_definitions(chain_log_access(view.chain, model))
+            info.name: [info]
+            for info in service_definitions(
+                chain_log_access(view.chain, model), self._settings.odoo_version
+            )
         }
         for name, found in chain_definitions(view.chain).items():
             definitions.setdefault(name, []).extend(found)
