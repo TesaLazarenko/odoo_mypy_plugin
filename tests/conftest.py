@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import subprocess
 import textwrap
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
@@ -100,6 +101,27 @@ def _own_scan_cache(
 ) -> None:
     """Each test its own shared scan cache (``scan_cache_dir`` defaults to the user's)."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("xdg-cache")))
+
+
+# The collector's thresholds before any test ran mypy in this process.
+GC_THRESHOLD = gc.get_threshold()
+
+
+@pytest.fixture(autouse=True)
+def _collect_mypy_garbage() -> Iterator[None]:
+    """Free what a mypy run in this process left behind, after each test that made one.
+
+    mypy is written for a process of its own: a build all but turns the cyclic collector
+    off (``gc.set_threshold(200_000, 30, 30)``, ``gc.freeze()``) and never turns it back
+    on, so the module graph of every run (cycles: no reference counting frees them) stayed
+    in memory. Some 450 runs in one pytest process grew it to 8 GB on Odoo 19, the whole
+    memory of a GitHub runner; collected after each test it stays near 400 MB.
+    """
+    yield
+    if gc.get_threshold() != GC_THRESHOLD:  # mypy ran
+        gc.set_threshold(*GC_THRESHOLD)
+        gc.enable()
+        gc.collect()
 
 
 @pytest.fixture(autouse=True)
