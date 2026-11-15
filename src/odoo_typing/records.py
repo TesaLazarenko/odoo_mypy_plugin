@@ -145,28 +145,43 @@ def index_key(settings: Settings) -> str:
     return digest([roots, settings.custom_prefix])[:16]
 
 
-def load_index(settings: Settings, store: RecordStore) -> tuple[AddonIndex, Stamps]:
+def load_index(
+    settings: Settings,
+    store: RecordStore,
+    memory: dict[str, tuple[list[Addon], Stamps]] | None = None,
+) -> tuple[AddonIndex, Stamps]:
     """Build the addon index, from the stored one if no root, entry or manifest changed.
 
     Args:
         settings: Plugin settings (the addons roots).
         store: Where the index of the previous run is kept.
+        memory: The indexes this process built, by key: read first. The daemon keeps no
+            mypy cache, and starts a new registry after each edit of a scanned file,
+            which read the 659 manifests of Odoo again (0.1 s of a 0.22 s update).
 
     Returns:
         The index and the stamps of the files it describes.
     """
     key = f"index-{index_key(settings)}.json"
-    record = store.load(key)
-    known = _stored_index(record) if record is not None else None
+    known = memory.get(key) if memory is not None else None
+    if known is not None and not unchanged(known[1]):
+        known = None
+    if known is None:
+        record = store.load(key)
+        known = _stored_index(record) if record is not None else None
     if known is not None:
         addons, stamps = known
         index = AddonIndex(
             settings.odoo_path, settings.addons_paths, settings.custom_prefix, known=addons
         )
-        return index, stamps
-    index, stamps = read_index(settings.odoo_path, settings.addons_paths, settings.custom_prefix)
-    addons_data = [addon_data(addon) for addon in index.addons.values()]
-    store.save(key, {"stamps": stamps, "addons": addons_data})
+    else:
+        index, stamps = read_index(
+            settings.odoo_path, settings.addons_paths, settings.custom_prefix
+        )
+        addons = list(index.addons.values())
+        store.save(key, {"stamps": stamps, "addons": [addon_data(addon) for addon in addons]})
+    if memory is not None:
+        memory[key] = (addons, stamps)
     return index, stamps
 
 

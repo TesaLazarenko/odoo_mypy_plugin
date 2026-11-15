@@ -152,6 +152,30 @@ def _decode_tagged(tag: str, payload: object) -> object:
     raise DecodeError(f"unknown tag {tag!r}")
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class _KeptScan:
+    """An addon scan held in memory (:class:`ScanStore`), with what makes it current."""
+
+    load_key: object
+    scan: AddonScan
+    stamps: Stamps
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _KeptFile:
+    """What one file gave, held in memory for its stamp."""
+
+    stamp: Stamp | None
+    value: object
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _KeptRecord:
+    """A record held in memory as a store returned it (its reader checks its stamps)."""
+
+    record: Record
+
+
 class ScanStore:
     """Addon scans in :class:`~odoo_typing.records.RecordStore` s.
 
@@ -165,10 +189,21 @@ class ScanStore:
         store: The store in mypy's cache (a no-op store keeps nothing).
         shared: The shared store, read first and written instead of ``store``; ``store``
             is written when it cannot be (a read-only home).
+        memory: What this process has read or written, decoded, by key: read before the
+            stores, under the same conditions (stamps, load order). The plugin passes the
+            same dict to the store of each new registry: the daemon starts one after
+            every edit of a scanned file, and has no mypy cache (``/dev/null``), so each
+            restart decoded every scan again from the shared store.
     """
 
-    def __init__(self, store: RecordStore, shared: RecordStore | None = None) -> None:
+    def __init__(
+        self,
+        store: RecordStore,
+        shared: RecordStore | None = None,
+        memory: dict[str, object] | None = None,
+    ) -> None:
         self._stores = (store,) if shared is None else (shared, store)
+        self._memory: dict[str, object] = memory if memory is not None else {}
 
     @staticmethod
     def _key(addon: Addon) -> str:
@@ -177,9 +212,14 @@ class ScanStore:
 
     def load(self, addon: Addon, load_key: LoadKey) -> tuple[AddonScan, Stamps] | None:
         """The stored scan of an addon and its stamps, if no file it read changed."""
+        key, order = self._key(addon), encode(load_key)
+        kept = self._memory.get(key)
+        if isinstance(kept, _KeptScan) and kept.load_key == order and unchanged(kept.stamps):
+            return kept.scan, kept.stamps
         for store in self._stores:
             found = self._load(store, addon, load_key)
             if found is not None:
+                self._memory[key] = _KeptScan(order, found[0], found[1])
                 return found
         return None
 
@@ -206,6 +246,7 @@ class ScanStore:
             "scan": encode(scan),
         }
         self._save(self._key(addon), record)
+        self._memory[self._key(addon)] = _KeptScan(encode(load_key), scan, stamps)
 
     def load_file(self, path: Path, current: Stamp | None) -> FileReferences | None:
         """What a file no addon scan reaches refers to, if stored for its current stamp.
@@ -213,8 +254,12 @@ class ScanStore:
         Such files (tests, which ``__init__.py`` does not import) are parsed on their own
         (:meth:`odoo_typing.registry.scans.ScannedAddons.referenced_models`).
         """
+        key = self._file_key(path)
+        kept = self._kept(key, current)
+        if isinstance(kept, FileReferences):
+            return kept
         for store in self._stores:
-            record = self._current(store, self._file_key(path), current)
+            record = self._current(store, key, current)
             if record is None:
                 continue
             models, guards = record.get("models"), record.get("guards")
@@ -223,11 +268,13 @@ class ScanStore:
             except DecodeError:
                 continue
             if is_str_list(models) and isinstance(found, tuple) and _is_aliases(annotations):
-                return FileReferences(
+                references = FileReferences(
                     frozen(models),
                     tuple(item for item in found if isinstance(item, Guard)),
                     annotations,
                 )
+                self._memory[key] = _KeptFile(current, references)
+                return references
         return None
 
     def save_file(self, path: Path, current: Stamp | None, found: FileReferences) -> None:
@@ -239,6 +286,7 @@ class ScanStore:
             "annotations": encode(found.annotations),
         }
         self._save(self._file_key(path), record)
+        self._memory[self._file_key(path)] = _KeptFile(current, found)
 
     def load_classes(self, path: Path, current: Stamp | None) -> tuple[Contribution, ...] | None:
         """The model classes of one file read on its own, if stored for its current stamp.
@@ -246,8 +294,12 @@ class ScanStore:
         See :func:`odoo_typing.scanner.scan_file_classes`: the files of every addon that
         name a model, for the keys of ``odoo.values.*``.
         """
+        key = self._classes_key(path)
+        kept = self._kept(key, current)
+        if isinstance(kept, tuple):
+            return kept
         for store in self._stores:
-            record = self._current(store, self._classes_key(path), current)
+            record = self._current(store, key, current)
             if record is None:
                 continue
             try:
@@ -255,6 +307,7 @@ class ScanStore:
             except DecodeError:
                 continue
             if isinstance(found, tuple) and all(isinstance(item, Contribution) for item in found):
+                self._memory[key] = _KeptFile(current, found)
                 return found
         return None
 
@@ -264,18 +317,32 @@ class ScanStore:
         """Keep the model classes of one file read on its own, with its stamp."""
         record = {"stamp": list(current) if current else None, "classes": encode(classes)}
         self._save(self._classes_key(path), record)
+        self._memory[self._classes_key(path)] = _KeptFile(current, classes)
 
     def load_record(self, key: str) -> Record | None:
-        """A record kept under a key (the index of :mod:`odoo_typing.registry.class_index`)."""
+        """A record kept under a key (the index of :mod:`odoo_typing.registry.class_index`).
+
+        Its reader checks the stamps it holds, from memory as from a store.
+        """
+        kept = self._memory.get(key)
+        if isinstance(kept, _KeptRecord):
+            return kept.record
         for store in self._stores:
             record = store.load(key)
             if record is not None:
+                self._memory[key] = _KeptRecord(record)
                 return record
         return None
 
     def save_record(self, key: str, record: Record) -> None:
         """Keep a record under a key (in the first store that can be written)."""
         self._save(key, record)
+        self._memory[key] = _KeptRecord(record)
+
+    def _kept(self, key: str, current: Stamp | None) -> object | None:
+        """What this process kept of a file for its current stamp."""
+        kept = self._memory.get(key)
+        return kept.value if isinstance(kept, _KeptFile) and kept.stamp == current else None
 
     @staticmethod
     def _current(store: RecordStore, key: str, current: Stamp | None) -> Record | None:

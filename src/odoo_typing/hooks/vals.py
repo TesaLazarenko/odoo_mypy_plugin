@@ -12,7 +12,7 @@ from mypy.plugin import CheckerPluginInterface, MethodContext, MethodSigContext
 from mypy.types import FunctionLike, Instance, Type
 
 from odoo_typing.classes import receiver_type
-from odoo_typing.hooks.models import Hooks
+from odoo_typing.hooks.models import Hooks, errors_hidden
 from odoo_typing.hooks.nodes import type_checker
 from odoo_typing.methods import is_self_method, keep_receiver
 from odoo_typing.vals import ValsChecker, ValsTarget, context_defaults, vals_dicts
@@ -67,7 +67,11 @@ class ValsHooks(Hooks):
         lvalue = ctx.context
         records = ctx.args[0][0] if len(ctx.args) == 2 and ctx.args[0] else None
         value = ctx.args[1][0] if records is not None and ctx.args[1] else None
-        if not isinstance(lvalue, MemberExpr) or not isinstance(records, TempNode):
+        if (
+            not isinstance(lvalue, MemberExpr)
+            or not isinstance(records, TempNode)
+            or errors_hidden(ctx.api)
+        ):
             return ctx.default_signature
         record = receiver_type(records.type)
         model = self._models.model_of(record.type) if isinstance(record, Instance) else None

@@ -39,6 +39,7 @@ from odoo_typing.hooks.models import (
     ODOO_MODEL_DEPENDS,
     Hooks,
     Models,
+    errors_hidden,
     fine_grained,
     not_in_dependencies,
 )
@@ -53,7 +54,7 @@ from odoo_typing.references import (
 )
 from odoo_typing.registry import MissingParent
 from odoo_typing.scan_store import encode
-from odoo_typing.scanner import Contribution
+from odoo_typing.scanner import Contribution, ModuleScan
 
 __all__ = ["ModelClassHooks"]
 
@@ -69,6 +70,9 @@ class ModelClassHooks(Hooks):
     def __init__(self, models: Models) -> None:
         super().__init__(models)
         self.request_typed = False
+        # ``__odoo_fields`` per module, kept with the scan it was made from: each model
+        # class of a module, and each analysis pass, asks again.
+        self._fields_digests: dict[str, tuple[ModuleScan, str]] = {}
 
     def comodel_generic(self, ctx: ClassDefContext) -> None:
         """Give a relational field class a type variable for its comodel."""
@@ -134,7 +138,8 @@ class ModelClassHooks(Hooks):
         annotate_self_overrides(ctx)
         contribution = self.registry.contribution(ctx.cls.info.fullname)
         if contribution is not None:
-            self._check_meta_references(contribution, ctx)
+            if not errors_hidden(ctx.api):
+                self._check_meta_references(contribution, ctx)
             self._delegate_fields(contribution, ctx)
             if self.registry.log_access(contribution):
                 add_log_access_fields(ctx.cls.info, _log_access_types(ctx, self._profile))
@@ -188,13 +193,7 @@ class ModelClassHooks(Hooks):
         scan = self.registry.module_scan(info.module_name)
         if tree is None or scan is None:
             return
-        parts = [
-            [item.class_name, item.model, item.parents, item.inherits, item.delegates]
-            for item in scan.contributions
-        ]
-        details = [[item.log_access, item.abstract] for item in scan.contributions]
-        fields = [item.fields for item in scan.contributions]
-        value = digest([encode(tuple(map(tuple, parts))), details, encode(tuple(fields))])[:16]
+        value = self._fields_digest(scan)
         existing = tree.names.get(FIELDS_DIGEST)
         if existing is not None and isinstance(existing.node, Var):
             found = existing.node.type
@@ -205,6 +204,21 @@ class ModelClassHooks(Hooks):
         tree.names[FIELDS_DIGEST] = SymbolTableNode(
             GDEF, var, module_hidden=True, plugin_generated=True
         )
+
+    def _fields_digest(self, scan: ModuleScan) -> str:
+        """The digest of a module's model classes: what ``__odoo_fields`` holds."""
+        kept = self._fields_digests.get(scan.module)
+        if kept is not None and kept[0] is scan:
+            return kept[1]
+        parts = [
+            [item.class_name, item.model, item.parents, item.inherits, item.delegates]
+            for item in scan.contributions
+        ]
+        details = [[item.log_access, item.abstract] for item in scan.contributions]
+        fields = [item.fields for item in scan.contributions]
+        value = digest([encode(tuple(map(tuple, parts))), details, encode(tuple(fields))])[:16]
+        self._fields_digests[scan.module] = (scan, value)
+        return value
 
     def _delegate_fields(self, contribution: Contribution, ctx: ClassDefContext) -> None:
         """Add the fields of the models a class delegates to (``_inherits``).

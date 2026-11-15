@@ -16,7 +16,7 @@ from mypy.types import AnyType, Instance, Type, TypeOfAny, get_proper_type
 from odoo_typing.classes import instance_of
 from odoo_typing.hooks.domains import DomainHooks
 from odoo_typing.hooks.env import GROUPS, EnvHooks
-from odoo_typing.hooks.models import Hooks, Models
+from odoo_typing.hooks.models import Hooks, Models, errors_hidden
 from odoo_typing.hooks.nodes import class_infos, field_arguments, type_checker
 from odoo_typing.references import (
     KNOWN_CLASSES,
@@ -46,7 +46,7 @@ class FieldDefinitionHooks(Hooks):
         self, then: Callable[[FunctionContext], Type] | None, ctx: FunctionContext
     ) -> Type:
         """Check the names a field definition refers to, then type it (``then``)."""
-        owner = self._field_owner(ctx)
+        owner = self._field_owner(ctx) if not errors_hidden(ctx.api) else None
         default = get_proper_type(ctx.default_return_type)
         if (
             owner is not None
@@ -180,7 +180,7 @@ class FieldDefinitionHooks(Hooks):
 
         Only in the body of a concrete model's class, as for field definitions.
         """
-        owner = self._field_owner(ctx)
+        owner = self._field_owner(ctx) if not errors_hidden(ctx.api) else None
         if owner is not None and self.registry.concrete(owner[0], owner[1]):
             model, addon_name, _ = owner
             fields_of = self._fields_of(addon_name, ctx.api)

@@ -82,6 +82,7 @@ class Fingerprints:
         self._addon_digests: dict[str, str] = {}
         self._scan_digests: dict[str, str] = {}
         self._stamps: dict[str, Stamp | None] = {}
+        self._core: dict[str, bool] = {}  # per addon, as long as the stamps (one run)
         self._manifests: dict[str, Stamp | None] | None = None  # see _compute_view
         self._roots_digest = ""  # of the addons roots and entries, see _addon_names
         self._odoo_path = settings.odoo_path
@@ -130,8 +131,12 @@ class Fingerprints:
         By a stamp of its manifest there, not the addon index, which a warm run never
         loads (a core addon wins over an ``addons_path`` one of the same name).
         """
-        directory = self._odoo_path / "addons" / addon_name
-        return any(self._stat(directory / name) is not None for name in MANIFEST_NAMES)
+        found = self._core.get(addon_name)
+        if found is None:  # asked for each module (932 on sale): three paths each
+            directory = self._odoo_path / "addons" / addon_name
+            found = any(self._stat(directory / name) is not None for name in MANIFEST_NAMES)
+            self._core[addon_name] = found
+        return found
 
     def _outside_definers(self, addon_name: str, path: str, view: str) -> str:
         """Digest for a file that names models its closure does not define.

@@ -16,9 +16,14 @@ from typing import Final
 from mypy.errorcodes import ErrorCode
 from mypy.nodes import Context, MypyFile, TypeInfo
 from mypy.options import Options
-from mypy.plugin import CheckerPluginInterface
+from mypy.plugin import CheckerPluginInterface, SemanticAnalyzerPluginInterface
 from mypy.server.trigger import make_trigger, make_wildcard_trigger
 from mypy.types import AnyType, Instance, TypeOfAny
+
+# isort: split
+# After mypy.types: these modules import each other at import time.
+from mypy.checker import TypeChecker
+from mypy.semanal import SemanticAnalyzer
 
 from odoo_typing.classes import (
     add_delegated_fields,
@@ -52,6 +57,7 @@ __all__ = [
     "Models",
     "Pending",
     "ViewType",
+    "errors_hidden",
     "fine_grained",
     "not_in_dependencies",
 ]
@@ -245,6 +251,22 @@ def fine_grained(options: Options) -> bool:
     module whose addon fingerprint changed (``report_config_data``).
     """
     return bool(options.fine_grained_incremental or options.cache_fine_grained)
+
+
+def errors_hidden(api: CheckerPluginInterface | SemanticAnalyzerPluginInterface) -> bool:
+    """Whether mypy shows no error of the module being analyzed.
+
+    ``follow_imports = "silent"`` (Odoo's own addons, in the usual configuration) and
+    ``ignore_errors``: a check that only reports would do its work for nothing there
+    (on sale, 3797 of 4329 field definitions). Work that types something still runs.
+    """
+    if api.options.ignore_errors:
+        return True
+    if isinstance(api, TypeChecker):
+        return api.path in api.errors.ignored_files
+    if isinstance(api, SemanticAnalyzer):
+        return api.cur_mod_node.path in api.errors.ignored_files
+    return False
 
 
 def not_in_dependencies(addons: tuple[str, ...], addon: str) -> str:

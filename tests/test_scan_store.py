@@ -10,6 +10,7 @@ import pytest
 from pytest_mock import MockerFixture
 from test_fingerprint import MODEL, _odoo, _touch
 
+from odoo_typing import records, scan_store
 from odoo_typing.records import RecordStore, load_index, package_source_hash
 from odoo_typing.registry import Registry
 from odoo_typing.registry import scans as registry_scans
@@ -390,3 +391,33 @@ def test_registry_still_unreadable_file_reuses_the_stored_scan(
     assert kept is None
     assert scan.call_count == 0
     assert "models.py: Permission denied" in capsys.readouterr().err  # still told
+
+
+def test_registries_of_one_process_share_what_they_decoded(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    # The daemon has no mypy cache (/dev/null) and starts a registry after each edit of a
+    # scanned file: the index and the unchanged scans come back from memory.
+    settings = _odoo(tmp_path)
+    store, memory, kept = RecordStore(None), {}, {}  # type: ignore[var-annotated]
+
+    def registry() -> Registry:
+        index = lambda: load_index(settings, store, kept)  # noqa: E731
+        return Registry(settings, index, ScanStore(store, memory=memory))
+
+    expected = registry().fields("x.my_mod", "my_mod")
+    scan = mocker.spy(registry_scans, "scan_addon")
+    read = mocker.spy(records, "read_index")
+    decoded = mocker.spy(scan_store, "decode")
+
+    assert registry().fields("x.my_mod", "my_mod") == expected
+    assert (scan.call_count, read.call_count, decoded.call_count) == (0, 0, 0)
+    _touch(settings.odoo_path / "addons/my_mod/models.py", MODEL.replace("x.a", "x.my_mod2"))
+    _touch(settings.odoo_path / "addons/my_mod/__manifest__.py", "{'depends': ['base']}")
+
+    third = registry()
+    third.fields("x.base", "my_mod")
+
+    assert [call.args[0].name for call in scan.call_args_list] == ["my_mod"]
+    assert read.call_count == 1  # a manifest changed
+    assert third.view_class("x.my_mod2", "my_mod") is not None

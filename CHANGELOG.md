@@ -121,6 +121,15 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 
 ### Performance
 
+- The daemon keeps the addon index and the decoded scans, data and class records it read
+  across the registries it starts after edits (it has no mypy cache): an update after an
+  edit of one addon file takes 0.07 s instead of 0.22 s.
+- Checks that only report are skipped in modules whose errors mypy hides
+  (`follow_imports = "silent"`, `ignore_errors`): most field definitions of Odoo's own
+  addons.
+- Less memory: the XML ids of a closure are a view over one dict per addon, one shared
+  empty `frozenset`, a lighter pool of field maps (-15 MB on 120 core addons).
+
 - Addon scans are kept in `scan_cache_dir` (`~/.cache/odoo-typing/scans` by default),
   shared by every project and mypy cache: a new cache, worktree or project on the same
   Odoo skips the scans of Odoo's addons (20–26 % less time on the cold benchmark runs).

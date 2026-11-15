@@ -79,6 +79,7 @@ from mypy.plugin import (
 from mypy.types import FunctionLike, Type
 
 from odoo_typing import records
+from odoo_typing.addons import Addon
 from odoo_typing.annotations import (
     ANNOTATED_NAMES,
     TRIGGER_FULLNAME,
@@ -132,7 +133,7 @@ from odoo_typing.references import RECORD_PATH_METHODS
 from odoo_typing.registry import Registry
 from odoo_typing.scan_store import ScanStore
 from odoo_typing.scanner import LOG_ACCESS_USERS
-from odoo_typing.stamps import stamp
+from odoo_typing.stamps import Stamps, stamp
 from odoo_typing.startup import (
     mypy_version_warning,
     package_bases_warning,
@@ -182,6 +183,8 @@ class OdooPlugin(Plugin):
         if warning := package_bases_warning(profile, settings, options):
             print(warning, file=sys.stderr)
         self._store = RecordStore.for_cache_dir(options.cache_dir)
+        self._kept_index: dict[str, tuple[list[Addon], Stamps]] = {}
+        self._kept_scans: dict[str, object] = {}
         self._hooks = _HookCache()
         self._config_stamp = stamp(options.config_file) if options.config_file else None
         self._inputs_checked = False
@@ -204,10 +207,15 @@ class OdooPlugin(Plugin):
         self._rewritten: dict[str, MypyFile] = {}  # module -> the tree rewritten last
 
     def _new_registry(self, settings: Settings) -> Registry:
-        """A registry for the settings, and the fingerprints that follow it."""
-        index = partial(load_index, settings, self._store)
+        """A registry for the settings, and the fingerprints that follow it.
+
+        The addon index and the scans this process read are kept across registries
+        (``_kept_index``, ``_kept_scans``): a daemon update after an edit of one addon
+        file reads and decodes only what changed (each entry checks its stamps).
+        """
+        index = partial(load_index, settings, self._store, self._kept_index)
         shared = RecordStore.shared(settings.scan_cache_dir)
-        scans = ScanStore(self._store, shared)
+        scans = ScanStore(self._store, shared, self._kept_scans)
         registry = Registry(settings, index, scans)
         self._fingerprints = Fingerprints(registry, self._store, settings)
         return registry
