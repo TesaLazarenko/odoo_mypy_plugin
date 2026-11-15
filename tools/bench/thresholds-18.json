@@ -1,6 +1,6 @@
 {
-  "*": 245,
-  "arg-type": 88,
+  "*": 214,
+  "arg-type": 58,
   "assignment": 24,
   "attr-defined": 12,
   "call-arg": 1,
@@ -14,7 +14,7 @@
   "odoo-model-depends": 9,
   "odoo-selection": 2,
   "odoo-vals-key": 3,
-  "odoo-vals-type": 24,
+  "odoo-vals-type": 23,
   "operator": 11,
   "override": 4,
   "str-format": 1,
