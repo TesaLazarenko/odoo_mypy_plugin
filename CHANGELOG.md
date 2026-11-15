@@ -36,7 +36,18 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   `default_<field>` of `with_context(...).create`.
 - `odoo-field-ref`: `related=`, `compute=`, `inverse=`, `search=`, `selection=`,
   `@api.depends` / `constrains` / `onchange`, paths of `mapped` / `filtered` / `sorted`
-  / `grouped` (literals and `Final` / `Literal` strings), fields of `read()`.
+  / `grouped` (literals and `Final` / `Literal` strings), fields of `read()` / `fetch()`
+  / `search_fetch()`; `currency_field=`, `inverse_name=`, `group_expand=`; orders
+  (`order=` of `search` and the like, `_order`); `_rec_name`, `_parent_name`,
+  `_fold_name`, `_active_name`, `_rec_names_search`; the `groupby` and `aggregates`
+  specifications of `_read_group`.
+- `odoo-selection`: a literal string compared with a `Selection` field (`==`, `!=`,
+  `in`, `not in`) that is not one of its keys.
+- `odoo-vals-type` also for x2many commands that carry the ids of another model's
+  records, and tuples that are not commands; `odoo-field-ref` also for `ondelete=` of
+  a `Many2one`.
+- `odoo-xmlid` also for the groups of `has_group()` / `has_groups()` /
+  `user_has_groups()` and of a field's `groups=`, and for the action of `_for_xml_id()`.
 - A field guarded by `"f" in self._fields`, `_fields.get("f")` or `hasattr(x, "f")` is
   not reported as unknown in vals, domains and record paths under the guard.
 - `odoo-domain`: field paths, operators (per Odoo version, case-sensitive except in

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Final
+
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import MemberExpr, MypyFile, StrExpr, TypeInfo, Var
 from mypy.plugin import AttributeContext, CheckerPluginInterface, MethodContext
@@ -29,7 +32,36 @@ from odoo_typing.hooks.nodes import call_argument, is_false, literal_string, typ
 from odoo_typing.references import did_you_mean
 from odoo_typing.xmlids import ODOO_XMLID, ODOO_XMLID_DEPENDS, automatic_model
 
-__all__ = ["EnvHooks", "request_env", "type_request"]
+__all__ = ["GROUPS", "XML_ID_METHODS", "EnvHooks", "XmlIdUse", "request_env", "type_request"]
+
+
+@dataclass(frozen=True, slots=True)
+class XmlIdUse:
+    """What a method does with the XML ids it takes.
+
+    Attributes:
+        model: The model of the records the ids must name (a prefix: ``ir.actions.``).
+        what: How a message names such a record.
+        several: Whether the string is a comma-separated list of ids, each maybe negated.
+        receiver: The model whose method it is (a prefix), ``None`` for any model.
+        absent_ok: Whether an id of an addon outside the dependencies is fine (Odoo
+            answers ``False`` for a group that does not exist; it raises for an action).
+    """
+
+    model: str
+    what: str
+    several: bool = False
+    receiver: str | None = None
+    absent_ok: bool = True
+
+
+GROUPS: Final = XmlIdUse("res.groups", "a group", several=True)
+XML_ID_METHODS: Final = {
+    "has_group": XmlIdUse("res.groups", "a group", receiver="res.users"),
+    "has_groups": XmlIdUse("res.groups", "a group", several=True, receiver="res.users"),
+    "user_has_groups": GROUPS,
+    "_for_xml_id": XmlIdUse("ir.actions.", "an action", receiver="ir.actions.", absent_ok=False),
+}
 
 
 class EnvHooks(Hooks):
@@ -94,6 +126,42 @@ class EnvHooks(Hooks):
         if not isinstance(records, Instance):
             return ctx.default_return_type
         return UnionType([records, NoneType()]) if optional else records
+
+    def xml_id_argument(self, method: str, ctx: MethodContext) -> Type:
+        """``user.has_group("base.group_user")``, ``_for_xml_id("sale.action_orders")``.
+
+        The ids must exist as for ``env.ref`` (a group that does not exist is ``False``
+        for Odoo, an action raises), and be a group or an action. ``has_groups`` and
+        ``user_has_groups`` take several, separated by commas, each maybe negated (``!``).
+        """
+        argument = ctx.args[0][0] if ctx.args and len(ctx.args[0]) == 1 else None
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        receiver = get_proper_type(ctx.type)
+        if not isinstance(argument, StrExpr) or addon_name is None:
+            return ctx.default_return_type
+        model = self._models.model_of(receiver.type) if isinstance(receiver, Instance) else None
+        expected = XML_ID_METHODS[method]
+        if model is None or not (expected.receiver is None or model.startswith(expected.receiver)):
+            return ctx.default_return_type
+        self.check_xml_ids(argument, expected, addon_name, ctx.api)
+        return ctx.default_return_type
+
+    def check_xml_ids(
+        self, ids: StrExpr, expected: XmlIdUse, addon_name: str, api: CheckerPluginInterface
+    ) -> None:
+        """Check the XML ids of a string (one, or a comma-separated list) for a use."""
+        names = ids.value.split(",") if expected.several else [ids.value]
+        closure = self.registry.addons.closure(addon_name)
+        for name in names:
+            node = StrExpr(name.strip().removeprefix("!") if expected.several else name)
+            node.set_line(ids)
+            module = node.value.partition(".")[0]
+            if not node.value or (expected.absent_ok and module not in closure):
+                continue  # a group of an addon that may not be installed: ``False`` for Odoo
+            found = self._xml_id_model(node, addon_name, False, api)
+            if found is not None and not found.startswith(expected.model):
+                message = f'XML id "{node.value}" is a record of Odoo model "{found}", '
+                api.fail(message + f"not {expected.what}", ids, code=ODOO_XMLID)
 
     def _xml_id_model(
         self, xml_id: StrExpr, addon_name: str, optional: bool, api: CheckerPluginInterface

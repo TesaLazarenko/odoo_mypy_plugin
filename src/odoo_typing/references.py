@@ -14,6 +14,7 @@ This module has the pure parts: resolving a path and the messages.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from difflib import get_close_matches
@@ -24,15 +25,23 @@ from mypy.errorcodes import ErrorCode
 from odoo_typing.scanner import FieldInfo
 
 __all__ = [
+    "AGGREGATES",
+    "DATE_CLASSES",
+    "GRANULARITIES",
     "KNOWN_CLASSES",
+    "META_FIELD_ATTRIBUTES",
     "METHOD_ARGUMENTS",
     "ODOO_FIELD_REF",
+    "ORDER_METHODS",
+    "READ_GROUP_METHODS",
     "RECORD_PATH_METHODS",
     "PathResult",
     "decorator_problem",
     "did_you_mean",
     "field_kind",
+    "group_spec",
     "missing_method_message",
+    "order_fields",
     "record_paths",
     "resolve_path",
 ]
@@ -42,7 +51,35 @@ ODOO_FIELD_REF = ErrorCode(
 )
 
 # Field arguments that name a method of the model (``selection`` only as a string).
-METHOD_ARGUMENTS: Final = ("compute", "inverse", "search", "selection")
+METHOD_ARGUMENTS: Final = ("compute", "inverse", "search", "selection", "group_expand")
+# Methods whose ``order`` argument is an order of the receiver's model.
+ORDER_METHODS: Final = frozenset({"search", "search_read", "search_fetch", "_search"})
+# Class attributes of a model that name one of its fields (``_rec_names_search``: a list).
+META_FIELD_ATTRIBUTES: Final = frozenset(
+    {"_rec_name", "_parent_name", "_fold_name", "_active_name", "_rec_names_search"}
+)
+# ``_read_group`` and the ``read_group`` of Odoo 20 take ``groupby`` and ``aggregates`` specs.
+READ_GROUP_METHODS: Final = frozenset({"_read_group", "read_group"})
+# As Odoo's ``regex_read_group_spec`` reads a spec.
+GROUP_SPEC: Final = re.compile(r"(?P<field>\w+)(\.[\w.]+)?(:(?P<function>\w+))?")
+# What may follow a date field in ``groupby`` and any field in ``aggregates``, in any
+# supported version (Odoo 19 added the ``*_number`` parts and ``array_agg_distinct``).
+GRANULARITIES: Final = frozenset(
+    {"hour", "day", "week", "month", "quarter", "year", "year_number", "quarter_number"}
+    | {"month_number", "iso_week_number", "day_of_year", "day_of_month", "day_of_week"}
+    | {"hour_number"}
+)
+AGGREGATES: Final = frozenset(
+    {"sum", "avg", "max", "min", "bool_and", "bool_or", "array_agg", "array_agg_distinct"}
+    | {"recordset", "count", "count_distinct"}
+)
+# One term of an order, as Odoo's ``regex_order`` reads it (17-20): a field, a property
+# or a sub-field after a dot, an aggregate, a direction and where nulls go.
+ORDER_TERM: Final = re.compile(
+    r"""\s*"?(?P<field>[a-z0-9_]+)"?(\.[a-z0-9_]+)?(:[a-z_]+)?
+        (\s+(desc|asc))?(\s+nulls\s(first|last))?\s*""",
+    re.IGNORECASE | re.VERBOSE,
+)
 # Recordset methods that take a field path (or name) as a string.
 RECORD_PATH_METHODS: Final = frozenset({"mapped", "filtered", "sorted", "grouped"})
 RELATIONAL: Final = frozenset({"Many2one", "One2many", "Many2many"})
@@ -199,6 +236,35 @@ def record_paths(method: str, argument: str, sorted_order: bool) -> tuple[list[s
     if "." in argument or " " in argument.strip():
         return [], f'{method}("{argument}") takes a field name'
     return [argument.strip()], None
+
+
+@dataclass(frozen=True, slots=True)
+class GroupSpec:
+    """One ``groupby`` or ``aggregates`` item of ``_read_group``: ``field[.path][:function]``."""
+
+    field: str
+    function: str | None
+
+
+def group_spec(spec: str) -> GroupSpec | None:
+    """Read ``"date:month"`` / ``"amount:sum"`` / ``"partner_id"``; ``None`` if it is not one."""
+    match = GROUP_SPEC.fullmatch(spec)
+    return None if match is None else GroupSpec(match["field"], match["function"])
+
+
+def order_fields(order: str) -> list[str] | None:
+    """The fields an order names (``"date desc, partner_id.name, id"``), first names only.
+
+    Returns:
+        ``None`` if the string is not an order (Odoo raises "Invalid order").
+    """
+    found: list[str] = []
+    for term in order.split(","):
+        match = ORDER_TERM.fullmatch(term)
+        if match is None:
+            return None
+        found.append(match["field"])
+    return found
 
 
 def did_you_mean(name: str, candidates: Collection[str]) -> str:

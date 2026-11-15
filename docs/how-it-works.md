@@ -313,6 +313,18 @@ rechecks the targets with errors on each update. A fine-grained cache written wi
 a field's `search=` method is decided when its module is analyzed: a `search=` added in
 another file wraps the method after an edit of its module or `dmypy restart`.
 
+An error about a selection key is reported from the hook of the comparison's method
+(`str.__eq__`, `tuple.__contains__`...). mypy checks an operator on a union operand
+(`str | Literal[False]`) item by item and reads any error reported meanwhile as "this
+item does not support the operator", so the plugin sets mypy's error watchers aside for
+that one report (a private attribute of mypy; without it the error is reported the usual
+way).
+
+The class attributes that name fields (`_order`, `_rec_name`...) are checked during
+semantic analysis (mypy has no hook on a class attribute when it checks types), so they
+write no dependencies: a field that another module drops is reported there after an edit
+of the class's module or `dmypy restart`.
+
 The variables of a function (`domain = [...]; domain.append(...)`) are kept for the
 function being checked; the daemon merges a changed function into the old function
 object with a new body, so they are kept for the body too.

@@ -5,10 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+from mypy.errorcodes import ErrorCode
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import (
     ARG_POS,
     CallExpr,
+    Context,
     Expression,
     ListExpr,
     MypyFile,
@@ -33,6 +35,7 @@ __all__ = [
     "Incomplete",
     "call_argument",
     "class_infos",
+    "fail_unfiltered",
     "field_arguments",
     "field_sources",
     "imported_view_class",
@@ -174,6 +177,30 @@ def type_checker(api: CheckerPluginInterface) -> TypeChecker:
     if not isinstance(api, TypeChecker):
         raise TypeError(f"unexpected checker plugin interface: {type(api).__name__}")
     return api
+
+
+def fail_unfiltered(
+    api: CheckerPluginInterface, message: str, context: Context, code: ErrorCode
+) -> None:
+    """Report an error that mypy must not read as a failure of the operation being checked.
+
+    mypy checks an operator on a union operand (``record.state == "x"``: ``str | False``)
+    item by item and takes any error reported meanwhile as "the operator does not take
+    this item": it drops the error or replaces it with "Unsupported operand types". So the
+    error is reported with mypy's error watchers set aside (identical errors of a
+    repeated check are shown once). If mypy no longer keeps its watchers there, the
+    error is reported the usual way.
+    """
+    errors = type_checker(api).msg.errors
+    watchers = getattr(errors, "_watchers", None)
+    if not watchers:
+        api.fail(message, context, code=code)
+        return
+    errors._watchers = []
+    try:
+        api.fail(message, context, code=code)
+    finally:
+        errors._watchers = watchers
 
 
 def record_type(ctx: MethodSigContext) -> ProperType | None:

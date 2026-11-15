@@ -21,7 +21,7 @@ def test_meta_attributes_rec_name_and_same_file_list_inherit_do_not_clash(
         {
             "my_mod": {
                 "models.py": """
-                from odoo import models
+                from odoo import fields, models
 
                 class A(models.Model):
                     _name = "my.a"
@@ -42,6 +42,8 @@ def test_meta_attributes_rec_name_and_same_file_list_inherit_do_not_clash(
                 class Standalone(models.Model):
                     _name = "my.standalone"
                     _rec_name = "code"
+
+                    code = fields.Char()
                 """
             }
         }

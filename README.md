@@ -122,12 +122,13 @@ notes for Odoo 19 and 20.
 |---|---|
 | `odoo-model` | an unknown model name (a typo), a broken `_inherit` |
 | ↳ `odoo-model-depends` | a model whose addon is missing from `depends` |
-| `odoo-field-ref` | a wrong field or method name in `related=`, `compute=`, `@api.depends`, `mapped()`... |
+| `odoo-field-ref` | a wrong field or method name in `related=`, `compute=`, `@api.depends`, `mapped()`, `order=`, `_order`, `_read_group()`... |
 | `odoo-vals` | wrong `create()` / `write()` values: `odoo-vals-key` (no such field), `odoo-vals-type` (wrong value type) |
 | `odoo-domain` | a wrong field, operator, value or structure in a domain |
 | ↳ `odoo-domain-model` | a domain of another model than the one that takes it |
 | ↳ `odoo-domain-search` | a term that Odoo's search rejects or silently ignores (an unsearchable field...) |
-| `odoo-xmlid` | an `env.ref()` id that no data file in the closure creates |
+| `odoo-selection` | a string compared with a `Selection` field that is not one of its keys |
+| `odoo-xmlid` | an XML id of `env.ref()`, `has_group()`, `groups=` that no data file in the closure creates |
 
 Turn a code off with `disable_error_code = ["odoo-domain"]` in `[tool.mypy]`, or silence
 one line with `# type: ignore[odoo-domain]`. Code guarded by

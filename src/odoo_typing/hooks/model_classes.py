@@ -9,8 +9,11 @@ from mypy.nodes import (
     AssignmentStmt,
     ClassDef,
     Expression,
+    ListExpr,
     NameExpr,
+    StrExpr,
     SymbolTableNode,
+    TupleExpr,
     TypeInfo,
     Var,
 )
@@ -42,6 +45,12 @@ from odoo_typing.hooks.models import (
 from odoo_typing.hooks.nodes import class_infos, field_sources, incomplete_modules, lookup_class
 from odoo_typing.methods import annotate_self_overrides
 from odoo_typing.records import digest
+from odoo_typing.references import (
+    META_FIELD_ATTRIBUTES,
+    ODOO_FIELD_REF,
+    did_you_mean,
+    order_fields,
+)
 from odoo_typing.registry import MissingParent
 from odoo_typing.scan_store import encode
 from odoo_typing.scanner import Contribution
@@ -125,10 +134,38 @@ class ModelClassHooks(Hooks):
         annotate_self_overrides(ctx)
         contribution = self.registry.contribution(ctx.cls.info.fullname)
         if contribution is not None:
+            self._check_meta_references(contribution, ctx)
             self._delegate_fields(contribution, ctx)
             if self.registry.log_access(contribution):
                 add_log_access_fields(ctx.cls.info, _log_access_types(ctx, self._profile))
             self._add_fields_digest(ctx)
+
+    def _check_meta_references(self, contribution: Contribution, ctx: ClassDefContext) -> None:
+        """Report the fields that ``_order``, ``_rec_name`` and the like name but are not there.
+
+        In the class body of a concrete model, against the fields its addon sees. Odoo
+        asserts ``_rec_name`` when it sets the model up and raises for the others when it
+        searches. Reported from semantic analysis (mypy has no hook on a class attribute
+        when it checks types), so the daemon does not report again when another module
+        drops the field: see docs/how-it-works.md.
+        """
+        model, addon_name = contribution.model, contribution.addon
+        if not self.registry.concrete(model, addon_name):
+            return
+        fields = self.registry.fields(model, addon_name)
+        if not fields:
+            return
+        for statement in ctx.cls.defs.body:
+            if not isinstance(statement, AssignmentStmt) or len(statement.lvalues) != 1:
+                continue
+            target = statement.lvalues[0]
+            if not isinstance(target, NameExpr):
+                continue
+            for name, node in _meta_field_names(target.name, statement.rvalue, ctx):
+                if name not in fields:
+                    message = f'Odoo model "{model}" has no field "{name}" in {target.name}'
+                    message += did_you_mean(name, fields)
+                    ctx.api.fail(message, node, code=ODOO_FIELD_REF)
 
     def _add_fields_digest(self, ctx: ClassDefContext) -> None:
         """Give the module of a model class a hidden attribute: a digest of its fields.
@@ -187,6 +224,27 @@ class ModelClassHooks(Hooks):
                 return
             sources += found or []
         add_delegated_fields(ctx.cls.info, sources)
+
+
+def _meta_field_names(
+    attribute: str, value: Expression, ctx: ClassDefContext
+) -> list[tuple[str, Expression]]:
+    """The fields the value of a class attribute names, each with the node to report at.
+
+    ``_order`` is an order (a string that is not one is reported here); the attributes of
+    :data:`META_FIELD_ATTRIBUTES` are a field name, or a list of names (their first steps:
+    ``_rec_names_search`` takes paths).
+    """
+    if attribute == "_order" and isinstance(value, StrExpr):
+        names = order_fields(value.value)
+        if names is None:
+            message = f'_order = "{value.value}" is not an order: Odoo raises when it searches'
+            ctx.api.fail(message, value, code=ODOO_FIELD_REF)
+        return [(name, value) for name in names or ()]
+    if attribute not in META_FIELD_ATTRIBUTES:
+        return []
+    items = value.items if isinstance(value, ListExpr | TupleExpr) else [value]
+    return [(item.value.split(".")[0], item) for item in items if isinstance(item, StrExpr)]
 
 
 def _semanal_lookup(ctx: ClassDefContext) -> Lookup:

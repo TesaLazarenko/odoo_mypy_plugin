@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-from mypy.nodes import Expression, MemberExpr, NameExpr, StrExpr, TempNode
+from collections.abc import Mapping
+
+from mypy.nodes import (
+    Expression,
+    ListExpr,
+    MemberExpr,
+    NameExpr,
+    SetExpr,
+    StrExpr,
+    TempNode,
+    TupleExpr,
+)
 from mypy.plugin import MethodContext
 from mypy.types import (
     AnyType,
@@ -30,9 +41,14 @@ from odoo_typing.hooks.nodes import (
 )
 from odoo_typing.methods import is_self_method, keep_receiver
 from odoo_typing.references import (
+    AGGREGATES,
+    DATE_CLASSES,
+    GRANULARITIES,
     KNOWN_CLASSES,
     ODOO_FIELD_REF,
     did_you_mean,
+    group_spec,
+    order_fields,
     record_paths,
     resolve_path,
 )
@@ -120,6 +136,112 @@ class RecordsetHooks(Hooks):
             return records
         return checker.named_generic_type("builtins.list", [value])
 
+    def check_order(self, method: str, ctx: MethodContext) -> None:
+        """``search(domain, order="date desc, id")``: the order and the fields it names.
+
+        A literal or a ``Final`` / ``Literal`` str. Odoo raises for a string that is not an
+        order, and for a name that is not a field of the model (on a concrete model: a
+        mixin's order names fields of the models using it).
+        """
+        if "order" not in ctx.callee_arg_names:
+            return
+        index = ctx.callee_arg_names.index("order")
+        receiver = get_proper_type(ctx.type)
+        if not ctx.args[index] or not isinstance(receiver, Instance):
+            return
+        argument = literal_string(ctx.args[index][0], ctx.arg_types[index][0])
+        model = self._models.model_of(receiver.type)
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if argument is None or not argument.value.strip() or model is None or addon_name is None:
+            return
+        names = order_fields(argument.value)
+        if names is None:
+            message = f'{method}(order="{argument.value}") is not an order: Odoo raises'
+            ctx.api.fail(message, argument, code=ODOO_FIELD_REF)
+            return
+        if not self.registry.concrete(model, addon_name):
+            return
+        fields = self._fields_of(addon_name, ctx.api)(model)
+        guarded = self._field_guarded(ctx.api.path)
+        for name in names:
+            if fields and name not in fields and not guarded(name, argument.line):
+                message = f'Odoo model "{model}" has no field "{name}" in {method}(order=...)'
+                ctx.api.fail(message + did_you_mean(name, fields), argument, code=ODOO_FIELD_REF)
+
+    def check_field_names(self, method: str, parameter: str, ctx: MethodContext) -> None:
+        """``fetch(["a", "b"])`` / ``search_fetch(domain, [...])``: the names are fields.
+
+        The literal strings of a literal list, tuple or set; on a concrete model.
+        """
+        found = self._literal_items(parameter, ctx)
+        if found is None:
+            return
+        model, fields, items = found
+        guarded = self._field_guarded(ctx.api.path)
+        for item in items:
+            if item.value not in fields and not guarded(item.value, item.line):
+                message = f'Odoo model "{model}" has no field "{item.value}" in {method}()'
+                ctx.api.fail(message + did_you_mean(item.value, fields), item, code=ODOO_FIELD_REF)
+
+    def check_group_specs(self, method: str, ctx: MethodContext) -> None:
+        """``_read_group(domain, ["date:month"], ["amount:sum"])``: the specs and their fields.
+
+        ``groupby`` items are ``field`` or ``field:granularity`` (of a date field);
+        ``aggregates`` items are ``__count`` or ``field:function``. Odoo raises for a name
+        that is not a field, a granularity or an aggregate function it does not know. The
+        ``read_group`` of Odoo 17-19 takes other forms (``"total:sum(amount)"``): only its
+        ``groupby`` is checked.
+        """
+        guarded = self._field_guarded(ctx.api.path)
+        specs = "aggregates" in ctx.callee_arg_names
+        for parameter in ("groupby", "aggregates") if specs else ("groupby",):
+            found = self._literal_items(parameter, ctx)
+            if found is None:
+                continue
+            model, fields, items = found
+            for item in items:
+                if parameter == "aggregates" and item.value == "__count":
+                    continue
+                spec = group_spec(item.value)
+                problem = None
+                if spec is None:
+                    problem = f'"{item.value}" in {method}({parameter}=...) is not a specification'
+                elif spec.field not in fields:
+                    if guarded(spec.field, item.line):
+                        continue
+                    problem = f'Odoo model "{model}" has no field "{spec.field}" in '
+                    problem += f"{method}({parameter}=...)" + did_you_mean(spec.field, fields)
+                elif specs:
+                    problem = _function_problem(parameter, spec.function, fields[spec.field])
+                if problem is not None:
+                    ctx.api.fail(problem, item, code=ODOO_FIELD_REF)
+
+    def _literal_items(
+        self, parameter: str, ctx: MethodContext
+    ) -> tuple[str, Mapping[str, FieldInfo], list[StrExpr]] | None:
+        """The model, its fields and the literal strings given for a parameter of a method.
+
+        ``None`` unless the receiver is a concrete model whose fields are known and the
+        argument is a literal string, list, tuple or set.
+        """
+        if parameter not in ctx.callee_arg_names:
+            return None
+        actuals = ctx.args[ctx.callee_arg_names.index(parameter)]
+        receiver = get_proper_type(ctx.type)
+        if len(actuals) != 1 or not isinstance(receiver, Instance):
+            return None
+        value = actuals[0]
+        nodes = value.items if isinstance(value, ListExpr | TupleExpr | SetExpr) else [value]
+        items = [node for node in nodes if isinstance(node, StrExpr)]
+        model = self._models.model_of(receiver.type)
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if not items or model is None or addon_name is None:
+            return None
+        if not self.registry.concrete(model, addon_name):
+            return None
+        fields = self._fields_of(addon_name, ctx.api)(model)
+        return (model, fields, items) if fields else None
+
     def _check_record_paths(
         self, method: str, receiver: Instance, argument: StrExpr, ctx: MethodContext
     ) -> bool:
@@ -162,6 +284,23 @@ class RecordsetHooks(Hooks):
         ):
             return ctx.default_return_type
         return type_checker(ctx.api).named_generic_type("typing.Iterator", [receiver])
+
+
+def _function_problem(parameter: str, function: str | None, field: FieldInfo) -> str | None:
+    """Why the part after ``:`` of a ``_read_group`` spec is wrong for its field, if it is."""
+    if parameter == "aggregates":
+        if function is None:
+            return f'Aggregate "{field.name}" has no function ("{field.name}:sum")'
+        if function not in AGGREGATES:
+            message = f'"{function}" is not an aggregate function'
+            return message + did_you_mean(function, AGGREGATES)
+        return None
+    if function is None or field.field_type not in DATE_CLASSES:
+        return None  # a property's own granularity, a custom field class
+    if function not in GRANULARITIES:
+        message = f'"{function}" is not a granularity of date field "{field.name}"'
+        return message + did_you_mean(function, GRANULARITIES)
+    return None
 
 
 def _ids_only(load: Expression | None) -> bool | None:

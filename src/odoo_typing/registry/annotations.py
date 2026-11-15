@@ -16,7 +16,7 @@ own (:func:`odoo_typing.scanner.scan_file_classes`), kept for their stamps.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -250,6 +250,23 @@ class AnnotatedModels(ModelFields):
             )
             self._values_models[model] = frozenset(involved)
         return self._values_fields[model]
+
+    def selection_keys_anywhere(self, models: Iterable[str], field: str) -> frozenset[str]:
+        """The keys that any addon on the addons paths gives a selection field of some models.
+
+        Asked on an error path only (a key that the checking addon's view does not have):
+        a key that an addon outside the view adds with ``selection_add`` is how code asks
+        about an addon that may not be installed, not a misspelled key.
+        """
+        found: set[str] = set()
+        for model in models:
+            for addon_name, path in self._class_files().files(model):
+                for item in self._classes_in(addon_name, path):
+                    for info in item.fields if item.model == model else ():
+                        if info.name == field:
+                            found.update(info.selection or ())
+                            found.update(info.selection_add or ())
+        return frozenset(found)
 
     def values_digest(self, alias: str) -> str:
         """Digest of the keys of every model that an alias may name, on any addons path.

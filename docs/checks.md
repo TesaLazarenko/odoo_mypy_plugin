@@ -72,7 +72,8 @@ Every check has its own error code; a sub-code is also disabled with its parent.
 |---|---|
 | `odoo-model` | a model name that no addon on the addons path defines; `_inherit` defined later; `_inherit` cycles |
 | ↳ `odoo-model-depends` | a model that only addons outside the `depends` closure define |
-| `odoo-field-ref` | names in field definitions, `@api.depends` / `constrains` / `onchange`, `mapped` / `filtered` / `sorted` / `grouped`, `read()` |
+| `odoo-field-ref` | names in field definitions, `@api.depends` / `constrains` / `onchange`, `mapped` / `filtered` / `sorted` / `grouped`, `read()` / `fetch()`, orders (`order=`, `_order`), `_rec_name` and the like, `_read_group` specifications |
+| `odoo-selection` | a string compared with a `Selection` field that is not one of its keys |
 | `odoo-vals` | the `vals` of `create` / `write` / `copy(default=)`, x2many commands, field assignments |
 | ↳ `odoo-vals-key` | a key that is not a field of the model |
 | ↳ `odoo-vals-type` | a value the field does not take |
@@ -167,9 +168,49 @@ did you mean "city"?  [odoo-field-ref]
   `grouped("a")` (a literal, or a `Final` / `Literal` str). `grouped`, and `sorted`
   before Odoo 19, take one field name; `sorted` in 19+ takes an order such as
   `"name desc, id"`.
-- The field names of `read([...])` and `search_read(domain, [...])`.
+- The field names of `read([...])`, `search_read(domain, [...])`, `fetch([...])` and
+  `search_fetch(domain, [...])`.
+- `ondelete=` of a `Many2one`: `"set null"`, `"restrict"` or `"cascade"`, and not
+  `"set null"` together with `required=True` (Odoo raises when it sets the field up).
+- `currency_field=` of a `Monetary` field (a field of the model), `inverse_name=` of a
+  `One2many` (a field of the comodel) and the method name of `group_expand=`.
+- Orders: the `order=` of `search` / `search_read` / `search_fetch` / `_search` (a
+  literal, or a `Final` / `Literal` str) and `_order` in a class body. The string must
+  be an order (`"date desc, partner_id.name nulls last, id"`) and each term must start
+  with a field of the model:
+
+  ```text
+  error: Odoo model "sale.order" has no field "date_ordr" in search(order=...); did you
+  mean "date_order"?  [odoo-field-ref]
+  ```
+
+- The class attributes that name fields: `_rec_name`, `_parent_name`, `_fold_name`,
+  `_active_name` and the items of `_rec_names_search`.
+- The specifications of `_read_group(domain, groupby, aggregates)` (and of
+  `read_group` in Odoo 20): each names a field; a `groupby` item of a date field may add
+  a granularity (`"date:month"`), an `aggregates` item is `"__count"` or
+  `"field:function"` (`"amount:sum"`). Of the `read_group` of Odoo 17-19 only the
+  fields of `groupby` are checked.
 
 Abstract models are not checked: their fields refer to the models that use them.
+
+## Selection keys in comparisons: `odoo-selection`
+
+A literal string compared with a `Selection` field must be one of its keys, or the
+condition is silently always false (always true for `!=` / `not in`):
+
+```text
+error: Value "confirmd" is not in the selection of field "state" of Odoo model
+"sale.order" ("draft", "sent", "sale", "cancel")  [odoo-selection]
+```
+
+- `record.state == "x"`, `"x" != record.state`, `record.state in ("x", "y")` and
+  `not in`, with a literal tuple, list or set.
+- Only for a selection given as a literal list (with the keys every `selection_add` of
+  the addon's view adds); not for a method or a constant the scan cannot read.
+- A key that an addon outside the `depends` closure adds with `selection_add` is not
+  reported: `provider.code == "custom"` is how code asks about an addon that may not be
+  installed.
 
 ## Values of `create` and `write`: `odoo-vals`
 
@@ -178,6 +219,9 @@ Abstract models are not checked: their fields refer to the models that use them.
 - the `vals` of `create()`, `write()` and `copy(default=...)`;
 - the vals inside x2many commands (`Command.create({...})`, `Command.update(id, {...})`,
   `(0, 0, {...})`), checked against the comodel;
+- the ids in x2many commands: `Command.link(partner.id)`, `(4, partner.id)`,
+  `Command.set(partners.ids)`, `(6, 0, partners.ids)` on a field of another comodel
+  link whatever records have those ids; and a tuple whose first item is not 0 to 6;
 - values assigned to fields (`record.partner_id = "x"`);
 - the `default_<field>` keys of `records.with_context(...)` followed by `.create(...)`
   (keywords, a dict, or a variable holding such records). A key of a field the model
@@ -319,7 +363,9 @@ items are the plugin's checks.
 
 ## XML ids: `odoo-xmlid`
 
-`odoo-xmlid` covers `env.ref("module.name")`. The XML id must either:
+`odoo-xmlid` covers `env.ref("module.name")`, the groups of `user.has_group("...")`,
+`user.has_groups("a.b,!c.d")`, `self.user_has_groups(...)` (Odoo 17) and of a field's
+`groups="..."`, and the action of `_for_xml_id("...")`. The XML id must either:
 
 - be created by a data file (`data` / `demo` in a manifest: `<record>`, `<template>`,
   `<menuitem>`, `<act_window>`, `<report>`, the `id` column of `<model>.csv`) of an
@@ -338,6 +384,11 @@ creates.
 - An id whose module is not an addon of the closure is reported only when an addon
   outside it creates it: ids made by Python code (`local_es.x` of a chart template,
   hooks) are not in any data file.
+- An id given as a group must be a `res.groups` record, and the id of `_for_xml_id` an
+  action (`ir.actions.*`): Odoo answers `False` for a group that does not exist, which
+  hides a misspelled name. A group of an addon outside the `depends` closure is not
+  reported: `has_group("website.group_website_designer")` is how code asks about an
+  addon that may not be installed.
 
 ## Fields that Odoo leaves untyped
 

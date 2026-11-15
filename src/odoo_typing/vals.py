@@ -71,6 +71,7 @@ __all__ = [
     "FALSE",
     "NEW_ID",
     "NONE",
+    "ODOO_SELECTION",
     "ODOO_VALS",
     "ODOO_VALS_KEY",
     "ODOO_VALS_TYPE",
@@ -80,6 +81,7 @@ __all__ = [
     "ValsChecker",
     "ValsTarget",
     "context_defaults",
+    "selection_problem",
     "stored",
     "vals_dicts",
     "values_model_of",
@@ -91,6 +93,10 @@ ODOO_VALS_KEY = ErrorCode(
 )
 ODOO_VALS_TYPE = ErrorCode(
     "odoo-vals-type", "Check the types of the values in vals", "Odoo", sub_code_of=ODOO_VALS
+)
+
+ODOO_SELECTION = ErrorCode(
+    "odoo-selection", "Check the keys a selection field is compared with", "Odoo"
 )
 
 FALSE: Final = "Literal[False]"
@@ -135,6 +141,11 @@ X2MANY_CLASSES: Final = frozenset({"One2many", "Many2many"})
 # position of its dict argument; ``(0, 0, vals)`` / ``(1, id, vals)`` tuples likewise.
 COMMAND_VALS: Final = {"create": 0, "update": 1}
 TUPLE_COMMANDS: Final = frozenset({0, 1})
+# Commands that carry ids of comodel records: ``Command`` method (tuple code) and the
+# position of the id, or of the list of ids (``set``).
+COMMAND_IDS: Final = {"update": 0, "delete": 0, "unlink": 0, "link": 0, "set": 0}
+TUPLE_COMMAND_IDS: Final = {1: 1, 2: 1, 3: 1, 4: 1, 6: 2}
+TUPLE_COMMAND_CODES: Final = frozenset(range(7))
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,6 +379,7 @@ class ValsChecker:
             self._check_comodel(model, info, items, value)
             if info.field_type in X2MANY_CLASSES and isinstance(value, ListExpr):
                 target = self.target_for(info.comodel)
+                self._check_command_ids(model, info, value)
                 for vals in _command_vals(value):
                     if isinstance(vals, DictExpr):
                         self.check(target, vals)
@@ -386,22 +398,45 @@ class ValsChecker:
                 code=ODOO_VALS_TYPE,
             )
 
+    def _check_command_ids(self, model: str, info: FieldInfo, commands: ListExpr) -> None:
+        """Report x2many commands with the ids of another model's records, or no command.
+
+        ``Command.link(partner.id)`` / ``(4, partner.id)`` / ``Command.set(partners.ids)`` /
+        ``(6, 0, partners.ids)`` on a field of another comodel link whatever records have
+        those ids; a tuple whose first item is not 0-6 is not a command.
+        """
+        for item in commands.items:
+            for node in _command_ids(item):
+                if not isinstance(node, MemberExpr) or node.name not in {"id", "ids"}:
+                    continue
+                records = get_proper_type(self.checker.lookup_type_or_none(node.expr))
+                other = self.model_of(records.type) if isinstance(records, Instance) else None
+                if other is None or other == info.comodel or not self.concrete(other):
+                    continue
+                self.checker.fail(
+                    f'Incompatible records for field "{info.name}" of Odoo model "{model}" '
+                    f'(command has the {node.name} of "{other}" records, {info.field_type} '
+                    f'field takes "{info.comodel}" records)',
+                    node,
+                    code=ODOO_VALS_TYPE,
+                )
+            if isinstance(item, TupleExpr) and item.items:
+                code = item.items[0]
+                if isinstance(code, IntExpr) and code.value not in TUPLE_COMMAND_CODES:
+                    self.checker.fail(
+                        f'({code.value}, ...) is not an x2many command of field "{info.name}" of '
+                        f'Odoo model "{model}" (commands are 0 to 6)',
+                        item,
+                        code=ODOO_VALS_TYPE,
+                    )
+
     def _check_selection_keys(
         self, model: str, info: FieldInfo, items: Sequence[ProperType], value: Expression
     ) -> None:
-        selection = info.selection
-        if selection is None or "selection" in info.dynamic:
-            return
         for key in _literal_strings(items):
-            if key and key not in selection:  # Odoo stores a falsy value as False
-                shown = ", ".join(f'"{item}"' for item in selection[:SHOWN_KEYS])
-                more = ", ..." if len(selection) > SHOWN_KEYS else ""
-                self.checker.fail(
-                    f'Value "{key}" is not in the selection of field "{info.name}" of '
-                    f'Odoo model "{model}" ({shown}{more})',
-                    value,
-                    code=ODOO_VALS_TYPE,
-                )
+            problem = selection_problem(model, info, key)
+            if problem is not None:
+                self.checker.fail(problem, value, code=ODOO_VALS_TYPE)
 
     def _check_comodel(
         self, model: str, info: FieldInfo, items: Sequence[ProperType], value: Expression
@@ -445,6 +480,23 @@ class ValsChecker:
         return Instance(info, args)
 
 
+def selection_problem(model: str, info: FieldInfo, key: str) -> str | None:
+    """The message for a string that is not a key of a selection field, if it is not one.
+
+    ``None`` when the keys are not known (a method, a constant the scan cannot read) and
+    for an empty string: Odoo stores a falsy value as ``False``.
+    """
+    selection = info.selection
+    if selection is None or "selection" in info.dynamic or not key or key in selection:
+        return None
+    shown = ", ".join(f'"{item}"' for item in selection[:SHOWN_KEYS])
+    more = ", ..." if len(selection) > SHOWN_KEYS else ""
+    return (
+        f'Value "{key}" is not in the selection of field "{info.name}" of '
+        f'Odoo model "{model}" ({shown}{more})'
+    )
+
+
 def _union_items(typ: Type) -> list[ProperType]:
     proper = get_proper_type(typ)
     if isinstance(proper, UnionType):
@@ -472,6 +524,18 @@ def _command_vals(commands: ListExpr) -> Iterator[Expression]:
             command = code.value if isinstance(code, IntExpr) else None
             if command in TUPLE_COMMANDS:
                 yield vals
+
+
+def _command_ids(item: Expression) -> Iterator[Expression]:
+    """The id (or list of ids) an x2many command carries: ``Command.link(id)``, ``(4, id)``."""
+    if isinstance(item, CallExpr):
+        position = COMMAND_IDS.get(_command_name(item.callee) or "")
+        if position is not None and len(item.args) > position:
+            yield item.args[position]
+    elif isinstance(item, TupleExpr) and item.items and isinstance(item.items[0], IntExpr):
+        position = TUPLE_COMMAND_IDS.get(item.items[0].value)
+        if position is not None and len(item.items) > position:
+            yield item.items[position]
 
 
 def values_model_of(typ: Type, many: bool = False) -> str | None:

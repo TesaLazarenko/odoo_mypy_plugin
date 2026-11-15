@@ -94,13 +94,14 @@ from odoo_typing.hooks.annotations import (
     values_get,
     values_get_signature,
 )
+from odoo_typing.hooks.comparisons import COMPARISON_HOOKS, ComparisonHooks
 from odoo_typing.hooks.domains import (
     DomainHooks,
     domain_parameters,
     has_domain_type,
     wrapper_signature,
 )
-from odoo_typing.hooks.env import EnvHooks, request_env
+from odoo_typing.hooks.env import XML_ID_METHODS, EnvHooks, request_env
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
 from odoo_typing.hooks.field_values import FieldValueHooks
 from odoo_typing.hooks.model_classes import ModelClassHooks
@@ -173,7 +174,8 @@ class OdooPlugin(Plugin):
         self._vals = ValsHooks(models)
         self._recordsets = RecordsetHooks(models)
         self._domains = DomainHooks(models, self._recordsets)
-        self._fields = FieldDefinitionHooks(models, self._domains)
+        self._comparisons = ComparisonHooks(models)
+        self._fields = FieldDefinitionHooks(models, self._domains, self._env)
         self._values = FieldValueHooks(models)
         annotations = AnnotationHooks(models)
         self._type_hooks: dict[str, Callable[[AnalyzeTypeContext], Type]] = {
@@ -409,6 +411,14 @@ class OdooPlugin(Plugin):
             return partial(self._domains.check_parameter, name, PARAMETER_DOMAIN_METHODS[name])
         if name == "read":
             return partial(self._recordsets.read_result, name)
+        if fullname in COMPARISON_HOOKS:
+            return self._comparisons.selection_keys
+        if name == "fetch":
+            return partial(
+                _checked, partial(self._recordsets.check_field_names, name, "field_names")
+            )
+        if name in XML_ID_METHODS:
+            return partial(self._env.xml_id_argument, name)
         if name in RECORD_PATH_METHODS:
             return partial(self._recordsets.record_path, name)
         if profile.untyped_fields and name == "__iter__":
@@ -504,6 +514,12 @@ class OdooPlugin(Plugin):
             # Declared as ``Many2one[Any]``: the res.users records the reading addon sees.
             return partial(self._env.record, "res.users")
         return self._values.record_attribute if registry.contribution(owner) else None
+
+
+def _checked(check: Callable[[MethodContext], None], ctx: MethodContext) -> Type:
+    """Run a check of a method call that keeps its declared return type."""
+    check(ctx)
+    return ctx.default_return_type
 
 
 @dataclass(slots=True)

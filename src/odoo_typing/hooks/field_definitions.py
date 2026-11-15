@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from mypy.nodes import CallExpr, StrExpr, TypeInfo
+from mypy.nodes import CallExpr, Expression, NameExpr, StrExpr, TypeInfo
 from mypy.plugin import CheckerPluginInterface, FunctionContext
 from mypy.types import AnyType, Instance, Type, TypeOfAny, get_proper_type
 
 from odoo_typing.classes import instance_of
 from odoo_typing.hooks.domains import DomainHooks
+from odoo_typing.hooks.env import GROUPS, EnvHooks
 from odoo_typing.hooks.models import Hooks, Models
 from odoo_typing.hooks.nodes import class_infos, field_arguments, type_checker
 from odoo_typing.references import (
@@ -22,6 +23,7 @@ from odoo_typing.references import (
     METHOD_ARGUMENTS,
     ODOO_FIELD_REF,
     decorator_problem,
+    did_you_mean,
     field_kind,
     missing_method_message,
     resolve_path,
@@ -29,13 +31,16 @@ from odoo_typing.references import (
 
 __all__ = ["FieldDefinitionHooks"]
 
+ONDELETE_POLICIES = ("set null", "restrict", "cascade")
+
 
 class FieldDefinitionHooks(Hooks):
     """Check field definitions and field decorators; bind relational fields to comodels."""
 
-    def __init__(self, models: Models, domains: DomainHooks) -> None:
+    def __init__(self, models: Models, domains: DomainHooks, env: EnvHooks) -> None:
         super().__init__(models)
         self._domains = domains
+        self._env = env
 
     def definition(
         self, then: Callable[[FunctionContext], Type] | None, ctx: FunctionContext
@@ -49,6 +54,9 @@ class FieldDefinitionHooks(Hooks):
             and isinstance(default, Instance)
         ):
             self._check_field_references(ctx.context, default.type, *owner, ctx.api)
+            groups = dict(field_arguments(ctx.context, default.type.name)).get("groups")
+            if isinstance(groups, StrExpr):  # ``groups="base.group_user,base.group_system"``
+                self._env.check_xml_ids(groups, GROUPS, owner[1], ctx.api)
             if default.type.fullname in self._profile.relational_classes:
                 self._domains.check_field(ctx.context, default.type.name, owner[1], ctx.api)
         return then(ctx) if then is not None else ctx.default_return_type
@@ -81,11 +89,20 @@ class FieldDefinitionHooks(Hooks):
             model, addon_name
         ):
             return
-        for argument, value in field_arguments(call, field_class.name):
+        arguments = field_arguments(call, field_class.name)
+        for argument, value in arguments:
             if not isinstance(value, StrExpr):
                 continue
             if argument == "related":
                 self._check_related(value, field_class.name, model, addon_name, api)
+            elif argument == "ondelete" and field_class.name == "Many2one":
+                self._check_ondelete(value, dict(arguments).get("required"), api)
+            elif argument == "currency_field" and field_class.name == "Monetary":
+                self._check_field_name(value, argument, model, addon_name, api)
+            elif argument == "inverse_name" and field_class.name == "One2many":
+                comodel = dict(arguments).get("comodel_name")
+                if isinstance(comodel, StrExpr) and "related" not in dict(arguments):
+                    self._check_field_name(value, argument, comodel.value, addon_name, api)
             elif argument in METHOD_ARGUMENTS and not (
                 argument == "selection" and field_class.name not in {"Selection", "Reference"}
             ):
@@ -94,6 +111,37 @@ class FieldDefinitionHooks(Hooks):
                     methods = self.registry.methods(model, addon_name)
                     message = missing_method_message(model, argument, value.value, methods)
                     api.fail(message, value, code=ODOO_FIELD_REF)
+
+    def _check_ondelete(
+        self, policy: StrExpr, required: Expression | None, api: CheckerPluginInterface
+    ) -> None:
+        """``ondelete=`` of a ``Many2one``: a policy Odoo knows, not ``set null`` if required."""
+        if policy.value not in ONDELETE_POLICIES:
+            message = f'ondelete="{policy.value}" is not a policy of a Many2one field'
+            api.fail(
+                message + did_you_mean(policy.value, ONDELETE_POLICIES), policy, code=ODOO_FIELD_REF
+            )
+        elif (
+            policy.value == "set null"
+            and isinstance(required, NameExpr)
+            and required.name == "True"
+        ):
+            message = 'A required Many2one field cannot have ondelete="set null": Odoo raises'
+            api.fail(message, policy, code=ODOO_FIELD_REF)
+
+    def _check_field_name(
+        self, name: StrExpr, argument: str, model: str, addon_name: str, api: CheckerPluginInterface
+    ) -> None:
+        """``currency_field="x"`` / ``inverse_name="x"``: a field of the model (the comodel).
+
+        Odoo stops loading the registry otherwise. Not when the model's fields are not known.
+        """
+        fields = self._fields_of(addon_name, api)(model)
+        if fields and name.value not in fields:
+            message = (
+                f'Odoo model "{model}" has no field "{name.value}" ({argument}="{name.value}")'
+            )
+            api.fail(message + did_you_mean(name.value, fields), name, code=ODOO_FIELD_REF)
 
     def _check_related(
         self,

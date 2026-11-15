@@ -84,6 +84,7 @@ from odoo_typing.hooks.models import Hooks, Models
 from odoo_typing.hooks.nodes import field_arguments, type_checker
 from odoo_typing.hooks.recordsets import RecordsetHooks
 from odoo_typing.methods import is_self_method, keep_receiver
+from odoo_typing.references import ORDER_METHODS, READ_GROUP_METHODS
 from odoo_typing.scanner import FieldInfo
 
 __all__ = ["DomainHooks", "domain_parameters", "has_domain_type", "wrapper_signature"]
@@ -135,6 +136,12 @@ class DomainHooks(Hooks):
         domain = ctx.args[index][0] if len(ctx.args) > index and ctx.args[index] else None
         if domain is not None:
             self._check_receiver_domain(method, domain, ctx)
+        if method in ORDER_METHODS:
+            self._recordsets.check_order(method, ctx)
+        if method in READ_GROUP_METHODS:
+            self._recordsets.check_group_specs(method, ctx)
+        if method == "search_fetch":
+            self._recordsets.check_field_names(method, "field_names", ctx)
         if method == "search_read":
             return self._recordsets.read_result(method, ctx)
         if is_self_method(method):
