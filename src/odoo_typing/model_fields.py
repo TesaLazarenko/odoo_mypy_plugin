@@ -38,7 +38,7 @@ __all__ = [
     "stored",
 ]
 
-T = TypeVar("T")
+ArgumentT = TypeVar("ArgumentT")
 # Field classes that subclass another field class (Odoo 18-20); a redefinition with a
 # subclass keeps the arguments of the earlier definitions.
 FIELD_PARENTS: Final = {"Image": "Binary", "Reference": "Selection", "Many2oneReference": "Integer"}
@@ -160,7 +160,7 @@ def _override(merged: FieldInfo | None, definition: FieldInfo) -> FieldInfo:
     passed |= definition.dynamic & set(OVERRIDABLE)
     dynamic = (merged.dynamic - passed) | (definition.dynamic & passed)
 
-    def take(old: T | None, new: T | None, name: str) -> T | None:
+    def take(old: ArgumentT | None, new: ArgumentT | None, name: str) -> ArgumentT | None:
         return new if name in passed else old
 
     selection, method = merged.selection, merged.selection_method

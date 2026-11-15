@@ -20,9 +20,9 @@ import ast
 import importlib
 import json
 import logging
-import os
 import sys
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from types import SimpleNamespace
 
 logging.disable(logging.CRITICAL)
@@ -68,10 +68,9 @@ class StubCursor(sql_db.BaseCursor):
 
 def _manifest(addons_dirs: Iterable[str], name: str) -> dict[str, object] | None:
     for directory in addons_dirs:
-        path = os.path.join(directory, name, "__manifest__.py")
-        if os.path.isfile(path):
-            with open(path) as file:
-                return ast.literal_eval(file.read())
+        path = Path(directory, name, "__manifest__.py")
+        if path.is_file():
+            return ast.literal_eval(path.read_text())
     return None
 
 
@@ -156,7 +155,7 @@ def main(output: str, tops: list[str]) -> None:
         }
         dumps[top] = {"addons": order, "models": models}
         print(f"{top}: {len(order)} addons, {len(models)} models", file=sys.stderr)
-    with open(output, "w") as file:
+    with Path(output).open("w") as file:
         json.dump(dumps, file, indent=1, sort_keys=True)
 
 

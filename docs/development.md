@@ -6,13 +6,19 @@
 
 ```bash
 uv sync
-uv run pytest            # needs Odoo installed; set ODOO_PATH=/path/to/odoo if not auto-found
-uv run ruff check src tests tools && uv run ruff format --check src tests tools && uv run mypy
+uv run pytest -n 6       # needs Odoo installed; set ODOO_PATH=/path/to/odoo if not auto-found
+uv run ruff check src tests tools && uv run ruff format --check src tests tools && uv run pylint src tests tools && uv run mypy
 ```
 
 The end-to-end tests run the real mypy on throw-away addons against the installed Odoo,
 also with two runs on one cache and through `dmypy`. They fail when mypy crashes
 (`INTERNAL ERROR`, exit status 2), not only on wrong messages.
+
+`-n <workers>` (pytest-xdist) runs them in parallel; without it they run one by one.
+Each worker has its own temporary directories and mypy cache (the session fixtures are
+per worker), so each analyzes Odoo's own modules once. On Odoo 19 (14 CPUs): 287 s one
+by one, 160 s with `-n 2`, 90 s with `-n 4`, 68 s with `-n 6` (2 GB in all), 58 s with
+`-n 8`. A worker takes 0.4-0.7 GB, so mind the memory of the machine more than its CPUs.
 
 ## Other Odoo versions
 

@@ -78,7 +78,7 @@ class RecordStore:
             self._directory.mkdir(parents=True, exist_ok=True)
             temporary = self._directory / f".{key}.{os.getpid()}.tmp"
             temporary.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
-            os.replace(temporary, self._directory / key)
+            temporary.replace(self._directory / key)
         except OSError:
             return False
         return True
@@ -190,6 +190,6 @@ def parse_stamps(value: object) -> Stamps | None:
 
 def parse_stamp(value: object) -> Stamp | None:
     """A stamp from JSON (``[mtime_ns, size]``); ``None`` for ``null`` or anything else."""
-    if isinstance(value, list) and len(value) == 2 and all(type(n) is int for n in value):
+    if isinstance(value, list) and len(value) == 2 and all(type(number) is int for number in value):
         return (value[0], value[1])
     return None

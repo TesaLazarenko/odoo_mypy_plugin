@@ -295,7 +295,9 @@ class DomainChecker:
             return "None"
         if isinstance(found, TupleType):
             items = found.items
-            return self.describe(found) if items and all(_is_tuple(i) for i in items) else None
+            return (
+                self.describe(found) if items and all(_is_tuple(item) for item in items) else None
+            )
         if not isinstance(found, Instance):
             return None
         name = found.type.fullname

@@ -462,11 +462,11 @@ class Line(models.Model):
 """
 
 
-def _cycle_addons(a: str) -> dict[str, dict[str, object]]:
+def _cycle_addons(module_a: str) -> dict[str, dict[str, object]]:
     cycle = {
         "__init__.py": "from . import models\n",
         "models/__init__.py": "from . import a, b\n",
-        "models/a.py": a,
+        "models/a.py": module_a,
         "models/b.py": CYCLE_B,
     }
     return _addons(t_use={"depends": ["t_base"], **cycle})

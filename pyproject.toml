@@ -35,7 +35,7 @@ odoo-typing-baseline = "odoo_typing.baseline:main"
 odoo-typing-stubs = "odoo_typing.stubs:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-mock>=3.14", "ruff>=0.15"]
+dev = ["pylint>=4.1", "pytest>=8", "pytest-mock>=3.14", "pytest-xdist>=3.6", "ruff>=0.15"]
 
 [build-system]
 requires = ["hatchling"]
@@ -50,7 +50,24 @@ target-version = "py311"
 extend-exclude = ["tests/fixtures"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ANN", "D"]
+preview = true
+explicit-preview-rules = true  # only preview rules listed by full code below (PLR1702)
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # isort
+    "B",       # bugbear
+    "UP",      # pyupgrade
+    "SIM",     # simplify
+    "C4",      # comprehensions
+    "PTH",     # pathlib
+    "RUF",     # ruff-specific
+    "RET",     # early return: no else after return/raise/continue/break
+    "ANN",     # annotations
+    "D",       # docstrings
+    "PLR5501", # else: if -> elif
+    "PLR1702", # max nesting depth (preview)
+]
 ignore = ["D105", "D107"]
 
 [tool.ruff.lint.pydocstyle]
@@ -58,6 +75,19 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D", "ANN"]
+
+[tool.ruff.lint.pylint]
+max-nested-blocks = 3
+
+[tool.pylint.main]
+# ruff covers everything else; pylint only bans single-character names
+disable = ["all"]
+enable = ["disallowed-name"]
+ignore-paths = ["tests/fixtures/.*"]
+
+[tool.pylint.basic]
+bad-names-rgxs = ["^[a-zA-Z0-9]$"]
+good-names = ["_"]  # drop pylint's default i/j/k exemptions; "_" stays the throwaway name
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

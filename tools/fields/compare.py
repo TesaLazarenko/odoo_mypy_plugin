@@ -97,21 +97,7 @@ def compare(runtime: list[list[object]], classes: Mapping[str, Contribution]) ->
             if info is None:
                 note("field missing in scan", f"{fullname}.{name}")
                 continue
-            counts["fields"] += 1
-            if info.field_type != field_type:
-                note("field class differs", f"{fullname}.{name}: {info.field_type} != {field_type}")
-            for argument, value in arguments.items():
-                mine = scanned_value(info, argument)
-                if value == DYNAMIC:
-                    counts[f"dynamic at runtime {argument}"] += 1
-                elif mine == DYNAMIC:
-                    note(f"dynamic in scan {argument}", f"{fullname}.{name}: {value!r}")
-                elif mine == value:
-                    counts["arguments equal"] += 1
-                else:
-                    note(f"{argument} differs", f"{fullname}.{name}: {mine!r} != {value!r}")
-            for argument in _scanned_arguments(info) - set(arguments):
-                note(f"{argument} only in scan", f"{fullname}.{name}")
+            _compare_field(report, f"{fullname}.{name}", info, field_type, arguments)
         for name in set(scanned) - {field[0] for field in fields}:
             note("field only in scan", f"{fullname}.{name}")
         if set(methods) != set(item.methods):
@@ -119,6 +105,28 @@ def compare(runtime: list[list[object]], classes: Mapping[str, Contribution]) ->
             extra = sorted(set(item.methods) - set(methods))
             note("methods differ", f"{fullname}: missing {missing[:5]} extra {extra[:5]}")
     report.print()
+
+
+def _compare_field(
+    report: Report, where: str, info: FieldInfo, field_type: str, arguments: dict[str, object]
+) -> None:
+    """Count how the scan of one field differs from its runtime dump."""
+    counts, note = report.counts, report.note
+    counts["fields"] += 1
+    if info.field_type != field_type:
+        note("field class differs", f"{where}: {info.field_type} != {field_type}")
+    for argument, value in arguments.items():
+        mine = scanned_value(info, argument)
+        if value == DYNAMIC:
+            counts[f"dynamic at runtime {argument}"] += 1
+        elif mine == DYNAMIC:
+            note(f"dynamic in scan {argument}", f"{where}: {value!r}")
+        elif mine == value:
+            counts["arguments equal"] += 1
+        else:
+            note(f"{argument} differs", f"{where}: {mine!r} != {value!r}")
+    for argument in _scanned_arguments(info) - set(arguments):
+        note(f"{argument} only in scan", where)
 
 
 def merged_value(info: FieldInfo, argument: str) -> object:

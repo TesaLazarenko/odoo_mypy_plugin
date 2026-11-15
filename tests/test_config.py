@@ -180,7 +180,7 @@ def test_load_settings_broken_ini_raises(tmp_path: Path) -> None:
 def _overlay_config(tmp_path: Path, overlay_root: object) -> str:
     _addon(tmp_path / "addons" / "my_mod")
     config = _config(tmp_path, ["addons"])
-    with open(config, "a") as handle:
+    with Path(config).open("a") as handle:
         handle.write(f"overlay_root = {overlay_root!r}\n".replace("'", '"'))
     return config
 

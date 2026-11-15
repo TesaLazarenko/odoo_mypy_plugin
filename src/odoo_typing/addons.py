@@ -256,7 +256,7 @@ class AddonIndex:
 
     def addon_for_path(self, path: str | Path) -> Addon | None:
         """Find the addon a source file belongs to."""
-        directory = os.path.dirname(path)
+        directory = os.path.dirname(path)  # noqa: PTH120 (a string key: asked by every hook)
         if directory not in self._dir_addons:
             self._dir_addons[directory] = self._find_addon(self._real_dir(directory))
         return self._dir_addons[directory]

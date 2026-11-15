@@ -87,7 +87,9 @@ class Fingerprints:
         """
         names = self._addon_names()
         addon_name = _module_addon(module, names)
-        if addon_name is None and any(part in names for part in path.split(os.sep)[:-1]):
+        # A string split, not ``Path.parts``: asked for every module of a run.
+        directories = path.split(os.sep)[:-1]  # noqa: PTH206
+        if addon_name is None and any(part in names for part in directories):
             addon = self._registry.addons.addon_for_path(path)
             addon_name = addon.name if addon is not None else None
         if addon_name is None:
@@ -189,7 +191,7 @@ class Fingerprints:
             stamps = {
                 path: value
                 for path, value in self._registry.index_stamps().items()
-                if os.path.basename(path) not in MANIFEST_NAMES
+                if Path(path).name not in MANIFEST_NAMES
             }
             self._store.save(f"names-{self._key}.json", {"stamps": stamps, "addons": self._names})
             self._roots_digest = digest(stamps)  # as the stored record's: tuples dump as lists
@@ -312,7 +314,7 @@ def _fingerprint_fields(kind: type) -> tuple[str, ...] | None:
         names = None
         if dataclasses.is_dataclass(kind):  # the class of an instance
             fields = dataclasses.fields(kind)
-            names = tuple(f.name for f in fields if f.metadata.get("fingerprint", True))
+            names = tuple(item.name for item in fields if item.metadata.get("fingerprint", True))
         _FINGERPRINT_FIELDS[kind] = names
     return _FINGERPRINT_FIELDS[kind]
 
@@ -333,7 +335,9 @@ def _canonical(value: object) -> object:
     if isinstance(value, tuple | list):
         return [_canonical(item) for item in value]
     if isinstance(value, dict):
-        return sorted(([_canonical(k), _canonical(v)] for k, v in value.items()), key=json.dumps)
+        return sorted(
+            ([_canonical(key), _canonical(item)] for key, item in value.items()), key=json.dumps
+        )
     if isinstance(value, Path):
         return str(value)
     if value is None or isinstance(value, str | int | float):

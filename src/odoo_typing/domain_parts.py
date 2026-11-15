@@ -306,13 +306,13 @@ def _one_path(built: Built) -> bool:
     """
     loops = {key for kind, key, _ in built.path if kind == "loop"}
     arms: dict[int, int] = {}
-    for path in (built.path, *(change.path for change in built.changes)):
-        for kind, key, arm in path:
-            if kind == "loop":
-                if key not in loops:
-                    return False
-            elif arms.setdefault(key, arm) != arm:
+    paths = (built.path, *(change.path for change in built.changes))
+    for kind, key, arm in (step for path in paths for step in path):
+        if kind == "loop":
+            if key not in loops:
                 return False
+        elif arms.setdefault(key, arm) != arm:
+            return False
     return True
 
 

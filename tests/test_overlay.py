@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -41,9 +40,7 @@ def settings(tmp_path: Path, odoo: Path) -> Settings:
 
 
 def _links(directory: Path) -> dict[str, Path]:
-    return {
-        entry.name: Path(os.readlink(entry)) for entry in directory.iterdir() if entry.is_symlink()
-    }
+    return {entry.name: entry.readlink() for entry in directory.iterdir() if entry.is_symlink()}
 
 
 def test_build_overlay_links_odoo_entries_except_addons_and_pycache(

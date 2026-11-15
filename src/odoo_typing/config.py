@@ -264,7 +264,7 @@ def _scan_cache_dir(table: dict[str, object], base_dir: Path) -> Path | None:
 def default_scan_cache_dir() -> Path | None:
     """``$XDG_CACHE_HOME/odoo-typing/scans`` (``~/.cache`` by default); ``None`` without a home."""
     base = os.environ.get("XDG_CACHE_HOME", "")
-    if not os.path.isabs(base):  # the XDG spec ignores a relative value
+    if not Path(base).is_absolute():  # the XDG spec ignores a relative value
         try:
             base = str(Path.home() / ".cache")
         except RuntimeError:

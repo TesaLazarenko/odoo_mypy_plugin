@@ -107,15 +107,19 @@ class ClassFileIndex:
             key = f"class-files-{self.key}.json"
             record = self._keeper.load_record(key) if self._keeper is not None else None
             known = _parse(record)
-            found: dict[str, list[tuple[str, Path]]] = {}
-            for addon in self._addons:
-                for path, models in self._walk(addon, str(addon.path), known):
-                    for model in sorted(models):
-                        found.setdefault(model, []).append((addon.name, Path(path)))
-            self._files = {model: tuple(files) for model, files in found.items()}
+            self._files = self._walk_addons(known)
             if self._keeper is not None and self._directories != known:
                 self._keeper.save_record(key, _encode(self._directories))
         return self._files
+
+    def _walk_addons(self, known: dict[str, _Directory]) -> dict[str, tuple[tuple[str, Path], ...]]:
+        """The files of every addon that name each model (addon and path), addons in order."""
+        found: dict[str, list[tuple[str, Path]]] = {}
+        for addon in self._addons:
+            for path, models in self._walk(addon, str(addon.path), known):
+                for model in sorted(models):
+                    found.setdefault(model, []).append((addon.name, Path(path)))
+        return {model: tuple(files) for model, files in found.items()}
 
     def _walk(
         self, addon: Addon, directory: str, known: dict[str, _Directory]
@@ -132,7 +136,7 @@ class ClassFileIndex:
             names, subdirs = _entries(directory)
         files: dict[str, tuple[Stamp | None, frozenset[str]]] = {}
         for name in names:
-            path = os.path.join(directory, name)
+            path = os.path.join(directory, name)  # noqa: PTH118 (see the docstring)
             now = self._stamps[path] = stamp(path)
             before = previous.files.get(name) if previous is not None else None
             models = before[1] if before is not None and before[0] == now else _named(addon, path)
@@ -141,7 +145,7 @@ class ClassFileIndex:
                 yield path, models
         self._directories[directory] = _Directory(current, files, subdirs)
         for name in subdirs:
-            yield from self._walk(addon, os.path.join(directory, name), known)
+            yield from self._walk(addon, os.path.join(directory, name), known)  # noqa: PTH118
 
 
 def module_of(addon: Addon, path: Path) -> str | None:
@@ -156,17 +160,15 @@ def module_of(addon: Addon, path: Path) -> str | None:
 
 def _entries(directory: str) -> tuple[list[str], tuple[str, ...]]:
     """The ``.py`` files and the subdirectories (that may hold models) of a directory."""
-    names: list[str] = []
-    subdirs: list[str] = []
     try:
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                if entry.is_dir() and entry.name not in NO_MODEL_DIRS:
-                    subdirs.append(entry.name)
-                elif entry.name.endswith(".py") and entry.is_file():
-                    names.append(entry.name)
+        with os.scandir(directory) as iterator:
+            entries = list(iterator)
+        names = [entry.name for entry in entries if entry.name.endswith(".py") and entry.is_file()]
+        subdirs = [
+            entry.name for entry in entries if entry.is_dir() and entry.name not in NO_MODEL_DIRS
+        ]
     except OSError:
-        pass  # removed meanwhile, or not readable: no files
+        return [], ()  # removed meanwhile, or not readable: no files
     return sorted(names), tuple(sorted(subdirs))
 
 

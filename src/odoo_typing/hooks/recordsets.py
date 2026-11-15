@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from mypy.nodes import (
     Expression,
@@ -200,19 +200,7 @@ class RecordsetHooks(Hooks):
                 continue
             model, fields, items = found
             for item in items:
-                if parameter == "aggregates" and item.value == "__count":
-                    continue
-                spec = group_spec(item.value)
-                problem = None
-                if spec is None:
-                    problem = f'"{item.value}" in {method}({parameter}=...) is not a specification'
-                elif spec.field not in fields:
-                    if guarded(spec.field, item.line):
-                        continue
-                    problem = f'Odoo model "{model}" has no field "{spec.field}" in '
-                    problem += f"{method}({parameter}=...)" + did_you_mean(spec.field, fields)
-                elif specs:
-                    problem = _function_problem(parameter, spec.function, fields[spec.field])
+                problem = _spec_problem(method, parameter, item, model, fields, guarded, specs)
                 if problem is not None:
                     ctx.api.fail(problem, item, code=ODOO_FIELD_REF)
 
@@ -284,6 +272,32 @@ class RecordsetHooks(Hooks):
         ):
             return ctx.default_return_type
         return type_checker(ctx.api).named_generic_type("typing.Iterator", [receiver])
+
+
+def _spec_problem(
+    method: str,
+    parameter: str,
+    item: StrExpr,
+    model: str,
+    fields: Mapping[str, FieldInfo],
+    guarded: Callable[[str, int], bool],
+    specs: bool,
+) -> str | None:
+    """Why one ``groupby`` / ``aggregates`` item of ``_read_group`` is wrong, if it is.
+
+    ``specs``: the method takes ``aggregates`` (the part after ``:`` is then checked).
+    """
+    if parameter == "aggregates" and item.value == "__count":
+        return None
+    spec = group_spec(item.value)
+    if spec is None:
+        return f'"{item.value}" in {method}({parameter}=...) is not a specification'
+    if spec.field not in fields:
+        if guarded(spec.field, item.line):
+            return None
+        message = f'Odoo model "{model}" has no field "{spec.field}" in {method}({parameter}=...)'
+        return message + did_you_mean(spec.field, fields)
+    return _function_problem(parameter, spec.function, fields[spec.field]) if specs else None
 
 
 def _function_problem(parameter: str, function: str | None, field: FieldInfo) -> str | None:

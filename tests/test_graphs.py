@@ -7,36 +7,36 @@ import pytest
 from odoo_typing.graphs import c3_merge
 
 
-class A:
+class Root:
     pass
 
 
-class B(A):
+class Left(Root):
     pass
 
 
-class C(A):
+class Right(Root):
     pass
 
 
-class D(B, C):
+class Diamond(Left, Right):
     pass
 
 
-class E(C, B):
+class Crossed(Right, Left):
     pass
 
 
 def _linearize(cls: type) -> list[str]:
     bases = list(cls.__bases__)
     merged, conflict = c3_merge(
-        [*([b.__name__, *_linearize(b)] for b in bases), [b.__name__ for b in bases]]
+        [*([base.__name__, *_linearize(base)] for base in bases), [base.__name__ for base in bases]]
     )
     assert not conflict
     return [name for name in merged if name != "object"]
 
 
-@pytest.mark.parametrize("cls", [B, D, E])
+@pytest.mark.parametrize("cls", [Left, Diamond, Crossed])
 def test_c3_merge_consistent_hierarchy_matches_python_mro(cls: type) -> None:
     expected = [item.__name__ for item in cls.__mro__[1:] if item is not object]
 

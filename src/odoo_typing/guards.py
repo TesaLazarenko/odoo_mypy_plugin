@@ -51,6 +51,17 @@ REGISTRY_ATTRIBUTES: Final = frozenset({"registry", "pool", "models"})
 BLOCK_FIELDS: Final = ("body", "orelse", "finalbody")
 
 
+def _statement_blocks(index: NodeIndex) -> list[list[ast.stmt]]:
+    """The non-empty statement lists of a file's nodes (``body``, ``orelse``, ``finalbody``)."""
+    return [
+        block
+        for kind in BLOCK_TYPES & index.classes()
+        for node in index.of(kind)
+        for block in (getattr(node, name, None) for name in BLOCK_FIELDS)
+        if isinstance(block, list) and block and isinstance(block[0], ast.stmt)
+    ]
+
+
 def _node_classes(base: type[ast.AST] = ast.AST) -> Iterator[type[ast.AST]]:
     for cls in base.__subclasses__():
         yield cls
@@ -120,13 +131,7 @@ def model_guards(nodes: Iterable[ast.AST] | NodeIndex) -> tuple[Guard, ...]:
         *index.of(ast.AsyncFunctionDef),
     ]
     classes = index.of(ast.ClassDef)
-    blocks: list[list[ast.stmt]] = []
-    for kind in BLOCK_TYPES & index.classes():
-        for node in index.of(kind):
-            for name in BLOCK_FIELDS:
-                block = getattr(node, name, None)
-                if isinstance(block, list) and block and isinstance(block[0], ast.stmt):
-                    blocks.append(block)
+    blocks = _statement_blocks(index)
     flags = _flag_scopes(assignments, functions)
     helpers = _helper_scopes(functions, classes)
     guards: list[Guard] = []

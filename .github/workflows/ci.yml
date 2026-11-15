@@ -17,6 +17,7 @@ jobs:
       - run: uv sync
       - run: uv run ruff check src tests tools
       - run: uv run ruff format --check src tests tools
+      - run: uv run pylint src tests tools
       - run: uv run mypy
 
   test:
@@ -40,6 +41,6 @@ jobs:
       - name: Fetch Odoo ${{ matrix.odoo }}
         run: echo "ODOO_PATH=$(tools/odoo/fetch.sh ${{ matrix.odoo }} --update)" >> "$GITHUB_ENV"
       - name: Test
-        run: uv run --no-sync pytest -q
+        run: uv run --no-sync pytest -q -n 2  # the runner has 2 CPUs
         env:
           ODOO_REQUIRED: "1"  # no silently skipped end-to-end tests

@@ -38,7 +38,7 @@ Stamps = dict[str, Stamp | None]
 def stamp(path: str | Path) -> Stamp | None:
     """Return a file's ``(mtime_ns, size)``, or ``None`` if it cannot be stat'ed."""
     try:
-        result = os.stat(path)
+        result = os.stat(path)  # noqa: PTH116 (paths are often strings: no Path to build)
     except OSError:
         return None
     return (result.st_mtime_ns, result.st_size)

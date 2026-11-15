@@ -72,7 +72,11 @@ def index_nodes(tree: ast.AST) -> NodeIndex:
         for name in node._fields:
             value = getattr(node, name, None)
             if isinstance(value, list):
-                stack += [x for x in value if isinstance(x, node_type) and type(x) not in leaves]
+                stack += [
+                    item
+                    for item in value
+                    if isinstance(item, node_type) and type(item) not in leaves
+                ]
             elif isinstance(value, node_type) and type(value) not in leaves:
                 stack.append(value)
     return index

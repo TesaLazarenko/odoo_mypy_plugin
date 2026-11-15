@@ -70,7 +70,7 @@ class VisibleClasses(ScannedAddons):
                 ),
                 key=lambda item: item.position,
             )
-            first = next((i for i, item in enumerate(found) if defines(item)), len(found))
+            first = next((index for index, item in enumerate(found) if defines(item)), len(found))
             self._candidate_memo[key] = self._same_classes(tuple(found[first:]))
         return self._candidate_memo[key]
 
@@ -209,15 +209,20 @@ def _since_last_definition(classes: list[Contribution]) -> list[Contribution]:
 def _defined_names(directory: Path) -> set[str]:
     """Model names in ``_name = "..."`` assignments of an addon's files (a text search)."""
     names: set[str] = set()
-    findall = DEFINITION_PATTERN.findall
     for root, subdirs, files in os.walk(directory):
         subdirs[:] = [name for name in subdirs if name not in SKIPPED_DIRS]
         for name in files:
-            if name.endswith(".py"):
-                try:  # every file of every addon
-                    data = read_source(Path(root, name))
-                except SourceError:
-                    continue  # a broken symlink, a file that cannot be read
-                if b"_name" in data:
-                    names.update(match.decode(errors="replace") for match in findall(data))
+            if name.endswith(".py"):  # every file of every addon
+                names.update(_file_defined_names(Path(root, name)))
     return names
+
+
+def _file_defined_names(path: Path) -> list[str]:
+    """Model names in ``_name = "..."`` assignments of one file (a text search)."""
+    try:
+        data = read_source(path)
+    except SourceError:
+        return []  # a broken symlink, a file that cannot be read
+    if b"_name" not in data:
+        return []
+    return [match.decode(errors="replace") for match in DEFINITION_PATTERN.findall(data)]

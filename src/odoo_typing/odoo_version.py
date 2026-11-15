@@ -34,7 +34,10 @@ def read_odoo_version(odoo_path: Path) -> tuple[int, int] | None:
     for node in tree.body:
         if (
             isinstance(node, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == "version_info" for t in node.targets)
+            and any(
+                isinstance(target, ast.Name) and target.id == "version_info"
+                for target in node.targets
+            )
             and isinstance(node.value, ast.Tuple)
         ):
             return _major_minor(node.value.elts)

@@ -15,9 +15,9 @@ from __future__ import annotations
 import importlib
 import json
 import logging
-import os
 import sys
 import types
+from pathlib import Path
 
 logging.disable(logging.CRITICAL)
 
@@ -79,11 +79,9 @@ def main(output: str) -> None:
     """Import the addons and write the dump to ``output``."""
     config.parse_config([])
     odoo_module.initialize_sys_path()
-    addons_dir = os.path.join(os.path.dirname(odoo.__file__), "addons")
+    addons_dir = Path(odoo.__file__).parent / "addons"
     names = sorted(
-        name
-        for name in os.listdir(addons_dir)
-        if os.path.isfile(os.path.join(addons_dir, name, "__manifest__.py"))
+        entry.name for entry in addons_dir.iterdir() if (entry / "__manifest__.py").is_file()
     )
     failed = {}
     for name in names:
@@ -92,7 +90,7 @@ def main(output: str) -> None:
         except Exception as error:  # an addon whose imports fail here is left out
             failed[name] = repr(error)[:200]
     classes = [_class(cls) for found in MetaModel.module_to_models.values() for cls in found]
-    with open(output, "w") as file:
+    with Path(output).open("w") as file:
         json.dump({"classes": classes, "failed": failed}, file)
     print(f"{len(classes)} classes; {len(failed)} addons failed to import", file=sys.stderr)
 

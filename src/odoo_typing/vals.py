@@ -378,13 +378,19 @@ class ValsChecker:
         if info.field_type in RELATIONAL_CLASSES and info.comodel and "comodel" not in info.dynamic:
             self._check_comodel(model, info, items, value)
             if info.field_type in X2MANY_CLASSES and isinstance(value, ListExpr):
-                target = self.target_for(info.comodel)
-                self._check_command_ids(model, info, value)
-                for vals in _command_vals(value):
-                    if isinstance(vals, DictExpr):
-                        self.check(target, vals)
-                    else:
-                        self._check_command_values(model, info, vals)
+                self._check_commands(model, info, info.comodel, value)
+
+    def _check_commands(
+        self, model: str, info: FieldInfo, comodel: str, commands: ListExpr
+    ) -> None:
+        """The ids and the vals of the x2many commands given to a field."""
+        target = self.target_for(comodel)
+        self._check_command_ids(model, info, commands)
+        for vals in _command_vals(commands):
+            if isinstance(vals, DictExpr):
+                self.check(target, vals)
+            else:
+                self._check_command_values(model, info, vals)
 
     def _check_command_values(self, model: str, info: FieldInfo, vals: Expression) -> None:
         """Report the values of another model (``odoo.values.*``) in an x2many command."""
@@ -600,9 +606,15 @@ def context_defaults(
         if name is not None and name.startswith(DEFAULT_PREFIX):
             found.append(ContextDefault(name, name.removeprefix(DEFAULT_PREFIX), value, value))
         elif name is None and kind == ARG_POS:
-            for display in vals_dicts(value, False, local):
-                for key, item in display.items:
-                    if isinstance(key, StrExpr) and key.value.startswith(DEFAULT_PREFIX):
-                        field = key.value.removeprefix(DEFAULT_PREFIX)
-                        found.append(ContextDefault(key.value, field, item, key))
+            found += _dict_defaults(value, local)
     return found
+
+
+def _dict_defaults(value: Expression, local: LocalValues | None) -> list[ContextDefault]:
+    """The ``default_<field>`` keys of the dict given to ``with_context`` (see above)."""
+    return [
+        ContextDefault(key.value, key.value.removeprefix(DEFAULT_PREFIX), item, key)
+        for display in vals_dicts(value, False, local)
+        for key, item in display.items
+        if isinstance(key, StrExpr) and key.value.startswith(DEFAULT_PREFIX)
+    ]

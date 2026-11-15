@@ -7,12 +7,12 @@ from typing import Generic, TypeVar
 
 __all__ = ["c3_merge", "components_from"]
 
-T = TypeVar("T", bound=Hashable)
+NodeT = TypeVar("NodeT", bound=Hashable)
 
 
 def components_from(
-    start: T, successors: Callable[[T], Iterable[T]], done: set[T]
-) -> list[list[T]]:
+    start: NodeT, successors: Callable[[NodeT], Iterable[NodeT]], done: set[NodeT]
+) -> list[list[NodeT]]:
     """Return the strongly connected components reachable from a node.
 
     Nodes in ``done`` were explored by an earlier call and are skipped: everything
@@ -35,7 +35,7 @@ def components_from(
     return search.components
 
 
-def c3_merge(sequences: Iterable[Sequence[T]]) -> tuple[list[T], bool]:
+def c3_merge(sequences: Iterable[Sequence[NodeT]]) -> tuple[list[NodeT], bool]:
     """Merge sequences the way Python's C3 linearization does, without ever failing.
 
     C3 repeatedly takes the first head (scanning the sequences in order) that is in
@@ -50,11 +50,11 @@ def c3_merge(sequences: Iterable[Sequence[T]]) -> tuple[list[T], bool]:
         The merged order, and whether a conflict had to be broken.
     """
     lists = [list(reversed(sequence)) for sequence in sequences if sequence]  # head last
-    in_tails: dict[T, int] = {}
+    in_tails: dict[NodeT, int] = {}
     for items in lists:
         for item in items[:-1]:
             in_tails[item] = in_tails.get(item, 0) + 1
-    merged: list[T] = []
+    merged: list[NodeT] = []
     conflict = False
     while lists:
         head = next((items[-1] for items in lists if not in_tails.get(items[-1])), None)
@@ -65,7 +65,9 @@ def c3_merge(sequences: Iterable[Sequence[T]]) -> tuple[list[T], bool]:
     return merged, conflict
 
 
-def _drop_head(lists: list[list[T]], head: T, in_tails: dict[T, int]) -> list[list[T]]:
+def _drop_head(
+    lists: list[list[NodeT]], head: NodeT, in_tails: dict[NodeT, int]
+) -> list[list[NodeT]]:
     """Remove the chosen element from every sequence (reversed, so the head is last)."""
     in_some_tail = in_tails.get(head, 0) > 0  # only after a conflict was broken
     remaining = []
@@ -82,19 +84,19 @@ def _drop_head(lists: list[list[T]], head: T, in_tails: dict[T, int]) -> list[li
     return remaining
 
 
-class _Tarjan(Generic[T]):
+class _Tarjan(Generic[NodeT]):
     """Iterative Tarjan search: model graphs can be deeper than the recursion limit."""
 
-    def __init__(self, successors: Callable[[T], Iterable[T]], done: set[T]) -> None:
+    def __init__(self, successors: Callable[[NodeT], Iterable[NodeT]], done: set[NodeT]) -> None:
         self.successors = successors
         self.done = done
-        self.index: dict[T, int] = {}
-        self.low: dict[T, int] = {}
-        self.stack: list[T] = []
-        self.on_stack: set[T] = set()
-        self.components: list[list[T]] = []
+        self.index: dict[NodeT, int] = {}
+        self.low: dict[NodeT, int] = {}
+        self.stack: list[NodeT] = []
+        self.on_stack: set[NodeT] = set()
+        self.components: list[list[NodeT]] = []
 
-    def run(self, start: T) -> None:
+    def run(self, start: NodeT) -> None:
         work = [self._enter(start)]
         while work:
             node, children = work[-1]
@@ -113,13 +115,13 @@ class _Tarjan(Generic[T]):
                     self.low[parent] = min(self.low[parent], self.low[node])
                 self._close(node)
 
-    def _enter(self, node: T) -> tuple[T, Iterator[T]]:
+    def _enter(self, node: NodeT) -> tuple[NodeT, Iterator[NodeT]]:
         self.index[node] = self.low[node] = len(self.index)
         self.stack.append(node)
         self.on_stack.add(node)
         return node, iter(self.successors(node))
 
-    def _close(self, node: T) -> None:
+    def _close(self, node: NodeT) -> None:
         if self.low[node] != self.index[node]:
             return
         position = self.stack.index(node)

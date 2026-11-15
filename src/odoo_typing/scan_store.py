@@ -51,7 +51,9 @@ def dataclass_fields(kind: type) -> tuple[str, ...] | None:
     """The field names of a dataclass in order, ``None`` for another class (cached)."""
     if kind not in _FIELDS:
         is_dataclass = dataclasses.is_dataclass(kind)  # the class of an instance
-        _FIELDS[kind] = tuple(f.name for f in dataclasses.fields(kind)) if is_dataclass else None
+        _FIELDS[kind] = (
+            tuple(field.name for field in dataclasses.fields(kind)) if is_dataclass else None
+        )
     return _FIELDS[kind]
 
 

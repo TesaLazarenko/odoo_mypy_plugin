@@ -44,7 +44,9 @@ def test_encode_decode_round_trip_of_a_real_scan(tmp_path: Path) -> None:
     assert isinstance(decoded, AddonScan)
     assert (decoded.modules, decoded.data) == (scan.modules, scan.data)
     assert scan.modules[0].guards and scan.data.xml_ids  # the round trip covers them
-    assert [(e.path, e.reason) for e in decoded.errors] == [(e.path, e.reason) for e in scan.errors]
+    assert [(error.path, error.reason) for error in decoded.errors] == [
+        (error.path, error.reason) for error in scan.errors
+    ]
 
 
 def test_registry_reads_unchanged_scans_back_and_rescans_edited_addon(

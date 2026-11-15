@@ -44,7 +44,7 @@ def load_diagnostics(output: Path, tracked: list[Path]) -> dict[Path, list[dict]
         if event.get("type") != "diagnostic":
             continue
         path = uri_to_path(event["uri"])
-        if tracked and not any(path.is_relative_to(t) for t in tracked):
+        if tracked and not any(path.is_relative_to(root) for root in tracked):
             continue
         result[path].extend(event["diagnostics"])
     return result
@@ -67,7 +67,7 @@ def main(argv: list[str]) -> int:
         print(__doc__, file=sys.stderr)
         return 2
     output = Path(argv[1])
-    tracked = [Path(p).resolve() for p in argv[2:]]
+    tracked = [Path(argument).resolve() for argument in argv[2:]]
     by_file = load_diagnostics(output, tracked)
 
     errors = 0
@@ -85,7 +85,7 @@ def main(argv: list[str]) -> int:
         print("(none)")
 
     # Planted-error coverage, for every tracked .py file that has markers.
-    files = {p for t in tracked for p in t.rglob("*.py")} if tracked else set(by_file)
+    files = {file for root in tracked for file in root.rglob("*.py")} if tracked else set(by_file)
     caught_total = planted_total = 0
     for path in sorted(files):
         marks = seeded_lines(path)

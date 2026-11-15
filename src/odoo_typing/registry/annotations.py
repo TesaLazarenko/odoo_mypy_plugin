@@ -185,7 +185,9 @@ class AnnotatedModels(ModelFields):
             found: dict[str, list[str]] = {}
             for model in self.models(addon_name):
                 found.setdefault(normalized_alias(model), []).append(model)
-            self._visible_aliases[addon_name] = {key: tuple(v) for key, v in found.items()}
+            self._visible_aliases[addon_name] = {
+                key: tuple(models) for key, models in found.items()
+            }
         return self._visible_aliases[addon_name]
 
     def _all_aliases(self) -> dict[str, tuple[str, ...]]:
@@ -194,7 +196,7 @@ class AnnotatedModels(ModelFields):
             found: dict[str, list[str]] = {}
             for model in self._text_definers():
                 found.setdefault(normalized_alias(model), []).append(model)
-            self._defined_aliases = {key: tuple(sorted(v)) for key, v in found.items()}
+            self._defined_aliases = {key: tuple(sorted(models)) for key, models in found.items()}
         return self._defined_aliases
 
     def accepted_values(self, model: str, addon_name: str) -> frozenset[str]:
@@ -258,14 +260,17 @@ class AnnotatedModels(ModelFields):
         a key that an addon outside the view adds with ``selection_add`` is how code asks
         about an addon that may not be installed, not a misspelled key.
         """
+        classes = (
+            item
+            for model in models
+            for addon_name, path in self._class_files().files(model)
+            for item in self._classes_in(addon_name, path)
+            if item.model == model
+        )
         found: set[str] = set()
-        for model in models:
-            for addon_name, path in self._class_files().files(model):
-                for item in self._classes_in(addon_name, path):
-                    for info in item.fields if item.model == model else ():
-                        if info.name == field:
-                            found.update(info.selection or ())
-                            found.update(info.selection_add or ())
+        for info in (info for item in classes for info in item.fields if info.name == field):
+            found.update(info.selection or ())
+            found.update(info.selection_add or ())
         return frozenset(found)
 
     def values_digest(self, alias: str) -> str:
@@ -284,7 +289,7 @@ class AnnotatedModels(ModelFields):
 
     def _compute_values_digest(self, key: str) -> str:
         index = self._class_files()
-        models = sorted(m for m in index.model_names() if normalized_alias(m) == key)
+        models = sorted(name for name in index.model_names() if normalized_alias(name) == key)
         record_key = f"values-{key}-{index.key}.json"
         record = self._scans.load_record(record_key) if self._scans is not None else None
         if record is not None and (kept := self._kept_digest(record, models)) is not None:
@@ -295,8 +300,8 @@ class AnnotatedModels(ModelFields):
         ]
         value = digest(keys)
         if self._scans is not None:
-            involved = sorted({m for model in models for m in self._values_models[model]})
-            files = {m: [str(path) for _, path in index.files(m)] for m in involved}
+            involved = sorted({name for model in models for name in self._values_models[model]})
+            files = {name: [str(path) for _, path in index.files(name)] for name in involved}
             stamps = {path: index.stamp(Path(path)) for paths in files.values() for path in paths}
             record = {"digest": value, "models": models, "files": files, "stamps": stamps}
             self._scans.save_record(record_key, record)
