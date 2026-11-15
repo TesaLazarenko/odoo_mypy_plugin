@@ -7,7 +7,7 @@ first question, and an addon's files are scanned only when a question needs the 
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from functools import cached_property, partial
 from pathlib import Path
@@ -15,6 +15,7 @@ from typing import Protocol
 
 from odoo_typing.addons import Addon, AddonIndex, LoadKey
 from odoo_typing.config import Settings
+from odoo_typing.frozen import frozen
 from odoo_typing.guards import Guard, is_guarded, model_guards
 from odoo_typing.node_index import index_nodes
 from odoo_typing.records import Record
@@ -117,7 +118,8 @@ class ScannedAddons:
         self._by_class: dict[str, Contribution] = {}
         self._by_model: dict[str, dict[str, list[Contribution]]] = {}
         self._unreached: dict[Path, _UnreachedFile] = {}  # files the addon scans miss
-        self._xml_ids: dict[str, Mapping[str, str]] = {}
+        self._xml_ids: dict[str, Mapping[str, str]] = {}  # of a closure (_ClosureIds)
+        self._own_xml_ids: dict[str, Mapping[str, str]] = {}  # of one addon's data files
         self._misnamed: set[str] = set()  # addons warned about by misnamed()
         self._warned: set[str] = set()  # addons whose unparsable files were reported
         # Addons read only for the models they define (see _defined_models).
@@ -316,7 +318,7 @@ class ScannedAddons:
             return _UnreachedFile(current, NO_REFERENCES)
         nodes = index_nodes(tree)
         references = FileReferences(
-            frozenset(referenced_models(tree, nodes)),
+            frozen(referenced_models(tree, nodes)),
             model_guards(nodes),
             annotation_aliases(source),
         )
@@ -350,26 +352,69 @@ class ScannedAddons:
         """The XML ids the data files of an addon's closure create, with their models.
 
         A later addon of the load order that writes a record of the same id keeps the
-        model of the first (an override changes the record, not its model).
+        model of the first (an override changes the record, not its model). A view over
+        the ids of each addon (:meth:`own_xml_ids`), not a merged copy: every addon of a
+        project would otherwise hold the ids of its whole closure (12.7 MB for 120 core
+        addons).
         """
-        if addon_name not in self._xml_ids:
-            found: dict[str, str] = {}
-            for name in sorted(self.addons.closure(addon_name), key=self.addons.load_key):
-                scan, _ = self.scan_result(name)
-                for item in scan.data.xml_ids:
-                    found.setdefault(item.name, item.model)
-            self._xml_ids[addon_name] = found
-        return self._xml_ids[addon_name]
+        found = self._xml_ids.get(addon_name)
+        if found is None:
+            names = sorted(self.addons.closure(addon_name), key=self.addons.load_key)
+            own = (self.own_xml_ids(name) for name in names)
+            found = self._xml_ids[addon_name] = _ClosureIds(tuple(ids for ids in own if ids))
+        return found
+
+    def own_xml_ids(self, addon_name: str) -> Mapping[str, str]:
+        """The XML ids the data files of one addon create, with their models."""
+        found = self._own_xml_ids.get(addon_name)
+        if found is None:
+            scan, _ = self.scan_result(addon_name)
+            ids: dict[str, str] = {}
+            for item in scan.data.xml_ids:
+                ids.setdefault(item.name, sys.intern(item.model))
+            found = self._own_xml_ids[addon_name] = ids
+        return found
 
     def xml_id_outside(self, xml_id: str, addon_name: str) -> str | None:
         """The addon outside an addon's closure whose data files create an XML id.
 
-        Only the addon the id is named after is read (``sale.x`` is ``sale``'s).
+        Only the addon the id is named after is read (``sale.x`` is ``sale``'s), and only
+        its own data files, not its closure's.
         """
         module = xml_id.partition(".")[0]
         if module not in self.addons.addons or module in self.addons.closure(addon_name):
             return None
-        return module if xml_id in self.xml_ids(module) else None
+        return module if xml_id in self.own_xml_ids(module) else None
+
+
+class _ClosureIds(Mapping[str, str]):
+    """The XML ids of several addons, the first of the load order winning (read-only)."""
+
+    __slots__ = ("_ids",)
+
+    def __init__(self, ids: tuple[Mapping[str, str], ...]) -> None:
+        self._ids = ids
+
+    def __getitem__(self, key: str) -> str:
+        for ids in self._ids:
+            found = ids.get(key)
+            if found is not None:
+                return found
+        raise KeyError(key)
+
+    def __contains__(self, key: object) -> bool:
+        return any(key in ids for ids in self._ids)
+
+    def __iter__(self) -> Iterator[str]:
+        seen: set[str] = set()
+        for ids in self._ids:
+            for key in ids:
+                if key not in seen:
+                    seen.add(key)
+                    yield key
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
 
 
 def _warn_unparsable(error: SourceError) -> None:

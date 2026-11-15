@@ -23,6 +23,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Final, TypeVar
 
+from odoo_typing.frozen import frozen
 from odoo_typing.scanner import Contribution, FieldInfo
 
 __all__ = [
@@ -113,7 +114,10 @@ def merge_definitions(definitions: Sequence[FieldInfo]) -> FieldInfo:
             continue
         merged = _override(merged, definition)
     assert merged is not None  # the tip is compatible with itself
-    return replace(merged, field_type=tip.field_type, selection_add=None)
+    merged = replace(merged, field_type=tip.field_type, selection_add=None)
+    # Most fields have one definition, which the merge gives back as it is: keep the scan's
+    # object rather than an equal copy (3174 of 3770 merged fields on sale).
+    return tip if merged == tip else merged
 
 
 def _compatible(field_type: str, base_type: str) -> bool:
@@ -189,7 +193,7 @@ def _override(merged: FieldInfo | None, definition: FieldInfo) -> FieldInfo:
         delegate=take(merged.delegate, definition.delegate, "delegate"),
         compute_sql=take(merged.compute_sql, definition.compute_sql, "compute_sql"),
         attachment=take(merged.attachment, definition.attachment, "attachment"),
-        dynamic=frozenset(dynamic - {"selection_add"}),
+        dynamic=frozen(dynamic - {"selection_add"}),
     )
 
 

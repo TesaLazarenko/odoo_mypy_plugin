@@ -43,7 +43,9 @@ class ModelFields(ModelViews):
         # One object for equal answers: the views of a model from many addons mostly
         # see the same fields (memory: each view would hold its own copies otherwise).
         self._field_pool: dict[FieldInfo, FieldInfo] = {}
-        self._fields_pool: dict[tuple[tuple[str, FieldInfo], ...], Mapping[str, FieldInfo]] = {}
+        # Equal field maps by a hash of their pooled infos (a key of the names and infos
+        # themselves took more memory than the maps it pooled).
+        self._fields_pool: dict[int, list[Mapping[str, FieldInfo]]] = {}
 
     def fields(self, model: str, addon_name: str) -> Mapping[str, FieldInfo]:
         """The fields of a model's registry class as an addon sees it (``_fields``).
@@ -121,10 +123,16 @@ class ModelFields(ModelViews):
     def _shared(self, fields: dict[str, FieldInfo]) -> Mapping[str, FieldInfo]:
         """A read-only mapping equal to ``fields``, the same object for equal ones."""
         pool = self._field_pool
-        items = tuple((name, pool.setdefault(info, info)) for name, info in fields.items())
-        if items not in self._fields_pool:
-            self._fields_pool[items] = MappingProxyType(dict(items))
-        return self._fields_pool[items]
+        infos = [pool.setdefault(info, info) for info in fields.values()]
+        bucket = self._fields_pool.setdefault(hash((*fields, *map(id, infos))), [])
+        for kept in bucket:
+            if tuple(kept) == tuple(fields) and all(
+                kept[name] is info for name, info in zip(fields, infos, strict=True)
+            ):
+                return kept
+        made = MappingProxyType(dict(zip(fields, infos, strict=True)))
+        bucket.append(made)
+        return made
 
     def _merged_fields(self, model: str, addon_name: str) -> Mapping[str, FieldInfo]:
         """:meth:`fields` before the comodels of ``related=`` fields are known."""

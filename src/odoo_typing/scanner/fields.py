@@ -7,6 +7,7 @@ import sys
 from collections.abc import Mapping
 from typing import Final
 
+from odoo_typing.frozen import frozen
 from odoo_typing.scanner.evaluation import UNKNOWN, evaluate
 from odoo_typing.scanner.results import FieldInfo
 from odoo_typing.scanner.syntax import callee_name, single_target
@@ -92,7 +93,7 @@ def _field_info(
         delegate=flag("delegate"),
         compute_sql=True if "compute_sql" in arguments else None,
         attachment=flag("attachment"),
-        dynamic=frozenset(dynamic),
+        dynamic=frozen(dynamic),
     )
 
 

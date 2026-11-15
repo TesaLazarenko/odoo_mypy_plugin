@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Final, Protocol
 
 from odoo_typing.addons import Addon
+from odoo_typing.frozen import frozen
 from odoo_typing.records import Record, digest, parse_stamp
 from odoo_typing.registry.visible import SKIPPED_DIRS
 from odoo_typing.scanner import SourceError, read_source, scan_file_classes
@@ -173,7 +174,7 @@ class ClassFileIndex:
             found = before
         else:
             models = _named(addon, path)
-            found = (now, models) if models is not None else (UNREADABLE, frozenset())
+            found = (now, models) if models is not None else (UNREADABLE, frozen(()))
         self._stamps[path] = found[0]
         return found
 
@@ -241,20 +242,20 @@ def _named(addon: Addon, path: str) -> frozenset[str] | None:
     except SourceError:
         return None
     if b"_name" not in data and b"_inherit" not in data:
-        return frozenset()
+        return frozen(())
     names: set[str] = set()
     evaluate = False
     for extended, literal in CLASS_MODELS_PATTERN.findall(data):
         evaluate = evaluate or bool(extended) or not literal
         names.update(model.decode(errors="replace") for model in QUOTED_PATTERN.findall(literal))
     if not evaluate:
-        return frozenset(names)
+        return frozen(names)
     try:
         classes = scan_file_classes(addon, Path(path))
     except SourceError:
         return None
     names.update(name for item in classes for name in (item.model, *item.parents))
-    return frozenset(names)
+    return frozen(names)
 
 
 def _encode(directories: dict[str, _Directory]) -> Record:
@@ -287,7 +288,7 @@ def _parse(record: Record | None) -> dict[str, _Directory]:
         entries: dict[str, _File] = {}
         for name, value in files.items():
             if isinstance(value, list) and len(value) == 2 and isinstance(value[1], list):
-                models = frozenset(model for model in value[1] if isinstance(model, str))
+                models = frozen(model for model in value[1] if isinstance(model, str))
                 entries[name] = (parse_stamp(value[0]), models)
         names = tuple(name for name in subdirs if isinstance(name, str))
         found[path] = _Directory(parse_stamp(recorded), entries, names)

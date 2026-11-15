@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Final, TypeGuard
 
 from odoo_typing.addons import Addon, LoadKey
+from odoo_typing.frozen import frozen
 from odoo_typing.guards import Guard
 from odoo_typing.records import Record, RecordStore, digest, is_str_list, parse_stamps
 from odoo_typing.registry.scans import FileReferences
@@ -141,7 +142,7 @@ def _decode_tagged(tag: str, payload: object) -> object:
     if tag == "$tuple":
         return tuple(_decode(item) for item in payload)
     if tag == "$set":
-        return frozenset(_decode(item) for item in payload)
+        return frozen(_decode(item) for item in payload)
     if tag == "$dict":
         if not all(isinstance(pair, list) and len(pair) == 2 for pair in payload):
             raise DecodeError(f"unknown value {tag}: {payload!r}")
@@ -223,7 +224,7 @@ class ScanStore:
                 continue
             if is_str_list(models) and isinstance(found, tuple) and _is_aliases(annotations):
                 return FileReferences(
-                    frozenset(models),
+                    frozen(models),
                     tuple(item for item in found if isinstance(item, Guard)),
                     annotations,
                 )

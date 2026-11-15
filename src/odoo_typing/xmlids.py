@@ -34,6 +34,7 @@ from __future__ import annotations
 import ast
 import csv
 import re
+import sys
 import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -205,8 +206,8 @@ def _xml_ids(path: Path, addon_name: str) -> list[XmlId] | None:
             continue
         model = element.get("model") if element.tag == "record" else None
         model = model or SHORTCUT_MODELS.get(element.tag)
-        if model:
-            found.append(XmlId(_qualified(xml_id, addon_name), model))
+        if model:  # few models, many ids: one string per model (``ir.ui.view`` x 2233 on sale)
+            found.append(XmlId(_qualified(xml_id, addon_name), sys.intern(model)))
     return found
 
 

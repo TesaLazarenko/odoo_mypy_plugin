@@ -19,6 +19,7 @@ from pathlib import Path
 from stat import S_ISREG
 
 from odoo_typing.addons import Addon, LoadKey, find_manifest
+from odoo_typing.frozen import frozen
 from odoo_typing.guards import model_guards
 from odoo_typing.node_index import index_nodes
 from odoo_typing.scanner.annotations import annotation_aliases
@@ -177,7 +178,7 @@ class _ImportWalker:
                 module=module,
                 path=path,
                 contributions=tuple(file.contributions),
-                referenced_models=frozenset(referenced_models(tree, nodes)),
+                referenced_models=frozen(referenced_models(tree, nodes)),
                 guards=model_guards(nodes),
                 annotations=annotation_aliases(source),
             )
