@@ -14,9 +14,11 @@ from mypy.nodes import (
     TempNode,
     TupleExpr,
 )
-from mypy.plugin import MethodContext
+from mypy.plugin import MethodContext, MethodSigContext
 from mypy.types import (
     AnyType,
+    CallableType,
+    FunctionLike,
     Instance,
     LiteralType,
     TupleType,
@@ -32,6 +34,7 @@ from mypy.types import (
 from mypy.checker import TypeChecker
 from mypy.typeops import make_simplified_union
 
+from odoo_typing.classes import receiver_type
 from odoo_typing.hooks.models import Hooks
 from odoo_typing.hooks.nodes import (
     call_argument,
@@ -53,6 +56,7 @@ from odoo_typing.references import (
     resolve_path,
 )
 from odoo_typing.scanner import FieldInfo
+from odoo_typing.vals import RELATIONAL_CLASSES
 
 __all__ = ["RecordsetHooks"]
 
@@ -67,7 +71,7 @@ class RecordsetHooks(Hooks):
         returns them (:func:`_read_value`); a name that is not a field is reported
         (Odoo raises ``ValueError``) on a concrete model.
         """
-        receiver = get_proper_type(ctx.type)
+        receiver = receiver_type(ctx.type)
         names = literal_strings_argument(ctx, "fields", 0 if method == "read" else 1)
         ids_only = _ids_only(call_argument(ctx, "load", 1 if method == "read" else -1))
         if not isinstance(receiver, Instance) or names is None or ids_only is None:
@@ -82,7 +86,9 @@ class RecordsetHooks(Hooks):
         for node in names:
             info = fields.get(node.value)
             if info is None:
-                guarded = self._field_guarded(ctx.api.path)(node.value, node.line)
+                guarded = self._field_guarded(ctx.api.path)(
+                    node.value, node.line
+                ) or self._field_ignored(node.value, fields)
                 if self.registry.concrete(model, addon_name) and not guarded:
                     message = f'Odoo model "{model}" has no field "{node.value}" in {method}()'
                     message += did_you_mean(node.value, fields)
@@ -111,7 +117,7 @@ class RecordsetHooks(Hooks):
             if is_self_method(method)
             else ctx.default_return_type
         )
-        receiver = get_proper_type(ctx.type)
+        receiver = receiver_type(ctx.type)
         argument = (
             literal_string(ctx.args[0][0], ctx.arg_types[0][0])
             if ctx.args and ctx.args[0]
@@ -134,7 +140,23 @@ class RecordsetHooks(Hooks):
         records = get_proper_type(value)
         if isinstance(records, Instance) and records.type.has_base(self._profile.base_model):
             return records
+        if isinstance(records, AnyType) and self._relational_end(receiver, argument.value, ctx):
+            return value  # records of a comodel mypy cannot type, not a list
         return checker.named_generic_type("builtins.list", [value])
+
+    def _relational_end(self, receiver: Instance, path: str, ctx: MethodContext) -> bool:
+        """Whether a path ends with a relational field (``mapped`` then gives records).
+
+        Its value is ``Any`` when the comodel is not a literal (``fields.Many2one(CONST)``)
+        or an addon redefines the field with its attributes only
+        (``currency_id = fields.Many2one(tracking=True)``).
+        """
+        model = self._models.model_of(receiver.type)
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if model is None or addon_name is None:
+            return False
+        found = resolve_path(path, model, self._fields_of(addon_name, ctx.api), "mapped()")
+        return found.field is not None and found.field.field_type in RELATIONAL_CLASSES
 
     def check_order(self, method: str, ctx: MethodContext) -> None:
         """``search(domain, order="date desc, id")``: the order and the fields it names.
@@ -146,7 +168,7 @@ class RecordsetHooks(Hooks):
         if "order" not in ctx.callee_arg_names:
             return
         index = ctx.callee_arg_names.index("order")
-        receiver = get_proper_type(ctx.type)
+        receiver = receiver_type(ctx.type)
         if not ctx.args[index] or not isinstance(receiver, Instance):
             return
         argument = literal_string(ctx.args[index][0], ctx.arg_types[index][0])
@@ -164,7 +186,12 @@ class RecordsetHooks(Hooks):
         fields = self._fields_of(addon_name, ctx.api)(model)
         guarded = self._field_guarded(ctx.api.path)
         for name in names:
-            if fields and name not in fields and not guarded(name, argument.line):
+            if (
+                fields
+                and name not in fields
+                and not guarded(name, argument.line)
+                and not self._field_ignored(name, fields)
+            ):
                 message = f'Odoo model "{model}" has no field "{name}" in {method}(order=...)'
                 ctx.api.fail(message + did_you_mean(name, fields), argument, code=ODOO_FIELD_REF)
 
@@ -179,7 +206,11 @@ class RecordsetHooks(Hooks):
         model, fields, items = found
         guarded = self._field_guarded(ctx.api.path)
         for item in items:
-            if item.value not in fields and not guarded(item.value, item.line):
+            if (
+                item.value not in fields
+                and not guarded(item.value, item.line)
+                and not self._field_ignored(item.value, fields)
+            ):
                 message = f'Odoo model "{model}" has no field "{item.value}" in {method}()'
                 ctx.api.fail(message + did_you_mean(item.value, fields), item, code=ODOO_FIELD_REF)
 
@@ -192,13 +223,17 @@ class RecordsetHooks(Hooks):
         ``read_group`` of Odoo 17-19 takes other forms (``"total:sum(amount)"``): only its
         ``groupby`` is checked.
         """
-        guarded = self._field_guarded(ctx.api.path)
+        field_guarded = self._field_guarded(ctx.api.path)
         specs = "aggregates" in ctx.callee_arg_names
         for parameter in ("groupby", "aggregates") if specs else ("groupby",):
             found = self._literal_items(parameter, ctx)
             if found is None:
                 continue
             model, fields, items = found
+
+            def guarded(name: str, line: int, fields: Mapping[str, FieldInfo] = fields) -> bool:
+                return field_guarded(name, line) or self._field_ignored(name, fields)
+
             for item in items:
                 problem = _spec_problem(method, parameter, item, model, fields, guarded, specs)
                 if problem is not None:
@@ -215,7 +250,7 @@ class RecordsetHooks(Hooks):
         if parameter not in ctx.callee_arg_names:
             return None
         actuals = ctx.args[ctx.callee_arg_names.index(parameter)]
-        receiver = get_proper_type(ctx.type)
+        receiver = receiver_type(ctx.type)
         if len(actuals) != 1 or not isinstance(receiver, Instance):
             return None
         value = actuals[0]
@@ -248,7 +283,11 @@ class RecordsetHooks(Hooks):
         for path in paths:
             found = resolve_path(path, model, fields_of, f'{method}("{argument.value}")')
             if found.problem is not None:
-                if found.missing is None or not guarded(found.missing, argument.line):
+                missing = found.missing
+                if missing is None or not (
+                    guarded(missing, argument.line)
+                    or (not found.near and self._field_ignored(missing))
+                ):
                     ctx.api.fail(found.problem, argument, code=ODOO_FIELD_REF)
                 valid = False
         return valid
@@ -264,14 +303,52 @@ class RecordsetHooks(Hooks):
             value = checker.expr_checker.accept(expression)
         return None if errors.has_new_errors() else value
 
+    def filtered_signature(
+        self, then: Callable[[MethodSigContext], FunctionLike] | None, ctx: MethodSigContext
+    ) -> FunctionLike:
+        """``filtered(lambda r: r.partner_id)`` (Odoo 19+): the function may return any value.
+
+        Odoo declares ``func: str | Callable[[Self], bool] | Domain`` but keeps the records
+        whose result is truthy, and a field value is the usual result; ``bool`` there made
+        two errors of each such call (the lambda's ``return-value``, the ``arg-type``).
+        """
+        signature = then(ctx) if then is not None else ctx.default_signature
+        receiver = receiver_type(ctx.type)
+        if (
+            not isinstance(signature, CallableType)
+            or not signature.arg_types
+            or not isinstance(receiver, Instance)
+            or not receiver.type.has_base(self._profile.base_model)
+        ):
+            return signature
+        anything = ctx.api.named_generic_type("builtins.object", [])
+        func = get_proper_type(signature.arg_types[0])
+        items = func.items if isinstance(func, UnionType) else [func]
+        widened = [_any_result(item, anything) for item in items]
+        if all(new is old for new, old in zip(widened, items, strict=True)):
+            return signature
+        new = UnionType.make_union(widened) if isinstance(func, UnionType) else widened[0]
+        return signature.copy_modified(arg_types=[new, *signature.arg_types[1:]])
+
     def iterate(self, ctx: MethodContext) -> Type:
         """``for record in records`` (Odoo 17): each record has the receiver's type."""
-        receiver = get_proper_type(ctx.type)
+        receiver = receiver_type(ctx.type)
         if not isinstance(receiver, Instance) or not receiver.type.has_base(
             self._profile.base_model
         ):
             return ctx.default_return_type
         return type_checker(ctx.api).named_generic_type("typing.Iterator", [receiver])
+
+
+def _any_result(item: Type, anything: Type) -> Type:
+    """A ``Callable[..., bool]`` as ``Callable[..., object]``; another type as it is."""
+    proper = get_proper_type(item)
+    if not isinstance(proper, CallableType):
+        return item
+    result = get_proper_type(proper.ret_type)
+    if isinstance(result, Instance) and result.type.fullname == "builtins.bool":
+        return proper.copy_modified(ret_type=anything)
+    return item
 
 
 def _spec_problem(

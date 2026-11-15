@@ -14,8 +14,9 @@ from mypy.nodes import (
     TupleExpr,
 )
 from mypy.plugin import MethodContext
-from mypy.types import Instance, Type, get_proper_type
+from mypy.types import Instance, Type
 
+from odoo_typing.classes import receiver_type
 from odoo_typing.hooks.models import Hooks
 from odoo_typing.hooks.nodes import fail_unfiltered, type_checker
 from odoo_typing.vals import ODOO_SELECTION, selection_problem
@@ -58,7 +59,7 @@ class ComparisonHooks(Hooks):
         if not keys or not isinstance(field, MemberExpr):
             return
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
-        records = get_proper_type(type_checker(ctx.api).lookup_type_or_none(field.expr))
+        records = receiver_type(type_checker(ctx.api).lookup_type_or_none(field.expr))
         if addon_name is None or not isinstance(records, Instance):
             return
         model = self._models.model_of(records.type)
@@ -73,7 +74,6 @@ class ComparisonHooks(Hooks):
             if problem is None:
                 continue
             if elsewhere is None:  # the keys of addons outside the view: not misspelled
-                sources = self.registry.field_sources(model, addon_name)
-                elsewhere = self.registry.selection_keys_anywhere(sources, field.name)
+                elsewhere = self._selection_elsewhere(addon_name)(model, field.name)
             if key.value not in elsewhere:
                 fail_unfiltered(ctx.api, problem, key, ODOO_SELECTION)

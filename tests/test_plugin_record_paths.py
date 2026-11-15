@@ -152,3 +152,66 @@ def test_final_and_literal_paths_checked_like_literals(run_mypy: RunMypy) -> Non
         '16: error: Odoo model "res.partner" has no field "nmae" in filtered("partner_id.nmae")',
         '17: error: Odoo model "t.order" has no field "nmae" in sorted("nmae")',
     ]
+
+
+def test_mapped_of_relational_field_of_unknown_comodel_is_not_a_list(run_mypy: RunMypy) -> None:
+    # Its value is Any: the comodel is a constant, or an override has only attributes.
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import fields, models
+
+                COMODEL = "res.partner"
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    partner_id = fields.Many2one(COMODEL)
+                    name = fields.Char()
+                    def action(self) -> None:
+                        reveal_type(self.mapped("partner_id"))
+                        self.mapped("partner_id").ids
+                        reveal_type(self.mapped("name"))
+                """
+            }
+        }
+    )
+
+    messages = result.messages("models.py")
+    # Any on Odoo 18+ (Many2one[Any] when the comodel is no literal), records on 17.
+    assert messages[0].startswith('12: note: Revealed type is "')
+    assert "list" not in messages[0]
+    assert messages[1:] == ['14: note: Revealed type is "list[str | Literal[False]]"']
+
+
+def test_fields_made_in_the_database_are_not_reported_outside_vals(run_mypy: RunMypy) -> None:
+    # vals_ignore_keys (x_* by default): Studio and manual fields, in every check of names;
+    # a near miss of a declared x_ field stays a typo (tests/fixtures/addons/probe_mod).
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import api, fields, models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    total = fields.Integer(compute="_compute_total")
+                    @api.depends("x_studio_amount", "x_partner_id.code", "nope")
+                    def _compute_total(self) -> None:
+                        self.mapped("x_studio_amount")
+                        self.search([("x_studio_amount", ">", 1)], order="x_rank desc")
+                        self.read(["x_studio_amount"])
+                        self.filtered("x_flag").sorted("x_rank")
+                        self.search([("nope", "=", 1)])
+                """
+            }
+        }
+    )
+
+    assert result.messages("models.py") == [
+        '8: error: Odoo model "t.thing" has no field "nope" in @api.depends("nope")  '
+        "[odoo-field-ref]",
+        '14: error: Odoo model "t.thing" has no field "nope" in domain  [odoo-domain]',
+    ]

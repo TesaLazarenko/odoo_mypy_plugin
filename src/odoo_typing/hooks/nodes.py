@@ -28,6 +28,7 @@ from mypy.types import Instance, LiteralType, ProperType, Type, get_proper_type
 from mypy.checker import TypeChecker
 from mypy.semanal import SemanticAnalyzer
 
+from odoo_typing.classes import receiver_type
 from odoo_typing.scanner import POSITIONAL_PARAMETERS, Contribution
 
 __all__ = [
@@ -207,7 +208,7 @@ def record_type(ctx: MethodSigContext) -> ProperType | None:
     """Type of the records a descriptor is read on (``NoneType`` for ``Model.field``)."""
     if not ctx.args or not ctx.args[0]:
         return None
-    return get_proper_type(ctx.api.get_expression_type(ctx.args[0][0]))
+    return receiver_type(ctx.api.get_expression_type(ctx.args[0][0]))
 
 
 def field_arguments(call: CallExpr, field_class: str) -> list[tuple[str, Expression]]:

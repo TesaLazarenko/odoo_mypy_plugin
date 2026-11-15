@@ -53,6 +53,7 @@ from mypy.nodes import (
 from mypy.types import (
     AnyType,
     Instance,
+    ProperType,
     Type,
     TypedDictType,
     TypeOfAny,
@@ -81,6 +82,7 @@ __all__ = [
     "instance_of",
     "make_comodel_generic",
     "merge_mro",
+    "receiver_type",
     "record_python_mro",
     "values_class_model",
     "values_class_name",
@@ -403,3 +405,18 @@ def make_comodel_generic(
         else base
         for base in info.bases
     ]
+
+
+def receiver_type(typ: Type | None) -> ProperType | None:
+    """A receiver's type, with a type variable (``Self``, ``self: T``) as its bound.
+
+    The plugin types unannotated overrides of ``create`` / ``copy`` / ``sudo``... as
+    ``(self: Self) -> Self``, so in their bodies ``self`` is a ``TypeVarType``: the
+    checks of ``self.search(...)`` / ``self.write(...)`` read the model from the bound.
+    """
+    if typ is None:
+        return None
+    proper = get_proper_type(typ)
+    if isinstance(proper, TypeVarType):
+        return get_proper_type(proper.upper_bound)
+    return proper

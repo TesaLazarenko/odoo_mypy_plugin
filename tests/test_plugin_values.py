@@ -129,3 +129,50 @@ def test_read_returns_typed_dicts_of_literal_fields(run_mypy: RunMypy, odoo_vers
     )
     unread = "Any" if odoo_version == 17 else "list[dict[str, Any]]"  # 17: unannotated
     assert messages[4] == f'17: note: Revealed type is "{unread}"'
+
+
+REQUIRED = """
+from odoo import fields, models
+
+class Line(models.Model):
+    _inherit = "t.line"
+
+    name = fields.Char(required=True)
+    note = fields.Char()
+    label = fields.Text(required=True)  # an override makes the base field required
+    day = fields.Date(required=True)
+
+    def check(self) -> None:
+        reveal_type(self.name)
+        reveal_type(self.note)
+        reveal_type(self.label)
+        reveal_type(self.day)
+        reveal_type(self.display_name)
+"""
+
+
+def test_required_values_read_without_false(run_mypy: RunMypy) -> None:
+    def revealed(options: str) -> list[str]:
+        result = run_mypy(
+            {
+                "t_base": {"models.py": T_BASE},
+                "t_use": {"depends": ["t_base"], "models.py": REQUIRED},
+            },
+            check=["t_use"],
+            options=options,
+        )
+        return [
+            message.partition('"')[2].rstrip('"') for message in result.messages("t_use/models.py")
+        ]
+
+    default = revealed("")
+    required = revealed("required_values = true\n")
+
+    assert default[0] == default[1] == "str | Literal[False]"
+    assert required == [
+        "str",
+        "str | Literal[False]",  # not required
+        "str",
+        "datetime.date",
+        "str",
+    ]

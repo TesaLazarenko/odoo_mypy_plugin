@@ -8,7 +8,8 @@ hooks is a :class:`Hooks` around it.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from fnmatch import fnmatchcase
 from functools import partial
 from typing import Final
 
@@ -38,6 +39,7 @@ from odoo_typing.hooks.nodes import (
     type_checker,
 )
 from odoo_typing.local_values import LocalValues
+from odoo_typing.references import near_miss
 from odoo_typing.registry import Registry
 from odoo_typing.scanner import FieldInfo
 
@@ -352,3 +354,28 @@ class Hooks:
     def _field_guarded(self, path: str) -> Callable[[str, int], bool]:
         """Whether a field name is guarded on a line of a file (``"f" in self._fields``)."""
         return lambda name, line: self.registry.guarded(path, field_guard(name), line)
+
+    def _field_ignored(self, name: str, fields: Iterable[str] = ()) -> bool:
+        """Whether a name that is no field is not reported: it matches ``vals_ignore_keys``.
+
+        ``x_*`` names fields made in the database (Studio, manual fields), which domains,
+        ``mapped("x_studio_y")``, ``read`` and orders take as ``vals`` do; but a near miss
+        of a declared field (``x_scroe`` for ``x_score``) is a typo, and is reported.
+        """
+        return any(
+            fnmatchcase(name, pattern) for pattern in self._settings.vals_ignore_keys
+        ) and not near_miss(name, fields)
+
+    def _selection_elsewhere(self, addon_name: str) -> Callable[[str, str], frozenset[str]]:
+        """The keys a selection field gets in any addon, also outside the closure.
+
+        A key that only an addon outside the ``depends`` closure adds (``selection_add``,
+        ``("code", "=", "stripe")`` in ``payment``) is not misspelt: the checks of
+        selection keys leave it alone. Asked only for a key that is not in the view.
+        """
+
+        def keys(model: str, field: str) -> frozenset[str]:
+            sources = self.registry.field_sources(model, addon_name)
+            return self.registry.selection_keys_anywhere(sources, field)
+
+        return keys

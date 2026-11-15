@@ -187,7 +187,9 @@ class FieldDefinitionHooks(Hooks):
             for argument in [item for arguments in ctx.args for item in arguments]:
                 if not isinstance(argument, StrExpr):
                     continue  # a lambda, ``*names``
-                problem = decorator_problem(decorator, argument.value, model, fields_of)
+                problem = decorator_problem(
+                    decorator, argument.value, model, fields_of, self._field_ignored
+                )
                 if problem is not None:
                     ctx.api.fail(problem, argument, code=ODOO_FIELD_REF)
         return then(ctx) if then is not None else ctx.default_return_type

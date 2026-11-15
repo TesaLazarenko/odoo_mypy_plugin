@@ -98,6 +98,31 @@ def test_selection_keys_in_comparisons(run_mypy: RunMypy) -> None:
     ]
 
 
+OUTSIDE_KEYS = """
+from odoo import models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self):
+        self.search([("state", "=", "extra"), ("state", "in", ["more", "drft"])])
+        self.write({"state": "more"})
+        self.create({"state": "extr"})
+"""
+
+
+def test_selection_keys_of_addons_outside_the_closure_in_domains_and_vals(
+    run_mypy: RunMypy,
+) -> None:
+    # t_extra adds "extra" and "more", and t_use does not depend on it (payment's "stripe").
+    keys = '("draft", "done")'
+    start = "is not in the selection of field"
+    assert _messages(run_mypy, OUTSIDE_KEYS) == [
+        f'8: error: Value "drft" {start} "state" of Odoo model "t.order" {keys}  [odoo-domain]',
+        f'10: error: Value "extr" {start} "state" of Odoo model "t.order" {keys}  [odoo-vals-type]',
+    ]
+
+
 COMMANDS = """
 from odoo import models
 from odoo.fields import Command

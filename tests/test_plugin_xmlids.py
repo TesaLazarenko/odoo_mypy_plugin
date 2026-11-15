@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conftest import RunMypy
+from conftest import OdooNames, RunMypy
 
 T_BASE = {
     "models.py": """
@@ -20,6 +20,9 @@ T_BASE = {
             <record id="action_things" model="ir.actions.act_window">
                 <field name="res_model">t.thing</field>
             </record>
+            <function model="ir.model.data" name="_update_xmlids">
+                <value eval="[{'xml_id': 't_base.made_by_code', 'record': obj().browse(1)}]"/>
+            </function>
         </odoo>
         """,
     },
@@ -47,10 +50,12 @@ class Thing(models.Model):
         if self.env.ref("t_other.other_thing", raise_if_not_found=False):
             self.env.ref("t_other.second")
         self.env.ref("local_es.made_by_code")
+        reveal_type(self.env.ref("t_base.made_by_code"))
+        self.env.user.has_group("t_base.made_by_code")
 """
 
 
-def test_env_ref_types_and_checks_xml_ids(run_mypy: RunMypy) -> None:
+def test_env_ref_types_and_checks_xml_ids(run_mypy: RunMypy, names: OdooNames) -> None:
     result = run_mypy(
         {
             "t_base": T_BASE,
@@ -74,4 +79,8 @@ def test_env_ref_types_and_checks_xml_ids(run_mypy: RunMypy) -> None:
         '12: error: XML id "t_other.other_thing" is created by addon "t_other", which is not '
         'in the dependencies of "t_use"  [odoo-xmlid-depends]',
         '13: error: XML id "thing_one" has no module ("module.name")  [odoo-xmlid]',
+        # _update_xmlids does not say the model: env.ref keeps its declared type.
+        '19: note: Revealed type is "'
+        + ("odoo.orm.models.BaseModel" if names.version >= 19 else "Any")
+        + '"',
     ]

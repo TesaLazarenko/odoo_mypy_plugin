@@ -182,3 +182,30 @@ def test_scan_data_unreadable_file_gets_a_stamp_no_file_has(tmp_path: Path) -> N
 
     assert scan.xml_ids == ()
     assert stamps[str(data)] == UNREADABLE
+
+
+def test_scan_data_reads_ids_given_by_update_xmlids(tmp_path: Path) -> None:
+    # stock/data/stock_data.xml names records the warehouse made: their model is not written.
+    (tmp_path / "data.xml").write_text(
+        """<odoo>
+        <function model="ir.model.data" name="_update_xmlids">
+            <value model="base" eval="[{
+                'xml_id': 'stock.stock_location_stock',
+                'record': obj().env.ref('stock.warehouse0').lot_stock_id,
+            }, {'xml_id': 'own_location', 'noupdate': True}, {'xml_id': 1}]"/>
+            <value eval="not python ("/>
+        </function>
+        <function model="res.partner" name="_update_xmlids">
+            <value eval="[{'xml_id': 'other.function'}]"/>
+        </function>
+        </odoo>"""
+    )
+    manifest = tmp_path / "__manifest__.py"
+    manifest.write_text("{'data': ['data.xml']}")
+
+    scan = scan_data("t_mod", tmp_path, manifest)
+
+    assert scan.xml_ids == (
+        XmlId("stock.stock_location_stock", xmlids.UNKNOWN_MODEL),
+        XmlId("t_mod.own_location", xmlids.UNKNOWN_MODEL),
+    )

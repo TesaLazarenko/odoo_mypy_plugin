@@ -418,3 +418,40 @@ def test_relational_redefinition_without_comodel_needs_no_annotation(run_mypy: R
     )
 
     assert result.messages("models.py") == []
+
+
+def test_annotated_relational_fields_take_what_write_takes(run_mypy: RunMypy) -> None:
+    # base annotates country_id: Country = fields.Many2one(...) and the like.
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import models
+                from odoo.fields import Command
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    def action(self) -> None:
+                        partner = self.env["res.partner"]
+                        partner.country_id = False
+                        partner.country_id = None
+                        partner.country_id = 1
+                        partner.country_id = self.env["res.country"]
+                        partner.parent_id = partner
+                        partner.child_ids = [Command.clear()]
+                        partner.country_id = self.env["res.users"]
+                        partner.country_id = "BE"
+                        reveal_type(partner.country_id)
+                """
+            }
+        }
+    )
+
+    messages = result.messages("models.py")
+    # Annotated (Odoo 18+): a mypy assignment error; on Odoo 17 the check of __set__ (a
+    # res.partner read in another addon is Any there).
+    assert [message.partition(": ")[0] for message in messages] == ["16", "17", "18"]
+    assert messages[0].endswith(("[assignment]", "[odoo-vals-type]"))
+    assert messages[1].endswith(("[assignment]", "[odoo-vals-type]"))
+    assert messages[2].startswith('18: note: Revealed type is "')

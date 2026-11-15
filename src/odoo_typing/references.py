@@ -15,7 +15,7 @@ This module has the pure parts: resolving a path and the messages.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from difflib import get_close_matches
 from typing import Final
@@ -120,6 +120,9 @@ def field_kind(field_type: str) -> str:
     return SAME_KIND.get(field_type, field_type)
 
 
+NEAR_MISS: Final = 0.8  # how close a name must be to a field to be taken for a typo of it
+
+
 @dataclass(frozen=True, slots=True)
 class PathResult:
     """What a dotted field path resolves to.
@@ -129,12 +132,14 @@ class PathResult:
         model: The model of the last field.
         problem: Why the path is wrong (a message), if it is.
         missing: The name of the step that is not a field, if that is the problem.
+        near: Whether that name is a near miss of a field of its model (a typo).
     """
 
     field: FieldInfo | None = None
     model: str | None = None
     problem: str | None = None
     missing: str | None = None
+    near: bool = False
 
 
 def resolve_path(
@@ -167,7 +172,11 @@ def resolve_path(
         info = fields.get(name)
         if info is None:
             message = f'Odoo model "{model}" has no field "{name}" in {argument}'
-            return PathResult(problem=message + did_you_mean(name, fields), missing=name)
+            return PathResult(
+                problem=message + did_you_mean(name, fields),
+                missing=name,
+                near=near_miss(name, fields),
+            )
         if position == len(names) - 1:
             break
         if date_parts and info.field_type in DATE_CLASSES and position == len(names) - 2:
@@ -201,8 +210,17 @@ def missing_method_message(model: str, argument: str, name: str, methods: Collec
     return message + did_you_mean(name, methods)
 
 
+def near_miss(name: str, names: Iterable[str]) -> bool:
+    """Whether a name is close to one of the names (a typo of it, not another field)."""
+    return bool(get_close_matches(name, list(names), n=1, cutoff=NEAR_MISS))
+
+
 def decorator_problem(
-    decorator: str, name: str, model: str, fields_of: Callable[[str], Mapping[str, FieldInfo]]
+    decorator: str,
+    name: str,
+    model: str,
+    fields_of: Callable[[str], Mapping[str, FieldInfo]],
+    ignored: Callable[[str], bool] = lambda _name: False,
 ) -> str | None:
     """Why an argument of ``@api.depends`` / ``constrains`` / ``onchange`` is wrong, if it is.
 
@@ -211,11 +229,16 @@ def decorator_problem(
         name: The argument: a path for ``depends``, a field name for the others.
         model: The model of the class whose method is decorated.
         fields_of: The fields of a model (empty if the model is unknown).
+        ignored: Whether a name that is no field is not reported (``vals_ignore_keys``),
+            unless it is a near miss of a field.
     """
     argument = f'@api.{decorator}("{name}")'
     if decorator != "depends" and "." in name:
         return f"{argument} takes field names, not paths: Odoo ignores it"
-    return resolve_path(name, model, fields_of, argument).problem
+    found = resolve_path(name, model, fields_of, argument)
+    if found.missing is not None and not found.near and ignored(found.missing):
+        return None  # a field made in the database (``vals_ignore_keys``)
+    return found.problem
 
 
 def record_paths(method: str, argument: str, sorted_order: bool) -> tuple[list[str], str | None]:

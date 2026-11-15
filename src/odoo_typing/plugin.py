@@ -103,17 +103,25 @@ from odoo_typing.hooks.domains import (
     has_domain_type,
     wrapper_signature,
 )
-from odoo_typing.hooks.env import XML_ID_METHODS, EnvHooks, request_env, type_request
+from odoo_typing.hooks.env import (
+    XML_ID_METHODS,
+    EnvHooks,
+    add_request_attributes,
+    request_env,
+    type_request,
+)
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
-from odoo_typing.hooks.field_values import FieldValueHooks
+from odoo_typing.hooks.field_values import FieldValueHooks, without_false
 from odoo_typing.hooks.model_classes import ModelClassHooks
 from odoo_typing.hooks.models import ODOO_MODEL, ODOO_MODEL_DEPENDS, Models
 from odoo_typing.hooks.recordsets import RecordsetHooks
 from odoo_typing.hooks.vals import ValsHooks
 from odoo_typing.methods import (
+    command_id_signature,
     create_signature,
     identity_decorator,
     identity_factory,
+    is_command_id_method,
     is_create,
     is_self_method,
     keep_receiver,
@@ -369,7 +377,7 @@ class OdooPlugin(Plugin):
         found = self._hooks.method
         if fullname not in found:
             self._type_request()
-            found[fullname] = self._find_method_hook(fullname)
+            found[fullname] = self._find_method_hook(self._method_fullname(fullname))
         return found[fullname]
 
     def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
@@ -393,8 +401,26 @@ class OdooPlugin(Plugin):
         found = self._hooks.signature
         if fullname not in found:
             self._type_request()
-            found[fullname] = self._find_method_signature_hook(fullname)
+            found[fullname] = self._find_method_signature_hook(self._method_fullname(fullname))
         return found[fullname]
+
+    def _method_fullname(self, fullname: str) -> str:
+        """A method hook's name as ``<receiver class>.<name>``, also for a ``Self`` receiver.
+
+        mypy names a method's hooks after the receiver's class only when the receiver is an
+        instance; for a type variable (``self`` in an override the plugin types
+        ``(self: Self) -> Self``, or ``self: T``) it asks with the callable's own name,
+        ``"search of BaseModel"``, or a bare ``"write"`` for an unannotated def. A method
+        of ``BaseModel`` gets its full name; for another class only the method's name is
+        known, which the hooks dispatch on (each checks that the receiver is a model).
+        """
+        if "." in fullname:  # a full name (also of a view class: <subclass of "x" ...>.create)
+            return fullname
+        method, of, owner = fullname.partition(" of ")
+        if not of:
+            return fullname
+        base_model = self._models.profile.base_model
+        return f"{base_model}.{method}" if owner == base_model.rpartition(".")[2] else method
 
     def get_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
         """Resolve record-typed attributes of model classes from the reading addon."""
@@ -423,6 +449,8 @@ class OdooPlugin(Plugin):
         """Give Odoo model classes the MRO of their registry class."""
         if fullname in self._models.profile.comodel_generic:
             return self._classes.comodel_generic
+        if fullname == self._models.profile.request_class:
+            return add_request_attributes
         contribution = self._models.registry.contribution(fullname)
         if contribution is None:
             return None
@@ -515,12 +543,17 @@ class OdooPlugin(Plugin):
         profile = self._models.profile
         if is_create(fullname):
             return partial(create_signature, profile.base_model, untyped=profile.untyped_fields)
+        if is_command_id_method(fullname):
+            return partial(command_id_signature, profile.new_id)
         domain_class = profile.domain_class  # Odoo 19+: DomainType parameters
+        widen: Callable[[MethodSigContext], FunctionLike] | None = None
         if domain_class is not None and has_domain_type(
             self._declared_signature(fullname, method=True), domain_class
         ):
-            return partial(self._domains.widen_signature, None)
-        return None
+            widen = partial(self._domains.widen_signature, None)
+        if fullname.rpartition(".")[2] == "filtered":
+            return partial(self._recordsets.filtered_signature, widen)
+        return widen
 
     def _declared_signature(self, fullname: str, method: bool) -> Type | None:
         """The declared type of the method or function a hook is asked for, if mypy has it.
@@ -554,6 +587,9 @@ class OdooPlugin(Plugin):
             return partial(request_env, profile.environment)
         if profile.untyped_fields and fullname == f"{profile.base_model}.env":
             return partial(request_env, profile.environment)  # Odoo 17: a bare property
+        required = self._models.settings.required_values
+        if required and fullname == f"{profile.base_model}.display_name":
+            return without_false  # Odoo 17, 18 annotate it on BaseModel
         owner, _, name = fullname.rpartition(".")
         if name in LOG_ACCESS_USERS and registry.contribution(owner):
             # Declared as ``Many2one[Any]``: the res.users records the reading addon sees.

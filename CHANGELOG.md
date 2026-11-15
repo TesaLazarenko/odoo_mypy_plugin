@@ -20,13 +20,28 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - Relational fields are typed with their comodel (also from `related=`, through chains of
   related fields); `Binary`,
   `Reference` and log-access fields get real types; option `literal_selection`.
-- `env.ref("module.name")` is the record's model, from the XML ids of data files.
+- `env.ref("module.name")` is the record's model, from the XML ids of data files (also
+  the ids `_update_xmlids` gives, whose model the data does not say).
+- `odoo.http.request` has the attributes addons set at run time (`request.website`,
+  `.lang`, `.is_frontend`, `.website_routing`...), typed `Any`.
 - `mapped("a.b")`, `grouped("a")` and `read([...])` / `search_read` return real types.
 - Unannotated overrides of `-> Self` methods that return their own records keep the
   model type through `super()`.
 
 ### Checks
 
+- Every check also runs where `self` is a type variable: in an unannotated `create` /
+  `copy` override (typed `(self: Self) -> Self`), under `-> Self` and `self: T`.
+- Option `required_values`: required fields and `display_name` read without
+  `| Literal[False]` (off by default: a new record reads `False`).
+- Fewer false errors: a key that only an addon outside the closure adds to a selection
+  (`selection_add`) in domains and vals; `vals_ignore_keys` names (`x_*`) in domains,
+  `mapped`, `read`, orders and `@api.depends`; `default_x=False` in a context; assigning
+  `False`, an id or commands to a field Odoo annotates (`partner.country_id = False`);
+  `mapped("m2o")` of a comodel mypy cannot type is no `list`.
+- `filtered(lambda r: r.partner_id)` (Odoo 19+, which declares `Callable[[Self], bool]`)
+  takes a function of any result; `Command.link` / `update` / `delete` / `unlink` take a
+  `NewId` (Odoo 17, 18: `record.id` is `int | NewId`).
 - `odoo-model` / `odoo-model-depends`: unknown model names, models outside `depends`
   (not under guards such as `if "sale.order" in self.env:`, also through a flag
   variable or a `return <test>` helper method of the class).

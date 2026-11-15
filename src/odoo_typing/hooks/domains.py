@@ -70,7 +70,7 @@ from mypy.types import (
 from mypy.checker import TypeChecker
 
 from odoo_typing.annotations import ASSIGN, ASSIGN_BUILT, RETURN, SEARCH, SEARCH_ALIAS
-from odoo_typing.classes import domain_type_model
+from odoo_typing.classes import domain_type_model, receiver_type
 from odoo_typing.domain_parts import DomainParts, TypedPart
 from odoo_typing.domains import (
     ODOO_DOMAIN_MODEL,
@@ -391,6 +391,8 @@ class DomainHooks(Hooks):
             type_of,
             describe,
             subdomain,
+            self._selection_elsewhere(addon_name),
+            self._field_ignored,
         )
 
     def _accepts(
@@ -413,7 +415,7 @@ class DomainHooks(Hooks):
 
     def _is_records(self, ctx: MethodContext) -> bool:
         """Whether a method's receiver is a model's records (or a model class)."""
-        receiver = get_proper_type(ctx.type)
+        receiver = receiver_type(ctx.type)
         if isinstance(receiver, TypeType):
             receiver = receiver.item
         return isinstance(receiver, Instance) and receiver.type.has_base(self._profile.base_model)
@@ -422,7 +424,7 @@ class DomainHooks(Hooks):
         """The model of a method call's receiver (records, or a model class)."""
         if not isinstance(ctx, MethodContext):
             return None
-        receiver = get_proper_type(ctx.type)
+        receiver = receiver_type(ctx.type)
         if isinstance(receiver, TypeType):
             receiver = receiver.item
         if not isinstance(receiver, Instance):
@@ -494,7 +496,7 @@ def _declared_model(checker: TypeChecker, node: Expression) -> str | None:
     if isinstance(node, MemberExpr):
         if isinstance(node.node, Var):  # a module's or a class's attribute
             return _variable_model(node.node)
-        owner = get_proper_type(checker.lookup_type_or_none(node.expr))
+        owner = receiver_type(checker.lookup_type_or_none(node.expr))
         if isinstance(owner, TypeType):
             owner = owner.item
         if isinstance(owner, Instance):

@@ -25,6 +25,7 @@ from mypy.nodes import (
     ListComprehension,
     ListExpr,
     MemberExpr,
+    MypyFile,
     NameExpr,
     OpExpr,
     SuperExpr,
@@ -49,20 +50,27 @@ from mypy.typevars import fill_typevars
 # After mypy.types: mypy.checker and mypy.types import each other at import time.
 from mypy.checker import TypeChecker
 
+from odoo_typing.classes import receiver_type
 from odoo_typing.local_values import MAX_DEPTH, LocalValues
 from odoo_typing.vals import values_model_of
 
 __all__ = [
+    "COMMAND_ID_METHODS",
     "SELF_METHODS",
     "annotate_self_overrides",
+    "command_id_signature",
     "create_signature",
     "identity_decorator",
     "identity_factory",
+    "is_command_id_method",
     "is_create",
     "is_self_method",
     "keep_receiver",
     "returns_own_records",
 ]
+
+# ``Command.link(id)`` and the like: Odoo declares ``id: int``.
+COMMAND_ID_METHODS: Final = frozenset({"link", "update", "delete", "unlink"})
 
 # ``a | b``, ``a & b``, ``a - b``, ``a + b`` of records of one model are records of it.
 RECORD_SET_OPERATORS: Final = frozenset({"|", "&", "-", "+"})
@@ -143,6 +151,43 @@ def is_create(fullname: str) -> bool:
     return fullname.rpartition(".")[2] == "create"
 
 
+def is_command_id_method(fullname: str) -> bool:
+    """Whether a method is ``Command.link`` / ``update`` / ``delete`` / ``unlink`` of Odoo."""
+    owner, _, name = fullname.rpartition(".")
+    return name in COMMAND_ID_METHODS and owner.startswith("odoo.") and owner.endswith(".Command")
+
+
+def command_id_signature(new_id: str, ctx: MethodSigContext) -> FunctionLike:
+    """``Command.link(record.id)``: the ``id`` may also be a ``NewId`` (Odoo 17, 18).
+
+    ``record.id`` is ``int | NewId`` there (a record of ``new()`` or of an onchange has a
+    ``NewId``), and Odoo accepts one in a command; ``id: int`` made each such command
+    an ``arg-type`` error (most of them in tests).
+    """
+    signature = ctx.default_signature
+    if not isinstance(signature, CallableType) or "id" not in signature.arg_names:
+        return signature
+    index = signature.arg_names.index("id")
+    declared = get_proper_type(signature.arg_types[index])
+    node = lookup_fully_qualified(new_id, type_checker_modules(ctx))
+    if (
+        not isinstance(declared, Instance)
+        or declared.type.fullname != "builtins.int"
+        or node is None
+        or not isinstance(node.node, TypeInfo)
+    ):
+        return signature
+    widened = UnionType([declared, Instance(node.node, [])])
+    arg_types = [*signature.arg_types]
+    arg_types[index] = widened
+    return signature.copy_modified(arg_types=arg_types)
+
+
+def type_checker_modules(ctx: MethodSigContext) -> dict[str, MypyFile]:
+    """The modules mypy has loaded, as the checker of a signature hook sees them."""
+    return ctx.api.modules if isinstance(ctx.api, TypeChecker) else {}
+
+
 def create_signature(base_model: str, ctx: MethodSigContext, untyped: bool = False) -> FunctionLike:
     """``create(vals_list: list[X])`` also accepts one ``X``, as ``model_create_multi`` does.
 
@@ -153,7 +198,7 @@ def create_signature(base_model: str, ctx: MethodSigContext, untyped: bool = Fal
     ``odoo.values.*`` is accepted too (:func:`_values_list`).
     """
     signature = ctx.default_signature
-    receiver = get_proper_type(ctx.type)
+    receiver = receiver_type(ctx.type)
     if (
         not isinstance(signature, CallableType)
         or not isinstance(receiver, Instance)
@@ -212,14 +257,14 @@ def keep_receiver(base_model: str, ctx: MethodContext) -> Type:
     annotations, and the receiver is a model; ``-> Any`` written out is kept.
     """
     default = get_proper_type(ctx.default_return_type)
-    receiver = get_proper_type(ctx.type)
+    receiver = receiver_type(ctx.type)
     if (
         isinstance(default, AnyType)
         and default.type_of_any == TypeOfAny.unannotated
         and isinstance(receiver, Instance)
         and receiver.type.has_base(base_model)
     ):
-        return receiver
+        return ctx.type  # ``Self`` stays ``Self`` (an override's body)
     return ctx.default_return_type
 
 

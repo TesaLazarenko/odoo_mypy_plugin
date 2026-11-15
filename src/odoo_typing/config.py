@@ -55,6 +55,7 @@ OPTIONS = (
     "dynamic_env",
     "vals_ignore_keys",
     "literal_selection",
+    "required_values",
     "scan_cache_dir",
 )
 # Options that are lists; in an INI file, entries separated by commas or newlines.
@@ -89,6 +90,9 @@ class Settings:
             unknown fields (``fnmatch``, case-sensitive).
         literal_selection: Read a ``Selection`` field with literal keys as
             ``Literal[<keys>] | Literal[False]`` instead of ``str | Literal[False]``.
+        required_values: Read a required field (``required=True``, as the merged
+            definitions of the model leave it) and ``display_name`` without
+            ``| Literal[False]``.
         scan_cache_dir: Where addon scans are kept for every project and mypy cache
             (:class:`odoo_typing.scan_store.ScanStore`); ``None``: only in mypy's cache.
     """
@@ -100,6 +104,7 @@ class Settings:
     odoo_version: int | None = None
     vals_ignore_keys: tuple[str, ...] = DEFAULT_VALS_IGNORE_KEYS
     literal_selection: bool = False
+    required_values: bool = False
     scan_cache_dir: Path | None = None
 
     def option_data(self) -> list[str]:
@@ -109,6 +114,7 @@ class Settings:
             f"odoo_version={self.odoo_version}",
             f"vals_ignore_keys={','.join(self.vals_ignore_keys)}",
             f"literal_selection={self.literal_selection}",
+            *(["required_values=True"] if self.required_values else []),
         ]
 
     @property
@@ -148,6 +154,7 @@ def load_settings(
             "vals_ignore_keys", table.get("vals_ignore_keys", list(DEFAULT_VALS_IGNORE_KEYS))
         ),
         literal_selection=_flag("literal_selection", table.get("literal_selection", False)),
+        required_values=_flag("required_values", table.get("required_values", False)),
         scan_cache_dir=_scan_cache_dir(table, base_dir),
     )
 

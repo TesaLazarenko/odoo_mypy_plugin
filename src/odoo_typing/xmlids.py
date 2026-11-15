@@ -7,7 +7,11 @@ manifest, each with an XML id (``ir.model.data``):
   (``ir.ui.view``), ``<menuitem>`` (``ir.ui.menu``), ``<act_window>``
   (``ir.actions.act_window``), ``<report>`` (``ir.actions.report``), ``<asset>``
   (``theme.ir.asset`` / ``ir.asset``);
-* CSV: the ``id`` column of ``<model>.csv`` (``ir.model.access.csv``).
+* CSV: the ``id`` column of ``<model>.csv`` (``ir.model.access.csv``);
+* ``<function model="ir.model.data" name="_update_xmlids">``: the ``'xml_id'`` keys of
+  its literal dicts (``stock.stock_location_stock``), ids given to records the data
+  made otherwise; their model is not written, so it is :data:`UNKNOWN_MODEL` and
+  ``env.ref`` keeps its declared type.
 
 An id without a module (``x``) belongs to the addon; ``other.x`` names a record of
 another addon (an override). Odoo also makes ids for models (``model_res_partner``),
@@ -27,8 +31,10 @@ which lxml, and so Odoo, reads: such a file is decoded first (:func:`_parse_xml`
 
 from __future__ import annotations
 
+import ast
 import csv
 import re
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +49,7 @@ from odoo_typing.stamps import UNREADABLE, Stamps, stamp
 __all__ = [
     "ODOO_XMLID",
     "ODOO_XMLID_DEPENDS",
+    "UNKNOWN_MODEL",
     "DataScan",
     "XmlId",
     "automatic_model",
@@ -161,6 +168,10 @@ def _data_files(manifest: Path | None, stamps: Stamps) -> Iterator[str]:
             yield from (entry for entry in entries if isinstance(entry, str))
 
 
+UNKNOWN_MODEL: Final = ""
+"""The model of an XML id given by ``_update_xmlids``: the data does not say it."""
+
+
 def _qualified(xml_id: str, addon_name: str) -> str:
     return xml_id if "." in xml_id else f"{addon_name}.{xml_id}"
 
@@ -185,6 +196,10 @@ def _xml_ids(path: Path, addon_name: str) -> list[XmlId] | None:
         return []
     found: list[XmlId] = []
     for element in root.iter():
+        if _updates_xml_ids(element):
+            updated = _updated(element)
+            found.extend(XmlId(_qualified(name, addon_name), UNKNOWN_MODEL) for name in updated)
+            continue
         xml_id = element.get("id")
         if not xml_id or not isinstance(element.tag, str):
             continue
@@ -193,6 +208,42 @@ def _xml_ids(path: Path, addon_name: str) -> list[XmlId] | None:
         if model:
             found.append(XmlId(_qualified(xml_id, addon_name), model))
     return found
+
+
+def _updates_xml_ids(element: ElementTree.Element) -> bool:
+    return (
+        element.tag == "function"
+        and element.get("model") == "ir.model.data"
+        and element.get("name") == "_update_xmlids"
+    )
+
+
+def _updated(function: ElementTree.Element) -> Iterator[str]:
+    """The ``'xml_id': '...'`` keys in the ``eval`` of a ``_update_xmlids`` call."""
+    trees = (_expression(element.get("eval") or "") for element in function.iter())
+    dicts = (
+        node for tree in trees if tree for node in ast.walk(tree) if isinstance(node, ast.Dict)
+    )
+    for node in dicts:
+        for key, value in zip(node.keys, node.values, strict=True):
+            if _constant(key) == "xml_id" and (name := _constant(value)):
+                yield name
+
+
+def _expression(source: str) -> ast.Expression | None:
+    """An ``eval`` attribute's expression, ``None`` when it is empty or not Python."""
+    if not source.strip():
+        return None
+    try:
+        with warnings.catch_warnings():  # no SyntaxWarning for an invalid escape
+            warnings.simplefilter("ignore")
+            return ast.parse(source.strip(), mode="eval")
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return None
+
+
+def _constant(node: ast.expr | None) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
 def _parse_xml(path: Path) -> ElementTree.Element:

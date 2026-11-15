@@ -181,6 +181,71 @@ def test_unannotated_overrides_of_self_methods_keep_receiver_type(
     ]
 
 
+def test_checks_run_on_self_typed_as_a_type_variable(run_mypy: RunMypy, names: OdooNames) -> None:
+    # In an unannotated create / copy override the plugin types ``self`` as ``Self``,
+    # and mypy then names the hooks "search of BaseModel" (or "write" for an own def).
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from typing import Self, TypeVar
+
+                from odoo import api, fields, models
+
+                T = TypeVar("T", bound="Thing")
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    state = fields.Selection([("a", "A")])
+                    @api.model_create_multi
+                    def create(self, vals_list):
+                        self.search([("nope", "=", 1)])
+                        self.write({"nope": 1})
+                        self.mapped("nope")
+                        if self.state == "zzz":
+                            pass
+                        records = super().create(vals_list)
+                        records.write({"nope": 1})
+                        reveal_type(records)
+                        return records
+
+                    def write(self, vals):
+                        return super().write(vals)
+
+                    def annotated(self) -> Self:
+                        self.search([("nope", "=", 1)])
+                        return self.sudo()
+
+                    def bound(self: T) -> T:
+                        self.search_count([("nope", "=", 1)])
+                        self.filtered("nope")
+                        return self
+                """
+            }
+        }
+    )
+
+    assert result.messages("models.py") == [
+        '14: error: Odoo model "t.thing" has no field "nope" in domain  [odoo-domain]',
+        '15: error: Odoo model "t.thing" has no field "nope"  [odoo-vals-key]',
+        '16: error: Odoo model "t.thing" has no field "nope" in mapped("nope")  [odoo-field-ref]',
+        '17: error: Value "zzz" is not in the selection of field "state" of Odoo model'
+        ' "t.thing" ("a")  [odoo-selection]',
+        *(
+            ['21: note: Revealed type is "Any"']  # Odoo 17: create is unannotated
+            if names.version == 17
+            else [
+                '20: error: Odoo model "t.thing" has no field "nope"  [odoo-vals-key]',
+                '21: note: Revealed type is "Self"',
+            ]
+        ),
+        '28: error: Odoo model "t.thing" has no field "nope" in domain  [odoo-domain]',
+        '32: error: Odoo model "t.thing" has no field "nope" in domain  [odoo-domain]',
+        '33: error: Odoo model "t.thing" has no field "nope" in filtered("nope")  [odoo-field-ref]',
+    ]
+
+
 def test_create_accepts_one_dict_or_a_list_of_dicts(run_mypy: RunMypy) -> None:
     # model_create_multi turns a single dict into a list at runtime.
     result = run_mypy(
@@ -528,4 +593,120 @@ def test_self_override_returning_other_records_stays_unannotated(run_mypy: RunMy
     assert result.messages("models.py") == [
         '19: note: Revealed type is "my_mod.models.Thing"',
         '20: note: Revealed type is "my_mod.models.Thing"',
+    ]
+
+
+@pytest.mark.odoo(19, 20)
+def test_filtered_function_may_return_any_value(run_mypy: RunMypy) -> None:
+    # Odoo declares Callable[[Self], bool] but keeps the records whose result is truthy.
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import fields, models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    partner_id = fields.Many2one("res.partner")
+                    def action(self) -> None:
+                        reveal_type(self.filtered(lambda r: r.partner_id))
+                        self.filtered(lambda r: r.partner_id.name.upper())
+                        self.filtered(lambda r: r.sizee)
+                        self.filtered(1)
+                """
+            }
+        }
+    )
+
+    messages = result.messages("models.py")
+    assert messages[0] == '9: note: Revealed type is "my_mod.models.Thing"'
+    assert messages[1].startswith('10: error: Item "bool" of "str | Literal[False]"')
+    assert messages[2] == '11: error: "Thing" has no attribute "sizee"  [attr-defined]'
+    assert messages[3].startswith('12: error: Argument 1 to "filtered" of "BaseModel"')
+    assert len(messages) == 4
+
+
+def test_commands_take_the_id_of_a_record(run_mypy: RunMypy) -> None:
+    # record.id is int | NewId on Odoo 17 and 18; Odoo declares Command.link(id: int).
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import fields, models
+                from odoo.fields import Command
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    partner_ids = fields.Many2many("res.partner")
+                    def action(self) -> None:
+                        partner = self.env["res.partner"].new({})
+                        self.write({"partner_ids": [Command.link(partner.id)]})
+                        Command.update(partner.id, {})
+                        Command.delete(partner.id)
+                        Command.unlink(partner.id)
+                        Command.link("1")
+                """
+            }
+        }
+    )
+
+    messages = result.messages("models.py")
+    assert len(messages) == 1
+    assert messages[0].startswith('15: error: Argument 1 to "link" of "Command"')
+
+
+def test_hooks_of_view_classes_keep_their_names(run_mypy: RunMypy) -> None:
+    # A model extended by two addons of the closure is a merged view class, whose name has
+    # " of " in it (<subclass of "t.thing" seen from "my_use">): no "search of BaseModel".
+    result = run_mypy(
+        {
+            "my_mod": {"models.py": THING},
+            "my_ext": {
+                "depends": ["my_mod"],
+                "models.py": """
+                from odoo import fields, models
+
+                class Thing(models.Model):
+                    _inherit = "t.thing"
+
+                    extra = fields.Char()
+                """,
+            },
+            "my_other": {
+                "depends": ["my_mod"],
+                "models.py": """
+                from odoo import fields, models
+
+                class Thing(models.Model):
+                    _inherit = "t.thing"
+
+                    other = fields.Char()
+                """,
+            },
+            "my_use": {
+                "depends": ["my_ext", "my_other"],
+                "models.py": """
+                from odoo import models
+
+                class User(models.Model):
+                    _name = "t.user"
+
+                    def action(self) -> None:
+                        things = self.env["t.thing"]
+                        things.create({"extra": "x"})
+                        things.create({"nope": 1})
+                        things.search([("nope", "=", 1)])
+                        things.mapped("nope")
+                """,
+            },
+        },
+        check=["my_use"],
+    )
+
+    assert result.messages("my_use/models.py") == [
+        '10: error: Odoo model "t.thing" has no field "nope"  [odoo-vals-key]',
+        '11: error: Odoo model "t.thing" has no field "nope" in domain  [odoo-domain]',
+        '12: error: Odoo model "t.thing" has no field "nope" in mapped("nope")  [odoo-field-ref]',
     ]

@@ -418,6 +418,7 @@ class Line(models.Model):
         orders.with_context(default_stat="draft", default_extract_state="x").create({})
         orders.with_context({"default_count": "two", "active_test": False}).create({})
         orders.with_context(default_stat="draft").search([])  # not the created model
+        orders.with_context(default_stat=False).create({})  # clears another model's default
 """
 
 

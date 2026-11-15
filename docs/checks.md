@@ -369,7 +369,8 @@ items are the plugin's checks.
 `groups="..."`, and the action of `_for_xml_id("...")`. The XML id must either:
 
 - be created by a data file (`data` / `demo` in a manifest: `<record>`, `<template>`,
-  `<menuitem>`, `<act_window>`, `<report>`, the `id` column of `<model>.csv`) of an
+  `<menuitem>`, `<act_window>`, `<report>`, the `id` column of `<model>.csv`, the
+  `'xml_id'` keys of `<function model="ir.model.data" name="_update_xmlids">`) of an
   addon in the `depends` closure, or
 - be one Odoo makes itself (`module.model_res_partner`,
   `module.field_res_partner__name`, `base.module_sale`).
@@ -378,7 +379,8 @@ Its sub-code `odoo-xmlid-depends` is an id that only an addon outside the closur
 creates.
 
 - The result is the record's model as the addon sees it: `env.ref("base.main_company")`
-  is a `res.company` record.
+  is a `res.company` record. An id given by `_update_xmlids` does not say its model:
+  `env.ref` keeps its declared type there.
 - With `raise_if_not_found=False` the result is `| None`, and the check is off (the code
   expects the id may be missing). So is a line under
   `if env.ref("sale.x", raise_if_not_found=False):` for every id of `sale`.
@@ -633,10 +635,16 @@ With real recordset types, some plain mypy codes appear more often:
 
 - `union-attr` / `arg-type` with `... | Literal[False]`: a field read as
   `str | Literal[False]` (Odoo's own typing). Check the value (`if record.name:`) first.
-- `arg-type` with `int | NewId` (`record.id` of possibly new records): pass
-  `record.ids` / `record._origin.id`, or check `isinstance(record.id, int)`.
+- `arg-type` with `int | NewId` (`record.id` of possibly new records, Odoo 17 and 18):
+  pass `record.ids` / `record._origin.id`, or check `isinstance(record.id, int)`.
+  `Command.link` / `update` / `delete` / `unlink` take one as Odoo does.
 - `assignment` between two classes of the same model (`AccountMoveLine` of two addons):
   use another variable name, or annotate it.
+- `assignment` and then `attr-defined` where a variable is reused: `partner = False`
+  then a record, one loop variable over two models. mypy's `allow_redefinition = true`
+  (with `local_partial_types = true`) lets such a variable take the new type; on the
+  37 core addons of the benchmark's `big` profile it takes the plugin-only errors from
+  1983 to 1780.
 
 ## Not yet supported
 
@@ -648,6 +656,9 @@ With real recordset types, some plain mypy codes appear more often:
   [`odoo.domain.*` annotation](#annotated-domains-odoodomain), and string arguments of
   `mapped()` / `filtered()` known only at run time (not a literal or a `Final` /
   `Literal` str).
+- Where `self` is a type variable (`Self` in the body of such an override, `-> Self`,
+  `self: T`), mypy calls no signature hook: `self.create({...})` there is an `arg-type`
+  error on Odoo 17 and 18 (`create` declares a list). The checks of the call still run.
 - An unannotated override of a `-> Self` method (`create`, `copy`, `search`, `sudo`...)
   is typed `(self: Self, ...) -> Self` only when each `return` gives its own records by
   syntax (`self`, `super().create(...)`, `records.sudo()`, `a | b`, a variable bound to

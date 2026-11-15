@@ -229,6 +229,10 @@ class DomainChecker:
         describe: How a message names a type.
         subdomain: Checks the value of an ``any`` term as a domain of a model
             (the value, the model, the field, the term's model, the mode).
+        selection_elsewhere: The keys a selection field (model, name) gets in any addon:
+            a key only an addon outside the closure adds is not reported.
+        ignored: Whether a name that is no field of a model (whose field names are given)
+            is not reported (``vals_ignore_keys``, unless a near miss of a field).
     """
 
     def __init__(
@@ -240,6 +244,10 @@ class DomainChecker:
         type_of: TypeOf,
         describe: Callable[[ProperType], str],
         subdomain: Callable[[Expression, str, FieldInfo, str, Mode], None],
+        selection_elsewhere: Callable[[str, str], frozenset[str]] = (
+            lambda _model, _field: frozenset()
+        ),
+        ignored: Callable[[str, Collection[str]], bool] = lambda _name, _fields: False,
     ) -> None:
         self.fail = fail
         self.fields_of = fields_of
@@ -252,6 +260,8 @@ class DomainChecker:
         self.type_of = type_of
         self.describe = describe
         self.subdomain = subdomain
+        self.selection_elsewhere = selection_elsewhere
+        self.ignored = ignored
 
     # -- structure (any model) -------------------------------------------------------------
 
@@ -422,7 +432,7 @@ class DomainChecker:
                 return DomainPath(tuple(steps), known=False) if steps else None
             info = fields.get(name)
             if info is None:
-                if not self.guarded(name, node.line):
+                if not self.guarded(name, node.line) and not self.ignored(name, fields):
                     message = f'Odoo model "{current}" has no field "{name}" in domain'
                     self.fail(message + did_you_mean(name, fields), node, ODOO_DOMAIN)
                 return None
@@ -779,8 +789,13 @@ class DomainChecker:
         if field.field_type != "Selection" or selection is None or "selection" in field.dynamic:
             return
         values = value.items if isinstance(value, (ListExpr, TupleExpr)) else [value]
+        elsewhere: frozenset[str] | None = None
         for item in values:
-            if isinstance(item, StrExpr) and item.value and item.value not in selection:
+            if not isinstance(item, StrExpr) or not item.value or item.value in selection:
+                continue
+            if elsewhere is None:
+                elsewhere = self.selection_elsewhere(model, field.name)
+            if item.value not in elsewhere:
                 shown = ", ".join(f'"{key}"' for key in selection[:SHOWN_KEYS])
                 more = ", ..." if len(selection) > SHOWN_KEYS else ""
                 self.fail(

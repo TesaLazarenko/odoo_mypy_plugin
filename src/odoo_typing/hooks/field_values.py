@@ -24,15 +24,15 @@ from mypy.checker import TypeChecker
 from mypy.maptype import map_instance_to_supertype
 from mypy.typeops import make_simplified_union
 
-from odoo_typing.classes import instance_of
+from odoo_typing.classes import instance_of, receiver_type
 from odoo_typing.compat import OdooProfile
 from odoo_typing.hooks.models import Hooks
 from odoo_typing.hooks.nodes import record_type, type_checker
 from odoo_typing.references import resolve_path
 from odoo_typing.scanner import FieldInfo
-from odoo_typing.vals import stored
+from odoo_typing.vals import RECORDS, VALUE_TYPES, stored, value_type_named
 
-__all__ = ["FieldValueHooks"]
+__all__ = ["FieldValueHooks", "without_false"]
 
 # Field classes whose reading ``_value_get`` types (``Image`` is a ``Binary``).
 VALUE_KINDS = frozenset({"Binary", "Reference", "Selection"})
@@ -51,7 +51,8 @@ class FieldValueHooks(Hooks):
         relational = self._profile.relational_base
         base = next((item for item in mro if item.fullname == relational), None)
         if base is None:
-            return self._value_get(descriptor, signature, ctx)
+            found = self._value_get(descriptor, signature, ctx)
+            return self._required_value(found, ctx) if self._settings.required_values else found
         records = record_type(ctx)
         if isinstance(records, NoneType):
             # Model.field: the field (Odoo 19 declares ``records: BaseModel``, not None).
@@ -68,6 +69,28 @@ class FieldValueHooks(Hooks):
         owner = records.type if isinstance(records, Instance) else None
         resolved = self._models.comodel_at_use_site(comodel, owner, ctx.api)
         return signature.copy_modified(ret_type=resolved or comodel)
+
+    def _required_value(self, signature: FunctionLike, ctx: MethodSigContext) -> FunctionLike:
+        """``required_values``: a required field (and ``display_name``) without ``False``.
+
+        Odoo reads ``False`` for a required field of a new record or of a form whose
+        value is not set yet; code that reads saved records does not see it.
+        """
+        member = ctx.context
+        records = record_type(ctx)
+        if not isinstance(signature, CallableType) or not isinstance(records, Instance):
+            return signature
+        info = self._read_field(records, ctx)
+        name = member.name if isinstance(member, MemberExpr) else None
+        if name != "display_name" and (info is None or info.required is not True):
+            return signature
+        value = get_proper_type(signature.ret_type)
+        if not isinstance(value, UnionType):
+            return signature
+        kept = [item for item in value.items if not _is_false(item)]
+        if len(kept) == len(value.items):
+            return signature
+        return signature.copy_modified(ret_type=make_simplified_union(kept))
 
     def _value_get(
         self, descriptor: Instance, signature: CallableType, ctx: MethodSigContext
@@ -172,13 +195,56 @@ class FieldValueHooks(Hooks):
         Assignments keep the declared type.
         """
         declared = get_proper_type(ctx.default_attr_type)
-        if ctx.is_lvalue or not isinstance(declared, Instance):
+        if not isinstance(declared, Instance):
             return ctx.default_attr_type
-        owner = get_proper_type(ctx.type)
+        owner = receiver_type(ctx.type)
         owner_info = owner.type if isinstance(owner, Instance) else None
+        if ctx.is_lvalue:
+            return self._assigned(declared, owner_info, ctx)
         return (
             self._models.comodel_at_use_site(declared, owner_info, ctx.api) or ctx.default_attr_type
         )
+
+    def _assigned(self, declared: Instance, owner: TypeInfo | None, ctx: AttributeContext) -> Type:
+        """What an annotated relational field takes (``partner.country_id = False``).
+
+        The annotation (``country_id: Country = fields.Many2one(...)``) is a variable of
+        the comodel's records, but Odoo takes what ``write`` takes: ``False``, ``None``,
+        an id, commands. The records keep the declared comodel.
+        """
+        member = ctx.context
+        model = self._models.model_of(owner) if owner is not None else None
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if not isinstance(member, MemberExpr) or model is None or addon_name is None:
+            return ctx.default_attr_type
+        info = self._fields_of(addon_name, ctx.api)(model).get(member.name)
+        names = VALUE_TYPES.get(info.field_type, ()) if info is not None else ()
+        if info is None or info.comodel is None or not names:
+            return ctx.default_attr_type
+        checker = type_checker(ctx.api)
+        items: list[Type] = [declared]
+        for name in names:
+            if name == RECORDS:
+                continue  # the declared comodel's
+            item = value_type_named(name, checker, self._profile.base_model, self._profile.new_id)
+            if item is None:
+                return ctx.default_attr_type
+            items.append(item)
+        return make_simplified_union(items)
+
+
+def without_false(ctx: AttributeContext) -> Type:
+    """``required_values``: ``display_name`` (annotated on ``BaseModel``) without ``False``."""
+    value = get_proper_type(ctx.default_attr_type)
+    if ctx.is_lvalue or not isinstance(value, UnionType):
+        return ctx.default_attr_type
+    return make_simplified_union([item for item in value.items if not _is_false(item)])
+
+
+def _is_false(item: Type) -> bool:
+    """Whether a type is ``Literal[False]``."""
+    proper = get_proper_type(item)
+    return isinstance(proper, LiteralType) and proper.value is False
 
 
 # Odoo 17: what reading a field gives, by field class (as Odoo 18 declares them).

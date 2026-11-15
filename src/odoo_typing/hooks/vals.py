@@ -9,8 +9,9 @@ from functools import partial
 
 from mypy.nodes import CallExpr, MemberExpr, NameExpr, TempNode
 from mypy.plugin import CheckerPluginInterface, MethodContext, MethodSigContext
-from mypy.types import FunctionLike, Instance, Type, get_proper_type
+from mypy.types import FunctionLike, Instance, Type
 
+from odoo_typing.classes import receiver_type
 from odoo_typing.hooks.models import Hooks
 from odoo_typing.hooks.nodes import type_checker
 from odoo_typing.methods import is_self_method, keep_receiver
@@ -25,7 +26,7 @@ class ValsHooks(Hooks):
     def check(self, method: str, ctx: MethodContext) -> Type:
         """Check the literal ``vals`` of ``create`` / ``write`` / ``copy(default=)``."""
         base_model = self._profile.base_model
-        receiver = get_proper_type(ctx.type)
+        receiver = receiver_type(ctx.type)
         argument = ctx.args[0][0] if ctx.args and ctx.args[0] else None
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
         model = self._models.model_of(receiver.type) if isinstance(receiver, Instance) else None
@@ -68,7 +69,7 @@ class ValsHooks(Hooks):
         value = ctx.args[1][0] if records is not None and ctx.args[1] else None
         if not isinstance(lvalue, MemberExpr) or not isinstance(records, TempNode):
             return ctx.default_signature
-        record = get_proper_type(records.type)
+        record = receiver_type(records.type)
         model = self._models.model_of(record.type) if isinstance(record, Instance) else None
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
         if value is None or model is None or addon_name is None:
@@ -92,6 +93,7 @@ class ValsHooks(Hooks):
             partial(self._vals_target, addon_name=addon_name, api=api),
             self._field_guarded(api.path),
             partial(self._accepted_values, addon_name=addon_name, api=api),
+            self._selection_elsewhere(addon_name),
         )
 
     def _vals_target(self, model: str, addon_name: str, api: CheckerPluginInterface) -> ValsTarget:

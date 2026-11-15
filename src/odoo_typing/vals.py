@@ -62,7 +62,7 @@ from mypy.types import (
 # After mypy.types: mypy.checker and mypy.types import each other at import time.
 from mypy.checker import TypeChecker
 
-from odoo_typing.classes import values_class_model
+from odoo_typing.classes import receiver_type, values_class_model
 from odoo_typing.local_values import MAX_DEPTH, Change, LocalValues
 from odoo_typing.model_fields import stored
 from odoo_typing.scanner import FieldInfo
@@ -76,6 +76,7 @@ __all__ = [
     "ODOO_VALS_KEY",
     "ODOO_VALS_TYPE",
     "RECORDS",
+    "RELATIONAL_CLASSES",
     "VALUE_TYPES",
     "ContextDefault",
     "ValsChecker",
@@ -84,6 +85,7 @@ __all__ = [
     "selection_problem",
     "stored",
     "vals_dicts",
+    "value_type_named",
     "values_model_of",
 ]
 
@@ -264,6 +266,8 @@ class ValsChecker:
             (``if "f" in self._fields:``, :func:`odoo_typing.guards.field_guard`).
         values_of: The models whose ``odoo.values.*`` a model takes
             (:meth:`odoo_typing.registry.Registry.accepted_values`).
+        selection_elsewhere: The keys a selection field (model, name) gets in any addon:
+            a key only an addon outside the closure adds is not reported.
     """
 
     checker: TypeChecker
@@ -274,6 +278,7 @@ class ValsChecker:
     target_for: Callable[[str], ValsTarget]
     guarded: Callable[[str, int], bool]
     values_of: Callable[[str], frozenset[str]]
+    selection_elsewhere: Callable[[str, str], frozenset[str]] = lambda _model, _field: frozenset()
 
     def typed(self, node: Expression) -> bool:
         """Whether an expression's type is the values of a model (``odoo.values.*``).
@@ -330,8 +335,11 @@ class ValsChecker:
             if info is None:
                 # Odoo ignores a default of a field the model lacks, and code sets
                 # defaults for fields of optional addons on purpose: only a near miss
-                # of an existing field (a typo) is reported.
-                if get_close_matches(default.field, list(target.fields), n=1, cutoff=0.8):
+                # of an existing field (a typo) is reported. ``default_x=False`` /
+                # ``None`` clears a default the context brings for another model.
+                if not _clears(default.value) and get_close_matches(
+                    default.field, list(target.fields), n=1, cutoff=0.8
+                ):
                     where = f" ({default.key} in with_context)"
                     self._unknown_key(target, default.node, default.field, where)
                 continue
@@ -415,7 +423,7 @@ class ValsChecker:
             for node in _command_ids(item):
                 if not isinstance(node, MemberExpr) or node.name not in {"id", "ids"}:
                     continue
-                records = get_proper_type(self.checker.lookup_type_or_none(node.expr))
+                records = receiver_type(self.checker.lookup_type_or_none(node.expr))
                 other = self.model_of(records.type) if isinstance(records, Instance) else None
                 if other is None or other == info.comodel or not self.concrete(other):
                     continue
@@ -439,9 +447,14 @@ class ValsChecker:
     def _check_selection_keys(
         self, model: str, info: FieldInfo, items: Sequence[ProperType], value: Expression
     ) -> None:
+        elsewhere: frozenset[str] | None = None
         for key in _literal_strings(items):
             problem = selection_problem(model, info, key)
-            if problem is not None:
+            if problem is None:
+                continue
+            if elsewhere is None:
+                elsewhere = self.selection_elsewhere(model, info.name)
+            if key not in elsewhere:
                 self.checker.fail(problem, value, code=ODOO_VALS_TYPE)
 
     def _check_comodel(
@@ -473,17 +486,27 @@ class ValsChecker:
         return UnionType.make_union(items)
 
     def _named(self, name: str) -> Type | None:
-        if name == NONE:
-            return NoneType()
-        if name == FALSE:
-            return LiteralType(False, self.checker.named_type("builtins.bool"))
-        full = {RECORDS: self.base_model, NEW_ID: self.new_id}.get(name, name)
-        node = lookup_fully_qualified(full, self.checker.modules)
-        info = node.node if node is not None else None
-        if not isinstance(info, TypeInfo):
-            return None
-        args: list[Type] = [AnyType(TypeOfAny.special_form)] * len(info.defn.type_vars)
-        return Instance(info, args)
+        return value_type_named(name, self.checker, self.base_model, self.new_id)
+
+
+def value_type_named(name: str, checker: TypeChecker, base_model: str, new_id: str) -> Type | None:
+    """The type a name of :data:`VALUE_TYPES` stands for; ``None``: its class is not loaded."""
+    if name == NONE:
+        return NoneType()
+    if name == FALSE:
+        return LiteralType(False, checker.named_type("builtins.bool"))
+    full = {RECORDS: base_model, NEW_ID: new_id}.get(name, name)
+    node = lookup_fully_qualified(full, checker.modules)
+    info = node.node if node is not None else None
+    if not isinstance(info, TypeInfo):
+        return None
+    args: list[Type] = [AnyType(TypeOfAny.special_form)] * len(info.defn.type_vars)
+    return Instance(info, args)
+
+
+def _clears(value: Expression) -> bool:
+    """Whether a value is the literal ``False`` or ``None``."""
+    return isinstance(value, NameExpr) and value.fullname in {"builtins.False", "builtins.None"}
 
 
 def selection_problem(model: str, info: FieldInfo, key: str) -> str | None:
