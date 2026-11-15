@@ -1,46 +1,99 @@
 # Lint, type-check and test the plugin against each supported Odoo version and the
-# oldest and newest supported mypy. Odoo comes from tools/odoo/fetch.sh (a shallow,
-# sparse checkout, cached between runs).
+# oldest and newest supported mypy (and Python). Odoo comes from tools/odoo/fetch.sh at
+# the commits pinned in tools/odoo/commits.txt (a shallow, sparse checkout, cached per
+# commit and version of fetch.sh), so a new commit in Odoo never changes what CI tests:
+# see odoo-latest.yml.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:  # release.yml runs the same checks on the tagged commit
+
+permissions:
+  contents: read
+
+concurrency:
+  # A literal prefix, not github.workflow: called from release.yml that is "Release",
+  # the caller's own group, and the run deadlocks.
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  UV_VERSION: "0.11.17"
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync
-      - run: uv run ruff check src tests tools
-      - run: uv run ruff format --check src tests tools
-      - run: uv run pylint src tests tools
-      - run: uv run mypy
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run --no-sync ruff check src tests tools
+      - run: uv run --no-sync ruff format --check src tests tools
+      - run: uv run --no-sync pylint src tests tools
+      - run: uv run --no-sync mypy
+      # The oldest and newest supported Python: no standard library API they lack.
+      - run: uv run --no-sync mypy --python-version 3.11
+      - run: uv run --no-sync mypy --python-version 3.13
 
   test:
-    runs-on: ubuntu-latest
+    name: test (Odoo ${{ matrix.odoo }}, mypy ${{ matrix.mypy }}, Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04  # private repository: 2 CPUs, 8 GB
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         odoo: ["17.0", "18.0", "19.0", "20.0"]
         mypy: ["2.1.0", "2.4.1"]
+        python: ["3.12"]  # an axis, so that the entries below add jobs, not replace them
+        include:
+          # The oldest of everything: Python 3.11 (Debian 12) with the oldest mypy and
+          # Odoo (Odoo 20 needs 3.12); the newest: Python 3.13 (Debian 13) with both newest.
+          - {odoo: "17.0", mypy: "2.1.0", python: "3.11"}
+          - {odoo: "20.0", mypy: "2.4.1", python: "3.13"}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"  # Odoo 20's sources need 3.12
-      - uses: actions/cache@v4
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ matrix.python }}
+      - name: Pinned Odoo commit
+        id: odoo
+        run: |
+          commit=$(awk -v v="${{ matrix.odoo }}" '$1 == v { print $2 }' tools/odoo/commits.txt)
+          [[ -n "$commit" ]] || { echo "::error::no pin for ${{ matrix.odoo }} in tools/odoo/commits.txt"; exit 1; }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      # Keyed by the commit and fetch.sh: a new layout gets a new key (fetch.sh rebuilds
+      # what it restores). A miss restores an older fetch.sh's checkout of this commit,
+      # else an older pin's (fetch.sh then fetches only the difference).
+      - uses: actions/cache/restore@v4
+        id: odoo-cache
         with:
           path: ~/.cache/odoo-typing/odoo/${{ matrix.odoo }}
-          key: odoo-${{ matrix.odoo }}-v1
-      - run: uv sync
-      - run: uv pip install "mypy==${{ matrix.mypy }}"
+          key: odoo-${{ matrix.odoo }}-${{ steps.odoo.outputs.commit }}-${{ hashFiles('tools/odoo/fetch.sh') }}
+          restore-keys: |
+            odoo-${{ matrix.odoo }}-${{ steps.odoo.outputs.commit }}-
+            odoo-${{ matrix.odoo }}-
       - name: Fetch Odoo ${{ matrix.odoo }}
-        run: echo "ODOO_PATH=$(tools/odoo/fetch.sh ${{ matrix.odoo }} --update)" >> "$GITHUB_ENV"
+        # Assigned first: a failed fetch fails this step, not the tests with an empty path.
+        run: |
+          odoo_path=$(tools/odoo/fetch.sh "${{ matrix.odoo }}")
+          echo "ODOO_PATH=$odoo_path" >> "$GITHUB_ENV"
+      - uses: actions/cache/save@v4  # now, not after the tests: also when they fail
+        if: steps.odoo-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/odoo-typing/odoo/${{ matrix.odoo }}
+          key: odoo-${{ matrix.odoo }}-${{ steps.odoo.outputs.commit }}-${{ hashFiles('tools/odoo/fetch.sh') }}
+      - run: uv sync --locked
+      - run: uv pip install "mypy==${{ matrix.mypy }}"
       - name: Test
-        run: uv run --no-sync pytest -q -n 2  # the runner has 2 CPUs
+        timeout-minutes: 20
+        run: uv run --no-sync pytest -q -n 2 --durations=10  # the runner has 2 CPUs
         env:
           ODOO_REQUIRED: "1"  # no silently skipped end-to-end tests

@@ -1,6 +1,6 @@
 # Regression benchmark: the plugin-only errors of real Odoo addons must stay within
 # tools/bench/thresholds-18.json (update it with the classification of new errors,
-# see ROADMAP.md, cross-cutting rule 8).
+# see ROADMAP.md, cross-cutting rule 8). Odoo 18 at its pin in tools/odoo/commits.txt.
 name: Benchmark
 
 on:
@@ -8,24 +8,53 @@ on:
   schedule:
     - cron: "0 3 * * 1"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: bench
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.11.17"
+
 jobs:
   bench:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - uses: actions/cache@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+      - name: Pinned Odoo commit
+        id: odoo
+        run: |
+          commit=$(awk '$1 == "18.0" { print $2 }' tools/odoo/commits.txt)
+          [[ -n "$commit" ]] || { echo "::error::no pin for 18.0 in tools/odoo/commits.txt"; exit 1; }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4  # CI saves it (same key, see ci.yml)
         with:
           path: ~/.cache/odoo-typing/odoo/18.0
-          key: odoo-18.0-v1
-      - run: uv sync
+          key: odoo-18.0-${{ steps.odoo.outputs.commit }}-${{ hashFiles('tools/odoo/fetch.sh') }}
+          restore-keys: |
+            odoo-18.0-${{ steps.odoo.outputs.commit }}-
+            odoo-18.0-
+      - run: uv sync --locked
       - name: Fetch Odoo 18.0
-        run: echo "ODOO_ROOT=$(dirname "$(tools/odoo/fetch.sh 18.0 --update)")" >> "$GITHUB_ENV"
+        # Assigned first: a failed fetch fails this step, not the benchmark with a wrong root.
+        run: |
+          odoo_path=$(tools/odoo/fetch.sh 18.0)
+          echo "ODOO_ROOT=$(dirname "$odoo_path")" >> "$GITHUB_ENV"
       - name: Benchmark
         run: >
-          uv run python tools/bench/bench.py --label ci --profile small --jobs 2
-          --odoo-root "$ODOO_ROOT" --bench-dir bench --thresholds tools/bench/thresholds-18.json
+          uv run --no-sync python tools/bench/bench.py --label ci --profile small --jobs 2
+          --timeout 600 --odoo-root "$ODOO_ROOT" --bench-dir bench
+          --thresholds tools/bench/thresholds-18.json
       - uses: actions/upload-artifact@v4
+        if: always()  # above all when a threshold is exceeded (the script exits 1)
         with:
           name: bench-report
           path: bench/*.json
+          if-no-files-found: warn

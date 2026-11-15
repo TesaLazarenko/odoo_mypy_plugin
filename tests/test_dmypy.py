@@ -435,3 +435,92 @@ def test_dmypy_returns_of_annotated_helpers_follow_edits(daemon: Daemon, tmp_pat
         'user.py:15: error: Odoo model "x.thing" has no field "nme" in domain'
     ]
     assert [line for line in fixed if "error" in line] == []
+
+
+# -- hooks chosen from declared signatures, in files the registry does not read ---------
+
+UNSCANNED_HELPER = """
+from odoo import models
+
+
+class Helper:
+    def find(self, domain: list) -> None:
+        pass
+"""
+UNSCANNED_CALLER = """
+from .common import Helper
+
+
+class TestX:
+    def test(self) -> None:
+        Helper().find([("nme", "=", 1)])
+"""
+
+
+def test_dmypy_domain_parameters_of_an_unscanned_helper_follow_edits(
+    daemon: Daemon, tmp_path: Path
+) -> None:
+    # my_mod/tests is not imported by the addon: no scan reads it, so an edit of it
+    # does not start a new registry, and the hooks of its methods must follow anyway.
+    tests = tmp_path / "addons/my_mod/tests"
+    tests.mkdir()
+    (tests / "__init__.py").write_text("from . import test_x\n")
+    (tests / "common.py").write_text(textwrap.dedent(UNSCANNED_HELPER))
+    (tests / "test_x.py").write_text(textwrap.dedent(UNSCANNED_CALLER))
+    plain = daemon.check()
+    annotated = UNSCANNED_HELPER.replace("domain: list", 'domain: "odoo.domain.x_thing"')
+    (tests / "common.py").write_text(textwrap.dedent(annotated))
+    checked = daemon.check()
+    (tests / "common.py").write_text(textwrap.dedent(UNSCANNED_HELPER))
+    reverted = daemon.check()
+
+    assert [line for line in plain if "error" in line] == []
+    assert [line.split("; did")[0] for line in checked if "error" in line] == [
+        'tests/test_x.py:7: error: Odoo model "x.thing" has no field "nme" in domain'
+    ]
+    assert [line for line in reverted if "error" in line] == []
+
+
+SHARED_FINDER = """
+from odoo.orm.types import DomainType
+
+
+class Finder:
+    def find(self, domain: list) -> None:
+        pass
+"""
+SHARED_CALLER = """
+from odoo import models
+from odoo.orm.domains import Domain
+
+from shared.helpers import Finder
+
+
+class Caller:
+    def run(self, narrow: list[tuple[str, str, str]], whole: Domain) -> None:
+        Finder().find(narrow)
+        Finder().find(whole)
+"""
+
+
+@pytest.mark.odoo(19, 20)
+def test_dmypy_domain_type_parameter_outside_addons_widens_lists(
+    daemon: Daemon, tmp_path: Path
+) -> None:
+    # A plain package next to the addons (no manifest): never an input of the registry.
+    shared = tmp_path / "addons/shared"
+    shared.mkdir()
+    (shared / "__init__.py").write_text("")
+    (shared / "helpers.py").write_text(textwrap.dedent(SHARED_FINDER))
+    (tmp_path / "addons/my_mod/caller.py").write_text(textwrap.dedent(SHARED_CALLER))
+    daemon.targets.append(str(shared))
+    before = daemon.check()
+    typed = SHARED_FINDER.replace("domain: list", "domain: DomainType")
+    (shared / "helpers.py").write_text(textwrap.dedent(typed))
+
+    after = daemon.check()
+
+    # The Domain argument only "domain: list" rejects: caller.py was checked again.
+    assert [line.split(": error: ")[0] for line in before if "error" in line] == ["caller.py:11"]
+    assert 'incompatible type "Domain"' in "".join(before)
+    assert [line for line in after if "error" in line] == []

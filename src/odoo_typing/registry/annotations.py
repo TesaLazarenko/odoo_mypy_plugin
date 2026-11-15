@@ -29,8 +29,8 @@ from odoo_typing.records import Record, digest, parse_stamps
 from odoo_typing.registry.class_index import ClassFileIndex, module_of
 from odoo_typing.registry.fields import ModelFields, chain_log_access
 from odoo_typing.registry.scans import IndexLoader, ScanCache
-from odoo_typing.scanner import DOMAIN, Contribution, scan_file_classes
-from odoo_typing.stamps import Stamp
+from odoo_typing.scanner import DOMAIN, Contribution, SourceError, scan_file_classes
+from odoo_typing.stamps import Stamp, matches
 
 __all__ = ["UNCHECKED", "AliasResolution", "AnnotatedModels", "SearchMethod", "normalized_alias"]
 
@@ -319,7 +319,7 @@ class AnnotatedModels(ModelFields):
         for model, paths in files.items():
             if [str(path) for _, path in index.files(model)] != paths:
                 return None  # a file names the model now, or no longer
-        if any(index.stamp(Path(path)) != stamp for path, stamp in recorded.items()):
+        if not all(matches(path, stamp, index.stamp) for path, stamp in recorded.items()):
             return None
         return value
 
@@ -370,15 +370,23 @@ class AnnotatedModels(ModelFields):
         return self._class_index
 
     def _classes_in(self, addon_name: str, path: Path) -> tuple[Contribution, ...]:
-        """The model classes of one file read on its own, kept for its stamp."""
+        """The model classes of one file read on its own, kept for its stamp.
+
+        A file that cannot be read has none, and is not kept between runs: a permission
+        fix changes neither its mtime nor its size.
+        """
         current = self._class_files().stamp(path)
         known = self._file_classes.get(path)
         if known is not None and known[0] == current:
             return known[1]
         stored = self._scans.load_classes(path, current) if self._scans else None
         if stored is None:
-            stored = scan_file_classes(self.addons.addons[addon_name], path)
-            if self._scans is not None:
-                self._scans.save_classes(path, current, stored)
+            try:
+                stored = scan_file_classes(self.addons.addons[addon_name], path)
+            except SourceError:
+                stored = ()
+            else:
+                if self._scans is not None:
+                    self._scans.save_classes(path, current, stored)
         self._file_classes[path] = (current, stored)
         return stored

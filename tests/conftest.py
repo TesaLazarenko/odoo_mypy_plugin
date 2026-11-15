@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import json
 import os
 import subprocess
+import sys
 import textwrap
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -15,14 +17,18 @@ from typing import NoReturn
 import pytest
 from mypy import api as mypy_api
 
-from odoo_typing.compat import profile_for
+from odoo_typing.compat import SUPPORTED_VERSIONS, OdooProfile, profile_for
 from odoo_typing.odoo_version import read_odoo_version
 
 FIND_ODOO = "import os, odoo; print(os.path.dirname(odoo.__file__))"
 
 
 def _find_odoo() -> Path | None:
-    if env := os.environ.get("ODOO_PATH"):
+    if "ODOO_PATH" in os.environ:
+        if not (env := os.environ["ODOO_PATH"]):
+            # ODOO_PATH=$(tools/odoo/fetch.sh 19.0) whose fetch failed: never test whatever
+            # Odoo the system Python has instead (another version, silently)
+            pytest.fail("ODOO_PATH is set but empty (did tools/odoo/fetch.sh fail?)")
         return Path(env)
     for python in ("/usr/bin/python3", "python3"):
         try:
@@ -40,6 +46,14 @@ def _skip_or_fail(reason: str) -> NoReturn:
     if os.environ.get("ODOO_REQUIRED") == "1":
         pytest.fail(f"{reason} (ODOO_REQUIRED=1)")
     pytest.skip(reason)
+
+
+def _profile_or_fail(version: int) -> OdooProfile:
+    """The plugin's profile of an Odoo version; skip the test without one, or fail it in CI."""
+    profile = profile_for(version)
+    if profile is None:
+        _skip_or_fail(f"the plugin has no profile for Odoo {version} yet")
+    return profile
 
 
 @pytest.fixture(scope="session")
@@ -78,9 +92,7 @@ class OdooNames:
 @pytest.fixture(scope="session")
 def names(odoo_version: int) -> OdooNames:
     """Names to expect in mypy output for the targeted Odoo version."""
-    profile = profile_for(odoo_version)
-    if profile is None:
-        pytest.skip(f"the plugin has no profile for Odoo {odoo_version} yet")
+    profile = _profile_or_fail(odoo_version)
     # Odoo 19 names classes after their model (ResPartner, not Partner); in Odoo 17 the
     # last class of res.partner is base's populate extension.
     prefix = "Res" if odoo_version >= 19 else ""
@@ -103,25 +115,149 @@ def _own_scan_cache(
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("xdg-cache")))
 
 
-# The collector's thresholds before any test ran mypy in this process.
+# The collector's thresholds and frozen objects before any test ran mypy in this process
+# (Python 3.12 counts a few hundred static objects as frozen from the start).
 GC_THRESHOLD = gc.get_threshold()
+GC_FROZEN = gc.get_freeze_count()
+# The most memory (MB) a pytest process may hold after collecting: about 0.4-0.7 GB per
+# worker is normal, the leak this guards against reached 8 GB. By default the smaller of
+# MAX_RSS_BUDGET_MB and the machine's memory shared by the xdist workers plus 2 (the
+# controller, the system and the dmypy daemons).
+RSS_BUDGET_ENV = "ODOO_TYPING_TEST_RSS_MB"
+MAX_RSS_BUDGET_MB = 3000
+
+
+@dataclass
+class GcState:
+    """What the in-process mypy runs of this pytest process left to clean up."""
+
+    mypy_ran: bool = False  # run_mypy_in_process ran since the last collection
+
+
+GC_STATE = GcState()
+
+
+def run_mypy_in_process(args: list[str]) -> tuple[str, str, int]:
+    """``mypy.api.run``; the test's teardown then frees what the run left behind."""
+    GC_STATE.mypy_ran = True
+    return mypy_api.run(args)
+
+
+def restore_gc() -> None:
+    """Undo mypy's tuning of the cyclic collector, then free the cycles of its runs."""
+    gc.set_threshold(*GC_THRESHOLD)
+    gc.enable()
+    if gc.get_freeze_count() > GC_FROZEN:  # frozen objects are never collected
+        gc.unfreeze()
+    gc.collect()
+
+
+def rss_mb() -> int | None:
+    """The resident memory of this process in MB, or ``None`` without ``/proc`` (not Linux)."""
+    try:
+        pages = int(Path("/proc/self/statm").read_text().split()[1])
+    except (OSError, IndexError, ValueError):
+        return None
+    return pages * os.sysconf("SC_PAGE_SIZE") // 2**20
+
+
+def physical_memory_mb() -> int | None:
+    """The machine's physical memory in MB, or ``None`` where ``os.sysconf`` cannot tell."""
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // 2**20
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def rss_budget_mb() -> int:
+    """The RSS budget of this process: ``ODOO_TYPING_TEST_RSS_MB``, else the default.
+
+    The default is ``min(3000, memory // (workers + 2))``: 1500 MB for ``-n 6`` on 12 GB,
+    close to 2000 MB for ``-n 2`` on an 8 GB CI runner, 3000 MB without xdist.
+    """
+    if env := os.environ.get(RSS_BUDGET_ENV):
+        return int(env)
+    memory = physical_memory_mb()
+    if memory is None:
+        return MAX_RSS_BUDGET_MB
+    workers = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT") or 1)
+    return min(MAX_RSS_BUDGET_MB, memory // (workers + 2))
+
+
+def _print_now(request: pytest.FixtureRequest, message: str) -> None:
+    """Write ``message`` to this process's real stderr now, past pytest's capturing."""
+    stream = sys.__stderr__
+    if stream is None:
+        return
+    capture = request.config.pluginmanager.getplugin("capturemanager")
+    suspended = capture.global_and_fixture_disabled() if capture else contextlib.nullcontext()
+    with suspended:
+        stream.write(f"\n{message}\n")
+        stream.flush()
+
+
+def check_rss_budget(request: pytest.FixtureRequest) -> None:
+    """Fail the test after which this process holds more than its budget, and stop the run.
+
+    The message goes to stderr at once and the session stops after this test (xdist then
+    stops the other workers after their current test), so that it is seen while the
+    machine still has memory: the run's final summary may never come.
+    """
+    budget = rss_budget_mb()
+    rss = rss_mb()
+    if rss is None or rss <= budget:
+        return
+    message = (
+        f"the pytest process holds {rss} MB after collecting the garbage, more than its"
+        f" budget of {budget} MB ({RSS_BUDGET_ENV}): in-process mypy runs leak (see"
+        " _collect_mypy_garbage in tests/conftest.py); the run stops"
+    )
+    _print_now(request, f"odoo-typing tests: {message}")
+    request.session.shouldstop = message
+    pytest.fail(message)
+
+
+def collect_mypy_garbage(request: pytest.FixtureRequest) -> None:
+    """After a test that ran mypy in this process: restore the collector, check the budget.
+
+    ``run_mypy_in_process`` marks such a test; the collector's state also gives away a
+    test that calls ``mypy.api.run`` itself.
+    """
+    tuned = (
+        gc.get_threshold() != GC_THRESHOLD
+        or not gc.isenabled()
+        or gc.get_freeze_count() > GC_FROZEN
+    )
+    if GC_STATE.mypy_ran or tuned:
+        GC_STATE.mypy_ran = False
+        restore_gc()
+        check_rss_budget(request)
 
 
 @pytest.fixture(autouse=True)
-def _collect_mypy_garbage() -> Iterator[None]:
+def _collect_mypy_garbage(request: pytest.FixtureRequest) -> Iterator[None]:
     """Free what a mypy run in this process left behind, after each test that made one.
 
     mypy is written for a process of its own: a build all but turns the cyclic collector
     off (``gc.set_threshold(200_000, 30, 30)``, ``gc.freeze()``) and never turns it back
     on, so the module graph of every run (cycles: no reference counting frees them) stayed
     in memory. Some 450 runs in one pytest process grew it to 8 GB on Odoo 19, the whole
-    memory of a GitHub runner; collected after each test it stays near 400 MB.
+    memory of a GitHub runner; collected after each test it stays near 400 MB. Should a
+    mypy release tune the collector differently, the RSS budget (``check_rss_budget``),
+    checked after each such test, fails the test that crosses it and stops the run. It
+    sees only the memory of this process after a test: it cannot stop one test that takes
+    the machine's memory by itself, nor memory taken outside pytest.
     """
     yield
-    if gc.get_threshold() != GC_THRESHOLD:  # mypy ran
-        gc.set_threshold(*GC_THRESHOLD)
-        gc.enable()
-        gc.collect()
+    collect_mypy_garbage(request)
+
+
+def check_odoo_marker(versions: tuple[object, ...]) -> None:
+    """Fail a test whose ``@pytest.mark.odoo(...)`` names no supported version or a typo."""
+    unknown = [version for version in versions if version not in SUPPORTED_VERSIONS]
+    if unknown or not versions:
+        supported = ", ".join(map(str, SUPPORTED_VERSIONS))
+        pytest.fail(f"@pytest.mark.odoo{versions!r}: give Odoo versions among {supported}")
 
 
 @pytest.fixture(autouse=True)
@@ -129,6 +265,7 @@ def _only_for_marked_versions(request: pytest.FixtureRequest) -> None:
     """``@pytest.mark.odoo(18, 19)``: run the test only for those Odoo versions."""
     marker = request.node.get_closest_marker("odoo")
     if marker is not None:
+        check_odoo_marker(marker.args)
         version = request.getfixturevalue("odoo_version")
         if version not in marker.args:
             pytest.skip(f"only for Odoo {', '.join(map(str, marker.args))}")
@@ -138,10 +275,10 @@ def _only_for_marked_versions(request: pytest.FixtureRequest) -> None:
 def odoo_root(odoo_path: Path, odoo_version: int, tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Directory that contains only an ``odoo`` symlink, for ``mypy_path``.
 
-    Every e2e test needs it, so they are all skipped for a version without a profile.
+    Every e2e test needs it, so they are all skipped (failed with ``ODOO_REQUIRED=1``) for
+    a version without a profile.
     """
-    if profile_for(odoo_version) is None:
-        pytest.skip(f"the plugin has no profile for Odoo {odoo_version} yet")
+    _profile_or_fail(odoo_version)
     root = tmp_path_factory.mktemp("odoo_root")
     (root / "odoo").symlink_to(odoo_path)
     return root
@@ -156,7 +293,7 @@ def mypy_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
 class MypyResult:
     lines: list[str]
     exit_status: int
-    stderr: str
+    stderr: str  # mypy's, then the plugin's warnings: empty for a clean run
 
     def messages(self, filename: str) -> list[str]:
         """``"<line>: <severity>: <message>"`` entries reported for one file."""
@@ -260,12 +397,15 @@ def run_mypy(
             + options
         )
         cache = tmp_path / "mypy_cache" if fresh_cache else mypy_cache
-        stdout, stderr, status = mypy_api.run(
+        stdout, stderr, status = run_mypy_in_process(
             ["--config-file", str(config), "--cache-dir", str(cache), *(flags or []), *targets]
         )
         captured = capfd.readouterr()
         _assert_no_crash(status, stdout, stderr, captured.out, captured.err)
-        return MypyResult(lines=stdout.splitlines(), exit_status=status, stderr=stderr)
+        # mypy's own stderr, then what the plugin printed (its warnings go to sys.stderr)
+        return MypyResult(
+            lines=stdout.splitlines(), exit_status=status, stderr=stderr + captured.err
+        )
 
     return run
 

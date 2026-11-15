@@ -296,3 +296,21 @@ def test_cache_field_argument_edited_in_another_module_rechecks_its_users(
         '9: error: Field "total" of Odoo model "x.own"',
     ]
     assert second.messages("user.py") == []
+
+
+def test_cache_depends_removed_then_outside_addon_deleted_reports_unknown_model(
+    run_mypy: RunMypy, tmp_path: Path
+) -> None:
+    # Which models a file names outside its closure is kept per file: it must follow
+    # the closure, or the file no longer follows the addons outside it.
+    addons = {"dep_mod": _dep(), "my_mod": {"depends": ["base", "dep_mod"], "user.py": ENV_USER}}
+    run_mypy(addons, fresh_cache=True)
+    manifest = tmp_path / "addons/my_mod/__manifest__.py"
+    manifest.write_text(manifest.read_text().replace(", 'dep_mod'", ""))  # user.py unchanged
+    outside = run_mypy({}, check=["my_mod"], fresh_cache=True)
+    (tmp_path / "addons/dep_mod").rename(tmp_path / "dep_mod")  # off the addons path
+
+    result = run_mypy({}, check=["my_mod"], fresh_cache=True)
+
+    assert outside.messages("my_mod/user.py")[0].endswith("[odoo-model-depends]")
+    assert result.messages("my_mod/user.py")[0].startswith('8: error: Unknown Odoo model "x.thing"')

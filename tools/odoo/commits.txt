@@ -1,0 +1,8 @@
+# The Odoo commit each version is tested and benchmarked on (tools/odoo/fetch.sh).
+# CI caches each checkout under its commit. To move a version: run the tests on
+# `tools/odoo/fetch.sh <version> --latest` (or see the weekly "Odoo latest" workflow),
+# then put the commit it prints here, in the same change as any fixes it needs.
+17.0 8d5d88ad0f6939d40b1503ef0f5dd18810415fc5  # 2026-11-09
+18.0 5c4488a4e44e20d17d1ee76d1b42066ac12c8a24  # 2026-11-11
+19.0 74d39b2fdaa8cd60885943fa58a08bff62e53207  # 2026-11-12
+20.0 24f007f4f8a2dbdab05c1b4aecf48bd4e9c4251e  # 2026-11-11

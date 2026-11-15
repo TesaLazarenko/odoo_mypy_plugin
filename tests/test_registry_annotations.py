@@ -8,6 +8,7 @@ import textwrap
 from collections.abc import Mapping
 from pathlib import Path
 
+import pytest
 from pytest_mock import MockerFixture
 
 from odoo_typing.config import Settings
@@ -354,6 +355,27 @@ def test_values_digest_is_kept_until_a_file_of_its_models_changes(
     assert kept == first
     assert fields.call_count == 0
     assert changed != first
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_values_fields_file_unreadable_on_its_own_is_read_again_once_readable(
+    tmp_path: Path,
+) -> None:
+    _registry(tmp_path)
+    _stored(tmp_path).values_fields("shop.order")  # keeps the index of the model files
+    extra = tmp_path / "addons" / "extra" / "models.py"
+    for record in (tmp_path / "store").glob("classes-*.json"):
+        record.unlink()  # the files' classes are read again, the index is kept
+    extra.chmod(0)
+    try:
+        unreadable = _stored(tmp_path).values_fields("shop.order")
+    finally:
+        extra.chmod(0o644)  # a permission fix: the same mtime and size
+
+    readable = _stored(tmp_path).values_fields("shop.order")
+
+    assert "extra_flag" not in unreadable
+    assert "extra_flag" in readable
 
 
 def _stored(root: Path) -> Registry:

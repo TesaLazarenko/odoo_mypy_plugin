@@ -78,6 +78,7 @@ from mypy.plugin import (
 )
 from mypy.types import FunctionLike, Type
 
+from odoo_typing import records
 from odoo_typing.annotations import (
     ANNOTATED_NAMES,
     TRIGGER_FULLNAME,
@@ -87,6 +88,7 @@ from odoo_typing.annotations import (
 from odoo_typing.compat import profile_for
 from odoo_typing.config import ConfigError, Settings, load_settings
 from odoo_typing.domains import DOMAIN_METHODS, PARAMETER_DOMAIN_METHODS
+from odoo_typing.errors import report_internal_error
 from odoo_typing.fingerprint import Fingerprints
 from odoo_typing.hooks.annotations import (
     DICT_GET,
@@ -101,7 +103,7 @@ from odoo_typing.hooks.domains import (
     has_domain_type,
     wrapper_signature,
 )
-from odoo_typing.hooks.env import XML_ID_METHODS, EnvHooks, request_env
+from odoo_typing.hooks.env import XML_ID_METHODS, EnvHooks, request_env, type_request
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
 from odoo_typing.hooks.field_values import FieldValueHooks
 from odoo_typing.hooks.model_classes import ModelClassHooks
@@ -116,7 +118,7 @@ from odoo_typing.methods import (
     is_self_method,
     keep_receiver,
 )
-from odoo_typing.odoo_version import version_mismatch_warning
+from odoo_typing.odoo_version import profile_mismatch_warning, version_mismatch_warning
 from odoo_typing.records import RecordStore, load_index
 from odoo_typing.references import RECORD_PATH_METHODS
 from odoo_typing.registry import Registry
@@ -124,6 +126,7 @@ from odoo_typing.scan_store import ScanStore
 from odoo_typing.scanner import LOG_ACCESS_USERS
 from odoo_typing.stamps import stamp
 from odoo_typing.startup import (
+    mypy_version_warning,
     package_bases_warning,
     profile_or_exit,
     python_version_warning_or_exit,
@@ -132,6 +135,12 @@ from odoo_typing.startup import (
 )
 
 __all__ = ["ODOO_MODEL", "ODOO_MODEL_DEPENDS", "OdooPlugin", "plugin"]
+
+# mypy reuses its cache while the plugins snapshot (this file's hash and this module's
+# ``__version__``, mypy.build.take_module_snapshot) is unchanged. The digest of the whole
+# package makes a change of any plugin file check everything again, also the modules
+# outside addons (Odoo's own), which report no config data.
+__version__ = records.source_digest()
 
 DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
 # Methods whose first argument is ``vals`` (``create``: also a list of them;
@@ -160,6 +169,8 @@ class OdooPlugin(Plugin):
             print(warning, file=sys.stderr)
         if warning := version_mismatch_warning(profile.version, settings.odoo_path):
             print(warning, file=sys.stderr)
+        if warning := profile_mismatch_warning(profile, settings.odoo_path):
+            print(warning, file=sys.stderr)
         if warning := package_bases_warning(profile, settings, options):
             print(warning, file=sys.stderr)
         self._store = RecordStore.for_cache_dir(options.cache_dir)
@@ -187,7 +198,7 @@ class OdooPlugin(Plugin):
     def _new_registry(self, settings: Settings) -> Registry:
         """A registry for the settings, and the fingerprints that follow it."""
         index = partial(load_index, settings, self._store)
-        shared = RecordStore(settings.scan_cache_dir) if settings.scan_cache_dir else None
+        shared = RecordStore.shared(settings.scan_cache_dir)
         scans = ScanStore(self._store, shared)
         registry = Registry(settings, index, scans)
         self._fingerprints = Fingerprints(registry, self._store, settings)
@@ -202,12 +213,22 @@ class OdooPlugin(Plugin):
         (manifests and scanned classes), so an edit in another addon, a manifest or
         the addons paths makes mypy check the module again.
         """
-        return self._fingerprints.module_data(ctx.id, ctx.path)
+        try:
+            return self._fingerprints.module_data(ctx.id, ctx.path)
+        except Exception as exc:
+            report_internal_error(exc, f"computing the cache data of {ctx.id}")
+            raise
 
     def set_modules(self, modules: dict[str, MypyFile]) -> None:
-        """Called by mypy when a set of modules is loaded (each daemon update too)."""
+        """Called by mypy when a set of modules is loaded (each daemon update too).
+
+        The hooks chosen from declared signatures are chosen again: a declaration in a
+        file the registry does not read (an addon's ``tests``, a helper package) may
+        have changed without starting a new registry.
+        """
         super().set_modules(modules)
         self._inputs_checked = False
+        self._hooks.forget_declared()
 
     def _refresh_registry(self) -> None:
         """Start over with a new registry if a file it read changed (daemon updates).
@@ -219,13 +240,17 @@ class OdooPlugin(Plugin):
             return
         self._inputs_checked = True
         models = self._models
-        if self._config_changed() or models.registry.inputs_changed():
-            models.registry = self._new_registry(models.settings)
-            self._hooks = _HookCache()  # hooks found with the old registry or settings
-        if not self._overlay_checked:
-            self._overlay_checked = True
-            if warning := stale_overlay_warning(models.settings, models.registry):
-                print(warning, file=sys.stderr)
+        try:
+            if self._config_changed() or models.registry.inputs_changed():
+                models.registry = self._new_registry(models.settings)
+                self._hooks = _HookCache()  # hooks found with the old registry or settings
+            if not self._overlay_checked:
+                self._overlay_checked = True
+                if warning := stale_overlay_warning(models.settings, models.registry):
+                    print(warning, file=sys.stderr)
+        except Exception as exc:
+            report_internal_error(exc, "checking the addons for changes")
+            raise
 
     def _config_changed(self) -> bool:
         """Reload the settings if mypy's config file changed (``dmypy`` keeps the plugin).
@@ -266,11 +291,15 @@ class OdooPlugin(Plugin):
         while the overlay root makes it ``odoo.addons.my_addon.x``): their edges would
         make mypy analyze the addon a second time (:meth:`Registry.misnamed` warns).
         """
-        self._refresh_registry()
-        registry = self._models.registry
-        if registry.misnamed(file.fullname):
-            return []  # never make mypy load the addon again under its configured name
-        modules = set(registry.dependency_modules(file.fullname, file.path))
+        try:
+            self._refresh_registry()
+            registry = self._models.registry
+            if registry.misnamed(file.fullname):
+                return []  # never make mypy load the addon again under its configured name
+            modules = set(registry.dependency_modules(file.fullname, file.path))
+        except Exception as exc:
+            report_internal_error(exc, f"finding the models {file.fullname} relies on")
+            raise
         modules.discard(file.fullname)
         return [(DEPENDENCY_PRIORITY, module, -1) for module in sorted(modules)]
 
@@ -317,7 +346,8 @@ class OdooPlugin(Plugin):
     # -- hook lookup -----------------------------------------------------------------------
     # mypy asks for a hook at every call, attribute and class (about 200,000 times on the
     # account addon); the answer depends only on the name, the profile and the registry,
-    # so it is kept per name until either changes (:class:`_HookCache`).
+    # so it is kept per name until either changes (:class:`_HookCache`), and on the
+    # declared signature for some, kept per batch of loaded modules.
 
     def get_customize_class_mro_hook(
         self, fullname: str
@@ -338,6 +368,7 @@ class OdooPlugin(Plugin):
         """Type ``env[...]`` and recordset methods; check vals, domains and field paths."""
         found = self._hooks.method
         if fullname not in found:
+            self._type_request()
             found[fullname] = self._find_method_hook(fullname)
         return found[fullname]
 
@@ -345,6 +376,7 @@ class OdooPlugin(Plugin):
         """Bind relational field constructors to their comodel; see through decorators."""
         found = self._hooks.function
         if fullname not in found:
+            self._type_request()
             found[fullname] = self._find_function_hook(fullname)
         return found[fullname]
 
@@ -360,6 +392,7 @@ class OdooPlugin(Plugin):
         """Type reading a relational field; check assigned values; let ``create`` take a dict."""
         found = self._hooks.signature
         if fullname not in found:
+            self._type_request()
             found[fullname] = self._find_method_signature_hook(fullname)
         return found[fullname]
 
@@ -367,8 +400,20 @@ class OdooPlugin(Plugin):
         """Resolve record-typed attributes of model classes from the reading addon."""
         found = self._hooks.attribute
         if fullname not in found:
+            self._type_request()
             found[fullname] = self._find_attribute_hook(fullname)
         return found[fullname]
+
+    def _type_request(self) -> None:
+        """Type ``odoo.http.request`` once mypy has checked its assignment (see ``type_request``).
+
+        Asked at the first lookup of each name of a type-checking hook, so it also happens
+        while ``odoo.http`` itself is checked: its cache entry then keeps the type, for a
+        warm run in which no class hook runs before a module that uses ``request``.
+        """
+        classes = self._classes
+        if not classes.request_typed and self._modules:
+            classes.request_typed = type_request(self._models.profile, self._modules)
 
     # -- semantic analysis: _inherit -------------------------------------------------------
 
@@ -534,9 +579,23 @@ class _HookCache:
     )
     attribute: dict[str, Callable[[AttributeContext], Type] | None] = field(default_factory=dict)
 
+    def forget_declared(self) -> None:
+        """Forget the hooks that depend on mypy's symbol tables, not only on the name.
+
+        The method, function and signature hooks look at the declared signature
+        (``odoo.domain.*`` and ``DomainType`` parameters); the class and attribute hooks
+        depend on the registry and the profile alone.
+        """
+        self.method.clear()
+        self.function.clear()
+        self.signature.clear()
+
 
 def plugin(version: str) -> type[OdooPlugin]:
     """Return the plugin class; called by mypy.
+
+    A mypy version the plugin is not tested with gets a warning, never an exception:
+    mypy would report it as an INTERNAL ERROR of its own and hide the message.
 
     Args:
         version: mypy version string.
@@ -544,4 +603,6 @@ def plugin(version: str) -> type[OdooPlugin]:
     Returns:
         The plugin class.
     """
+    if warning := mypy_version_warning(version):
+        print(warning, file=sys.stderr)
     return OdooPlugin

@@ -7,6 +7,7 @@ coding cookie is honoured.
 from __future__ import annotations
 
 import ast
+import warnings
 from pathlib import Path
 
 from odoo_typing.scanner.results import SourceError
@@ -58,15 +59,24 @@ def read_source(path: Path) -> bytes:
 def parse_bytes(source: bytes, path: Path) -> ast.Module:
     """Parse the bytes of a source file (see :func:`parse_source`).
 
+    Warnings of the compiler (an invalid escape sequence) are not printed, as mypy does
+    not print them, and are not errors under ``-W error``: the scan is stored, and a
+    later run without the option would keep the error.
+
     Raises:
         SourceError: If the bytes are not valid Python.
     """
     try:
-        return ast.parse(source, filename=str(path))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            warnings.simplefilter("ignore", DeprecationWarning)
+            return ast.parse(source, filename=str(path))
     except SyntaxError as exc:
         raise SourceError(path, f"{exc.msg} (line {exc.lineno})") from exc
     except ValueError as exc:  # e.g. null bytes on older Python versions
         raise SourceError(path, str(exc)) from exc
+    except (MemoryError, RecursionError) as exc:  # nested too deeply for the parser
+        raise SourceError(path, f"too complex to parse ({type(exc).__name__})") from exc
 
 
 def callee_name(node: ast.expr) -> str | None:

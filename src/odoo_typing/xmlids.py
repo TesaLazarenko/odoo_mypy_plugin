@@ -16,11 +16,17 @@ are not in the files, see :func:`automatic_model`.
 
 The files are read as data, never executed; an unreadable or invalid file is skipped
 (Odoo would fail to install the addon, which is not what this checks).
+
+A scan records the stamps of the manifest and the data files (:mod:`odoo_typing.stamps`),
+each taken before the file is read; a file that cannot be read gets
+:data:`~odoo_typing.stamps.UNREADABLE`, so the scan is redone once it can be.
+
+expat, which reads the XML files, knows no multi-byte encoding (``Shift_JIS``, ``GBK``),
+which lxml, and so Odoo, reads: such a file is decoded first (:func:`_parse_xml`).
 """
 
 from __future__ import annotations
 
-import ast
 import csv
 import re
 from collections.abc import Iterator
@@ -30,6 +36,9 @@ from typing import Final
 from xml.etree import ElementTree
 
 from mypy.errorcodes import ErrorCode
+
+from odoo_typing.addons import UNREADABLE_MANIFEST, literal_manifest
+from odoo_typing.stamps import UNREADABLE, Stamps, stamp
 
 __all__ = [
     "ODOO_XMLID",
@@ -62,6 +71,12 @@ AUTOMATIC: Final = (
     (re.compile(r"field_[a-z0-9_]+__[a-z0-9_]+"), "ir.model.fields"),
     (re.compile(r"module_[a-z0-9_]+"), "ir.module.module"),
 )
+# The XML declaration of a file, with its encoding (group 1); ASCII in every encoding
+# expat refuses (they all extend ASCII).
+DECLARATION: Final = re.compile(
+    rb"""\A\s*<\?xml\s[^>]*?\bencoding\s*=\s*["']([A-Za-z][\w.:-]*)["'][^>]*\?>"""
+)
+MULTI_BYTE: Final = "multi-byte encodings are not supported"  # what expat says of them
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,23 +105,30 @@ class DataScan:
     files: tuple[Path, ...]
 
 
-def scan_data(addon_name: str, addon_path: Path, manifest: Path | None) -> DataScan:
+def scan_data(
+    addon_name: str, addon_path: Path, manifest: Path | None, stamps: Stamps | None = None
+) -> DataScan:
     """Read the XML ids of the data files a manifest lists.
 
     Args:
         addon_name: The addon, the module of ids written without one.
         addon_path: Its directory (data file paths are relative to it).
         manifest: Its manifest file, if any.
+        stamps: Filled with the stamps of the manifest and the listed files (also of a
+            missing one), each taken before the file is read; a file already in it
+            keeps its stamp.
     """
+    recorded: Stamps = {} if stamps is None else stamps
     xml_ids: list[XmlId] = []
     files: list[Path] = []
-    for relative in _data_files(manifest):
+    for relative in _data_files(manifest, recorded):
         path = addon_path / relative
         files.append(path)
-        if path.suffix == ".xml":
-            xml_ids += _xml_ids(path, addon_name)
-        elif path.suffix == ".csv":
-            xml_ids += _csv_ids(path, addon_name)
+        current = recorded.setdefault(str(path), stamp(path))
+        found = _file_ids(path, addon_name)
+        if found is None and current is not None:  # exists, but cannot be read
+            recorded[str(path)] = UNREADABLE
+        xml_ids += found or ()
     return DataScan(tuple(xml_ids), tuple(files))
 
 
@@ -115,12 +137,21 @@ def automatic_model(name: str) -> str | None:
     return next((model for pattern, model in AUTOMATIC if pattern.fullmatch(name)), None)
 
 
-def _data_files(manifest: Path | None) -> Iterator[str]:
+def _data_files(manifest: Path | None, stamps: Stamps) -> Iterator[str]:
     if manifest is None:
         return
+    current = stamps.setdefault(str(manifest), stamp(manifest))  # its lists count too
     try:
-        data = ast.literal_eval(manifest.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError, ValueError, UnicodeDecodeError):
+        text = manifest.read_text(encoding="utf-8")
+    except OSError:
+        if current is not None:
+            stamps[str(manifest)] = UNREADABLE
+        return
+    except ValueError:  # not UTF-8
+        return
+    try:
+        data = literal_manifest(text)
+    except UNREADABLE_MANIFEST:
         return
     if not isinstance(data, dict):
         return
@@ -134,10 +165,23 @@ def _qualified(xml_id: str, addon_name: str) -> str:
     return xml_id if "." in xml_id else f"{addon_name}.{xml_id}"
 
 
-def _xml_ids(path: Path, addon_name: str) -> list[XmlId]:
+def _file_ids(path: Path, addon_name: str) -> list[XmlId] | None:
+    """The XML ids of one data file (none for another kind); ``None``: cannot be read."""
+    if path.suffix == ".xml":
+        return _xml_ids(path, addon_name)
+    if path.suffix == ".csv":
+        return _csv_ids(path, addon_name)
+    return []
+
+
+def _xml_ids(path: Path, addon_name: str) -> list[XmlId] | None:
     try:
-        root = ElementTree.parse(path).getroot()
-    except (OSError, ElementTree.ParseError):
+        root = _parse_xml(path)
+    except OSError:
+        return None
+    # ValueError: bytes that are not of the declared encoding, or a NUL in the path;
+    # LookupError: an encoding Python does not know.
+    except (ElementTree.ParseError, ValueError, LookupError):
         return []
     found: list[XmlId] = []
     for element in root.iter():
@@ -151,11 +195,37 @@ def _xml_ids(path: Path, addon_name: str) -> list[XmlId]:
     return found
 
 
-def _csv_ids(path: Path, addon_name: str) -> list[XmlId]:
+def _parse_xml(path: Path) -> ElementTree.Element:
+    """The root element of an XML file, also of one in a multi-byte encoding.
+
+    expat refuses those (``Shift_JIS``, ``GBK``, ``EUC-JP``): the file is then decoded
+    with Python's codec, and the text parsed without its declaration.
+
+    Raises:
+        OSError: If the file cannot be read.
+        ElementTree.ParseError: If it is not well-formed (also ``ValueError``, or
+            ``LookupError`` for an encoding Python does not know).
+    """
+    try:
+        return ElementTree.parse(path).getroot()
+    except ValueError as error:
+        if MULTI_BYTE not in str(error):
+            raise
+    data = path.read_bytes()
+    declaration = DECLARATION.match(data)
+    if declaration is None:
+        raise ValueError(f"{MULTI_BYTE}, and no declaration names one")
+    text = data[declaration.end() :].decode(declaration.group(1).decode("ascii"))
+    return ElementTree.fromstring(text)
+
+
+def _csv_ids(path: Path, addon_name: str) -> list[XmlId] | None:
     model = path.stem
     try:
         with path.open(encoding="utf-8", newline="") as handle:
             rows = list(csv.DictReader(handle))
-    except (OSError, UnicodeDecodeError, csv.Error):
+    except OSError:
+        return None
+    except (ValueError, csv.Error):  # not UTF-8 (UnicodeDecodeError), a NUL in the path
         return []
     return [XmlId(_qualified(row["id"], addon_name), model) for row in rows if row.get("id")]

@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
+import pytest
 from pytest_mock import MockerFixture
 from test_fingerprint import MODEL, _odoo, _touch
 
 from odoo_typing.records import RecordStore, load_index, package_source_hash
 from odoo_typing.registry import Registry
 from odoo_typing.registry import scans as registry_scans
-from odoo_typing.scan_store import ScanStore, decode, encode
-from odoo_typing.scanner import AddonScan, scan_addon
+from odoo_typing.scan_store import DecodeError, ScanStore, decode, encode
+from odoo_typing.scanner import AddonScan, scan_addon, walker
+
+NOT_ROOT = pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
 
 DATA = '<odoo><record id="thing" model="x.base"/></odoo>'
 RICH = (
@@ -149,3 +154,239 @@ def test_unreached_file_annotations_read_back(tmp_path: Path, mocker: MockerFixt
     again = _registry(settings, store).annotation_aliases(test_file)
 
     assert (first, again, parse.call_count) == ({("values", "x_base")},) * 2 + (0,)
+
+
+def test_registry_file_saved_while_scanned_is_scanned_again(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    settings = _odoo(tmp_path)
+    store = RecordStore(tmp_path / "cache")
+    models = (settings.odoo_path / "addons/my_mod/models.py").resolve()
+    read = walker.read_source
+
+    def read_then_saved(path: Path) -> bytes:
+        source = read(path)
+        if path == models:  # saved by the editor right after the scan read it
+            _touch(models, MODEL.replace("x.a", "x.my_mod_v2"))
+        return source
+
+    saving = mocker.patch.object(walker, "read_source", side_effect=read_then_saved)
+    first = _registry(settings, store)
+    first.fields("x.my_mod", "my_mod")
+    changed = first.inputs_changed()
+    mocker.stop(saving)
+
+    second = _registry(settings, store)
+
+    assert changed is True
+    assert second.view_class("x.my_mod_v2", "my_mod") is not None
+
+
+def test_registry_manifest_data_list_edited_rescans_addon(tmp_path: Path) -> None:
+    settings = _odoo(tmp_path)
+    addon = settings.odoo_path / "addons/my_mod"
+    (addon / "a.xml").write_text('<odoo><record id="first" model="x.my_mod"/></odoo>')
+    (addon / "b.xml").write_text('<odoo><record id="second" model="x.my_mod"/></odoo>')
+    manifest = addon / "__manifest__.py"
+    _touch(manifest, "{'depends': ['base'], 'data': ['a.xml']}")
+    store = RecordStore(tmp_path / "cache")
+    first = set(_registry(settings, store).xml_ids("my_mod"))
+    _touch(manifest, "{'depends': ['base'], 'data': ['a.xml', 'b.xml']}")  # saved in place
+
+    second = set(_registry(settings, store).xml_ids("my_mod"))
+
+    assert "my_mod.second" not in first
+    assert "my_mod.second" in second
+
+
+def test_registry_package_init_added_to_imported_directory_rescans_addon(
+    tmp_path: Path,
+) -> None:
+    settings = _odoo(tmp_path)
+    addon = settings.odoo_path / "addons/my_mod"
+    (addon / "wizard").mkdir()
+    (addon / "wizard/w.py").write_text(MODEL.replace("x.a", "x.wizard"))
+    _touch(addon / "__init__.py", "from . import models, wizard\n")
+    store = RecordStore(tmp_path / "cache")
+    first = _registry(settings, store).view_class("x.wizard", "my_mod")
+    (addon / "wizard/__init__.py").write_text("from . import w\n")
+    os.utime(addon / "wizard", ns=(10**18, 10**18))  # a new stamp even within the clock
+
+    second = _registry(settings, store).view_class("x.wizard", "my_mod")
+
+    assert first is None
+    assert second is not None
+
+
+def test_registry_records_of_another_interpreter_are_not_reused(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    settings = _odoo(tmp_path)
+
+    def registry() -> Registry:
+        local = RecordStore.for_cache_dir(str(tmp_path / "cache"))
+        return Registry(settings, scans=ScanStore(local, RecordStore.shared(tmp_path / "shared")))
+
+    other = mocker.patch("odoo_typing.records.interpreter_tag", return_value="cpython-399")
+    registry().fields("x.my_mod", "my_mod")
+    mocker.stop(other)
+    scan = mocker.spy(registry_scans, "scan_addon")
+
+    registry().fields("x.my_mod", "my_mod")
+    scanned = scan.call_count
+    registry().fields("x.my_mod", "my_mod")
+
+    assert (scanned, scan.call_count) == (2, 2)  # base and my_mod, once
+    names = {path.name for path in (tmp_path / "shared").iterdir()}
+    assert names == {"cpython-399", sys.implementation.cache_tag}
+
+
+@NOT_ROOT
+def test_registry_unreadable_file_is_scanned_again_once_readable(tmp_path: Path) -> None:
+    settings = _odoo(tmp_path)
+    models = settings.odoo_path / "addons/my_mod/models.py"
+    store = RecordStore(tmp_path / "cache")
+    models.chmod(0)
+    try:
+        first = _registry(settings, store).view_class("x.my_mod", "my_mod")
+    finally:
+        models.chmod(0o644)  # a permission fix: the same mtime and size
+
+    second = _registry(settings, store).view_class("x.my_mod", "my_mod")
+
+    assert first is None
+    assert second is not None
+
+
+@NOT_ROOT
+def test_registry_unsearchable_package_is_reported_and_scanned_again(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = _odoo(tmp_path)
+    addon = settings.odoo_path / "addons/my_mod"
+    (addon / "wizard").mkdir()
+    (addon / "wizard/__init__.py").write_text(MODEL.replace("x.a", "x.wizard"))
+    _touch(addon / "__init__.py", "from . import models, wizard\n")
+    store = RecordStore(tmp_path / "cache")
+    (addon / "wizard").chmod(0o600)  # listed, but its files cannot be looked up
+    try:
+        first = _registry(settings, store).view_class("x.wizard", "my_mod")
+    finally:
+        (addon / "wizard").chmod(0o755)
+    warning = capsys.readouterr().err
+
+    second = _registry(settings, store).view_class("x.wizard", "my_mod")
+
+    assert first is None
+    assert "wizard/__init__.py: Permission denied" in warning
+    assert second is not None
+
+
+@NOT_ROOT
+def test_registry_unreadable_data_file_is_read_again_once_readable(tmp_path: Path) -> None:
+    settings = _odoo(tmp_path)
+    addon = settings.odoo_path / "addons/my_mod"
+    data = addon / "a.xml"
+    data.write_text('<odoo><record id="first" model="x.my_mod"/></odoo>')
+    _touch(addon / "__manifest__.py", "{'depends': ['base'], 'data': ['a.xml']}")
+    store = RecordStore(tmp_path / "cache")
+    data.chmod(0)
+    try:
+        first = set(_registry(settings, store).xml_ids("my_mod"))
+    finally:
+        data.chmod(0o644)
+
+    second = set(_registry(settings, store).xml_ids("my_mod"))
+
+    assert "my_mod.first" not in first
+    assert "my_mod.first" in second
+
+
+def _nested(depth: int) -> object:
+    value: object = []
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [{"$set": [[1]]}, {"$dict": [[]]}, {"$dict": [[[1], 2]]}],
+    ids=["unhashable-member", "short-pair", "unhashable-key"],
+)
+def test_decode_malformed_value_raises_decode_error(value: object) -> None:
+    with pytest.raises(DecodeError):
+        decode(value)
+
+
+def test_decode_value_nested_beyond_recursion_limit_raises_decode_error() -> None:
+    # Deeper than the limit of the moment: a mypy run in this process raises it (2**14).
+    value = _nested(sys.getrecursionlimit() + 100)
+
+    with pytest.raises(DecodeError):
+        decode(value)
+
+
+def test_scan_store_record_of_another_shape_is_a_miss(tmp_path: Path) -> None:
+    settings = _odoo(tmp_path)
+    store = RecordStore(tmp_path / "cache")
+    registry = _registry(settings, store)
+    registry.fields("x.my_mod", "my_mod")
+    index = registry.addons
+    key = next(path.name for path in (tmp_path / "cache").glob("addon-scan-my_mod-*"))
+    record = store.load(key)
+    assert record is not None
+    store.save(key, {**record, "scan": {"$set": [[1]]}})  # this version, another shape
+
+    found = ScanStore(store).load(index.addons["my_mod"], index.load_key("my_mod"))
+
+    assert found is None
+
+
+def test_load_index_manifest_edited_beside_symlink_loop_reads_index_again(
+    tmp_path: Path,
+) -> None:
+    settings = _odoo(tmp_path)
+    (settings.odoo_path / "addons/loop").symlink_to("loop")  # a link to itself
+    store = RecordStore(tmp_path / "cache")
+    load_index(settings, store)
+    _touch(settings.odoo_path / "addons/my_mod/__manifest__.py", "{'depends': []}")
+
+    index, _ = load_index(settings, store)
+
+    assert index.addons["my_mod"].depends == ()
+
+
+def test_package_source_hash_file_that_cannot_be_read_is_hashed_by_its_path(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "a.py").write_text("X = 1\n")
+    before = package_source_hash(package)
+    (package / ".#a.py").symlink_to("user@host.4242:1700000000")  # an Emacs lock: dangling
+
+    locked = package_source_hash(package)
+
+    assert locked != before
+
+
+@NOT_ROOT
+def test_registry_still_unreadable_file_reuses_the_stored_scan(
+    tmp_path: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = _odoo(tmp_path)
+    models = settings.odoo_path / "addons/my_mod/models.py"
+    store = RecordStore(tmp_path / "cache")
+    models.chmod(0)
+    try:
+        _registry(settings, store).view_class("x.my_mod", "my_mod")
+        scan = mocker.spy(registry_scans, "scan_addon")
+        capsys.readouterr()
+        kept = _registry(settings, store).view_class("x.my_mod", "my_mod")
+    finally:
+        models.chmod(0o644)
+
+    assert kept is None
+    assert scan.call_count == 0
+    assert "models.py: Permission denied" in capsys.readouterr().err  # still told

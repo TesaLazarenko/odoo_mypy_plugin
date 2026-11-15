@@ -56,9 +56,10 @@ plugin:
 - **`env[records._name]`** has the type of `records` (`self` in a mixin is the model
   that uses it at run time).
 - **Controllers**: `odoo.http.request` is a `Request` and `request.env` an
-  `Environment`, so `request.env["res.partner"]` is checked like `self.env`. (Odoo 18-19
-  build `request` with werkzeug, which mypy does not follow; Odoo 20 declares `env` as
-  possibly `None`.)
+  `Environment`, so `request.env["res.partner"]` is checked like `self.env`, in every
+  module, also one without model classes (a controller helper) and on warm runs. (Odoo
+  17-19 build `request` with werkzeug, which mypy does not follow; Odoo 20 declares
+  `env` as possibly `None`.)
 
 **Odoo 17** declares no types at all: the plugin gives its fields, `self.env`,
 `self.id`, record iteration, `create()` and the `api` decorators the types Odoo 18
@@ -389,6 +390,11 @@ creates.
   hides a misspelled name. A group of an addon outside the `depends` closure is not
   reported: `has_group("website.group_website_designer")` is how code asks about an
   addon that may not be installed.
+- Data files are read as data, never executed. An XML file is decoded in the encoding
+  it declares, also a multi-byte one (`<?xml version="1.0" encoding="Shift_JIS"?>`, GBK,
+  EUC-JP). An XML file in an encoding Python does not know, or not in the encoding it
+  declares, or not well-formed, and a CSV file that is not UTF-8 are skipped: the ids
+  they create are then reported as unknown.
 
 ## Fields that Odoo leaves untyped
 

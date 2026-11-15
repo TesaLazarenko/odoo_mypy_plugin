@@ -30,6 +30,7 @@ only its field paths are checked.
 from __future__ import annotations
 
 import ast
+import warnings
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
@@ -953,12 +954,17 @@ def string_domain_paths(source: str) -> Iterator[tuple[str, str | None]]:
 
     The client evaluates it: values may name fields of the record (``company_id``) or of
     the parent record, so they are not returned; a path of the parent (``parent.x``)
-    is skipped. Nothing is returned for a string that is not a literal list.
+    is skipped. Nothing is returned for a string that is not a literal list, nor for
+    one too complex for Python's parser.
     """
-    try:
-        tree = ast.parse(source.strip(), mode="eval")
-    except SyntaxError:
-        return
+    with warnings.catch_warnings():
+        # As mypy does: an escape such as ``"\d"`` in the string is no reason to warn.
+        warnings.simplefilter("ignore", SyntaxWarning)
+        warnings.simplefilter("ignore", DeprecationWarning)
+        try:
+            tree = ast.parse(source.strip(), mode="eval")
+        except (SyntaxError, ValueError, MemoryError, RecursionError):
+            return  # ValueError: a NUL (Python 3.11); the others: the parser's limits
     if not isinstance(tree.body, ast.List):
         return
     for item in tree.body.elts:

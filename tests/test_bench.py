@@ -114,6 +114,13 @@ def test_parse_args_default_version_keeps_existing_layout() -> None:
     assert args.bench_dir == bench.DEFAULT_BENCH_DIR
 
 
+def test_parse_args_default_version_uses_fetched_root_and_user_cache() -> None:
+    args = bench.parse_args(["--label", "x"])
+
+    assert args.odoo_root == bench.fetched_root(18)
+    assert args.bench_dir == Path.home() / ".cache" / "odoo-typing" / "bench"
+
+
 def test_parse_args_other_version_uses_fetched_root_and_own_dir(tmp_path: Path) -> None:
     args = bench.parse_args(["--label", "x", "--odoo-version", "19", "--bench-dir", str(tmp_path)])
 

@@ -71,13 +71,31 @@ contains them.
 | `dynamic_env` | `"any"` | Type of `env[name]` when `name` is not a literal: `"any"` or `"base"` |
 | `vals_ignore_keys` | `["x_*"]` | Glob patterns of `vals` keys never reported as unknown fields |
 | `literal_selection` | `false` | Read `Selection` fields as `Literal[<keys>] \| Literal[False]` |
-| `scan_cache_dir` | `~/.cache/odoo-typing/scans` | Addon scans shared by every project; `""` keeps them in mypy's cache |
+| `scan_cache_dir` | `~/.cache/odoo-typing/scans` | Addon scans shared by every project, a subdirectory per interpreter; `""` keeps them in mypy's cache |
 
 **`odoo_version`** is the single source of truth for the version: the plugin picks the
-names of Odoo's classes for its hooks from it (Odoo 19 moved the ORM to `odoo.orm`). The
-Odoo found at `odoo_path` is only compared with it, and a different major version gives
-a warning. Without `odoo_version`, or with a version that is not supported yet, mypy
-stops with a message (exit status 2).
+names of Odoo's classes for its hooks from it (Odoo 19 moved the ORM to `odoo.orm`).
+Without `odoo_version`, or with a version that is not supported yet, mypy stops with a
+message (exit status 2). The Odoo found at `odoo_path` is only compared with it (its
+`release.py`), and a warning on stderr names what does not fit; mypy goes on:
+
+- another final release: `odoo_version = 18, but the Odoo at ... is Odoo 19.0; the
+  checks follow odoo_version, so set it to 19 or point odoo_path at an Odoo 18`;
+- an intermediate (SaaS or development) version, such as `saas~18.3`, also of the
+  configured major: odoo-typing supports only the final releases 17.0 to 20.0, so some
+  checks may be missing or wrong;
+- a major the plugin does not support: `... is Odoo 16.0, which odoo-typing does not
+  support (only 17.0 to 20.0); point odoo_path at an Odoo 18`;
+- an Odoo that does not define the classes the profile of `odoo_version` expects
+  (`BaseModel`, `Environment`, `Many2one`... in the modules where that version defines
+  them), as when `odoo_version` or `odoo_path` is wrong or the tree is an intermediate
+  version. The hooks are keyed on those names, so the checks would be silently
+  incomplete:
+
+```text
+odoo-typing: warning: the Odoo at /src/odoo/odoo is Odoo 18.3, an intermediate (SaaS or development) version, and odoo_version = 18: odoo-typing supports the final releases 17.0 to 20.0, so some checks may be missing or wrong
+odoo-typing: warning: the Odoo at /src/odoo/odoo does not define odoo.orm.models.BaseModel, odoo.orm.identifiers.NewId, odoo.orm.environments.Environment, ..., which the Odoo 19 profile expects: odoo_version or odoo_path is wrong, or this is an intermediate (SaaS or development) version; checks would be silently incomplete
+```
 
 **`odoo_path`**: without it, the plugin looks for an `odoo` package (a directory with
 `release.py`) on `mypy_path`, then tries to import `odoo` in mypy's own interpreter,
@@ -85,7 +103,12 @@ which usually fails in a virtualenv.
 
 **`addons_path`**: each entry must be a directory that *contains* addons (subdirectories
 with a `__manifest__.py`). Listing an addon directory itself, or a directory without any
-addon, is a configuration error.
+addon, is a configuration error. A subdirectory that cannot be read (`lost+found` at the
+root of a volume) is not an addon, as for Odoo; nor are `__pycache__` and the
+directories whose name starts with `.` (`.git`, `.idea`, `.mypy_cache`). Those are not
+stamped either, so git or IDE activity in a repository that is itself an addons path
+does not make the plugin read the manifests again. A symlink loop in a root skips only
+that entry.
 
 **`dynamic_env = "base"`** keeps plain mypy's `BaseModel` for `env[name]` when `name` is
 not a literal (or a `Final` / `Literal` str): every field read on it is then an
@@ -102,7 +125,11 @@ comparing it with a key that does not exist is an error. It is off by default be
 assigning the value to a variable then fixes the variable's type to those literals.
 
 **`scan_cache_dir`**: see [Shared scan cache](how-it-works.md#shared-scan-cache). The
-default is `$XDG_CACHE_HOME/odoo-typing/scans` (`~/.cache/odoo-typing/scans`).
+default is `$XDG_CACHE_HOME/odoo-typing/scans` (`~/.cache/odoo-typing/scans`). The scans
+sit in a subdirectory per interpreter, `<scan_cache_dir>/<cache_tag>/` (`cpython-312`),
+and the plugin's other records in mypy's cache, in `<cache_dir>/odoo_typing/<cache_tag>/`.
+Files directly in `scan_cache_dir` or in `<cache_dir>/odoo_typing/` were written by
+earlier versions and can be deleted.
 
 ## Odoo 19 and 20
 
@@ -135,6 +162,16 @@ root), **not** through their real directory. mypy names `mypy addons/my_addon` a
 `odoo.addons.my_addon.*` wherever they are imported. The plugin warns about this on
 stderr (`odoo-typing: warning: mypy names module "my_addon" ...`) and adds no
 dependencies for such files.
+
+The plugin is tested with mypy 2.1 to 2.4, and the package requires `mypy>=2.1,<2.5`.
+It relies on mypy internals beyond the plugin API, which another mypy version may
+change. A mypy outside that range (installed with `--no-deps`, or pinned apart from the
+plugin) gets a warning, and mypy goes on. It is printed by each process that loads the
+plugin (each `--num-workers` worker; with `dmypy`, in the daemon's log):
+
+```text
+odoo-typing: warning: mypy 2.5.0 is not a version odoo-typing is tested with (>=2.1,<2.5); the plugin relies on mypy internals, so expect missed or wrong errors or an INTERNAL ERROR: install a tested mypy
+```
 
 ## `mypy.ini` and `setup.cfg`
 
@@ -199,3 +236,18 @@ mypy with exit status 2 and one line on stderr, for example:
 ```text
 odoo-typing: error: addons_path entries are not directories: /src/missing
 ```
+
+A symlink loop in `odoo_path`, `overlay_root` or an `addons_path` entry is a
+configuration error too, and so is a `pyproject.toml` that is not UTF-8 when the plugin
+reads its `[tool.odoo_typing]` table for a `mypy.ini` without an `[odoo_typing]`
+section:
+
+```text
+odoo-typing: error: odoo_path /src/odoo cannot be resolved: Symlink loop from '/src/odoo'
+odoo-typing: error: addons_path entry /src/addons cannot be resolved: Symlink loop from '/src/addons'
+odoo-typing: error: cannot read /src/pyproject.toml: 'utf-8' codec can't decode byte 0xe9 in position 39: invalid continuation byte
+```
+
+The first two are given by Python 3.11 and 3.12. Python 3.13 does not raise on a loop,
+so the path then gives the error of a missing directory
+(`odoo_path ... does not contain release.py`, `addons_path entries are not directories`).

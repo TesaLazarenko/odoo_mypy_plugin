@@ -7,7 +7,9 @@ functions return a warning for the plugin to print.
 
 from __future__ import annotations
 
+import re
 import sys
+from typing import Final
 
 from mypy.options import Options
 
@@ -17,12 +19,47 @@ from odoo_typing.overlay import overlay_differences
 from odoo_typing.registry import Registry
 
 __all__ = [
+    "TESTED_MYPY",
+    "mypy_version_warning",
     "package_bases_warning",
     "profile_or_exit",
     "python_version_warning_or_exit",
     "settings_or_exit",
     "stale_overlay_warning",
 ]
+
+# The mypy versions the plugin is tested with, from the first to the one after the last
+# (``[low, high)``): keep it equal to the ``mypy`` requirement of pyproject.toml.
+TESTED_MYPY: Final = ((2, 1), (2, 5))
+_MAJOR_MINOR = re.compile(r"(\d+)\.(\d+)")
+
+
+def mypy_version_warning(version: str) -> str | None:
+    """Warning text if mypy is not a version the plugin is tested with.
+
+    The plugin reads mypy internals beyond the plugin API (tests/test_mypy_internals.py),
+    which another version may rename: missed or wrong errors, or an INTERNAL ERROR that
+    points at mypy. It is a warning, not an exit: a new mypy release often works, and the
+    requirement keeps a normal install in range.
+
+    Args:
+        version: mypy's version string (``2.4.1``, ``2.5.0+dev.1a2b3c``).
+
+    Returns:
+        The warning text, or ``None`` for a tested version or an unreadable string.
+    """
+    match = _MAJOR_MINOR.match(version)
+    if match is None:
+        return None
+    low, high = TESTED_MYPY
+    if low <= (int(match[1]), int(match[2])) < high:
+        return None
+    first, after = (".".join(map(str, bound)) for bound in TESTED_MYPY)
+    return (
+        f"odoo-typing: warning: mypy {version} is not a version odoo-typing is tested with "
+        f"(>={first},<{after}); the plugin relies on mypy internals, so expect missed or "
+        "wrong errors or an INTERNAL ERROR: install a tested mypy"
+    )
 
 
 def settings_or_exit(options: Options) -> Settings:

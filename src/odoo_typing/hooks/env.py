@@ -229,10 +229,12 @@ def request_env(environment: str, ctx: AttributeContext) -> Type:
 def type_request(profile: OdooProfile, modules: dict[str, MypyFile]) -> bool:
     """Type ``odoo.http.request`` as a ``Request`` where Odoo leaves it ``Any``.
 
-    Odoo 18-19 build it with werkzeug's ``LocalStack()()``, which mypy cannot follow
+    Odoo 17-19 build it with werkzeug's ``LocalStack()()``, which mypy cannot follow
     (werkzeug is not on the search path), so ``request.env[...]`` in a controller went
-    unchecked. It runs from the class hook of a later module, once ``odoo.http`` is
-    type-checked (its variable has a type then).
+    unchecked. It runs once mypy has checked the assignment in ``odoo.http`` (its
+    variable has a type then): from the plugin's hook lookups, which mypy makes while
+    it checks ``odoo.http`` too, so that the module's cache entry keeps the type, and
+    from the class hook of a later module.
 
     Returns:
         Whether nothing is left to do (typed now, or typed by Odoo).

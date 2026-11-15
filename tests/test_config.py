@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import textwrap
 from pathlib import Path
 
@@ -390,3 +391,64 @@ def test_scan_cache_dir_not_a_string_is_an_error(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="scan_cache_dir must be a string"):
         load_settings(str(config))
+
+
+def test_load_settings_manifest_only_in_dot_directory_raises(tmp_path: Path) -> None:
+    _addon(tmp_path / "addons" / ".old_mod")
+    config = _config(tmp_path, ["addons"])
+
+    with pytest.raises(ConfigError, match="contains no addon"):
+        load_settings(config)
+
+
+# -- what users' disks hold: locked directories, symlink loops, other encodings -----------
+
+
+def test_load_settings_unreadable_directory_beside_addon_accepts_entry(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root reads every directory")
+    _addon(tmp_path / "addons" / "my_mod")
+    locked = tmp_path / "addons" / "lost+found"
+    locked.mkdir()
+    config = _config(tmp_path, ["addons"])
+    listing = [locked, tmp_path / "addons" / "my_mod"]  # the file system's order: locked first
+    mocker.patch.object(Path, "iterdir", autospec=True, side_effect=lambda path: iter(listing))
+    locked.chmod(0)
+    try:
+        settings = load_settings(config)
+    finally:
+        locked.chmod(0o700)
+
+    assert settings.addons_paths == ((tmp_path / "addons").resolve(),)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        'odoo_path = "loop"\naddons_path = ["addons"]\n',
+        'odoo_path = "odoo"\naddons_path = ["loop"]\n',
+        'odoo_path = "odoo"\naddons_path = ["addons"]\noverlay_root = "loop"\n',
+    ],
+    ids=["odoo_path", "addons_path", "overlay_root"],
+)
+def test_load_settings_symlink_loop_raises_config_error(tmp_path: Path, options: str) -> None:
+    # Path.resolve raises RuntimeError on a symlink loop up to Python 3.12.
+    _odoo(tmp_path)
+    _addon(tmp_path / "addons" / "my_mod")
+    (tmp_path / "loop").symlink_to("loop")
+    config = tmp_path / "pyproject.toml"
+    config.write_text("[tool.odoo_typing]\n" + options)
+
+    with pytest.raises(ConfigError, match="loop"):
+        load_settings(str(config))
+
+
+def test_load_settings_pyproject_beside_ini_not_utf8_raises_config_error(tmp_path: Path) -> None:
+    # mypy reads no pyproject.toml beside a mypy.ini: the plugin is the first to decode it.
+    (tmp_path / "pyproject.toml").write_bytes(b"# caf\xe9\n[tool.odoo_typing]\n")
+    config = _ini(tmp_path, "mypy.ini", "[mypy]\n")
+
+    with pytest.raises(ConfigError, match="cannot read"):
+        load_settings(config)

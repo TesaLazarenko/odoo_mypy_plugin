@@ -6,7 +6,10 @@ them (:mod:`odoo_typing.fingerprint`), which mypy asks for on every run. Reading
 source file takes about 0.4 s on Odoo's addons, so the index is kept between runs with
 the stamps of the files and directories it read. A run stats them (adding, removing or
 renaming a file changes its directory's stamp) and reads only what changed: about
-0.08 s for Odoo's 6,000 files when nothing did.
+0.08 s for Odoo's 6,000 files when nothing did. A file that cannot be read, and a
+directory that cannot be listed, are kept as :data:`~odoo_typing.stamps.UNREADABLE`:
+not read again while they still cannot be, read again once they can
+(:func:`~odoo_typing.stamps.matches`).
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from odoo_typing.addons import Addon
 from odoo_typing.records import Record, digest, parse_stamp
 from odoo_typing.registry.visible import SKIPPED_DIRS
 from odoo_typing.scanner import SourceError, read_source, scan_file_classes
-from odoo_typing.stamps import Stamp, stamp
+from odoo_typing.stamps import UNREADABLE, Stamp, is_directory, matches, stamp, stat_result
 
 __all__ = ["ClassFileIndex", "RecordKeeper", "module_of"]
 
@@ -37,6 +40,8 @@ CLASS_MODELS_PATTERN: Final = re.compile(
 QUOTED_PATTERN: Final = re.compile(rb"""['"]([^'"\\\n]+)['"]""")
 # Directories that hold no model classes of the addon (tests define their own models).
 NO_MODEL_DIRS: Final = SKIPPED_DIRS | {"tests", "migrations", "upgrades"}
+_Identity = tuple[int, int]  # a directory's (st_dev, st_ino)
+_File = tuple[Stamp | None, frozenset[str]]  # a file's recorded stamp and the models it names
 
 
 class RecordKeeper(Protocol):
@@ -56,7 +61,7 @@ class _Directory:
     """What the index read in one directory: its stamp, ``.py`` files and subdirectories."""
 
     stamp: Stamp | None
-    files: dict[str, tuple[Stamp | None, frozenset[str]]]  # name -> (stamp, models)
+    files: dict[str, _File]  # name -> (stamp, models)
     subdirs: tuple[str, ...]
 
 
@@ -72,7 +77,7 @@ class ClassFileIndex:
         self._addons = addons
         self._keeper = keeper
         self._files: dict[str, tuple[tuple[str, Path], ...]] | None = None
-        self._stamps: dict[str, Stamp | None] = {}
+        self._stamps: dict[str, Stamp | None] = {}  # of the files, as recorded
         self._directories: dict[str, _Directory] = {}
 
     @property
@@ -92,12 +97,12 @@ class ClassFileIndex:
         """Whether a directory or file the index read this run changed on disk since."""
         if self._files is None:
             return False
-        if any(stamp(path) != entry.stamp for path, entry in self._directories.items()):
+        if not all(matches(path, entry.stamp) for path, entry in self._directories.items()):
             return True
-        return any(stamp(path) != recorded for path, recorded in self._stamps.items())
+        return not all(matches(path, recorded) for path, recorded in self._stamps.items())
 
-    def stamp(self, path: Path) -> Stamp | None:
-        """A file's stamp as the index took it this run (``stat`` again if it did not)."""
+    def stamp(self, path: str | Path) -> Stamp | None:
+        """A file's stamp as the index recorded it this run (``stat`` again if it did not)."""
         self._index()
         text = str(path)
         return self._stamps[text] if text in self._stamps else stamp(text)
@@ -116,36 +121,61 @@ class ClassFileIndex:
         """The files of every addon that name each model (addon and path), addons in order."""
         found: dict[str, list[tuple[str, Path]]] = {}
         for addon in self._addons:
-            for path, models in self._walk(addon, str(addon.path), known):
+            for path, models in self._walk(addon, str(addon.path), known, frozenset()):
                 for model in sorted(models):
                     found.setdefault(model, []).append((addon.name, Path(path)))
         return {model: tuple(files) for model, files in found.items()}
 
     def _walk(
-        self, addon: Addon, directory: str, known: dict[str, _Directory]
+        self,
+        addon: Addon,
+        directory: str,
+        known: dict[str, _Directory],
+        ancestors: frozenset[_Identity],
     ) -> Iterator[tuple[str, frozenset[str]]]:
         """The files under a directory that name models, read again only if changed.
 
         Paths are strings here: ``pathlib`` would cost more than the ``stat`` calls.
+        A directory that is one of its own ancestors (``ancestors``) is not walked
+        again: a symlink back to an ancestor would otherwise repeat its files up to the
+        kernel's limit of 40 links, or never end with two such links. Another alias of
+        a directory (``compat -> models``) is walked as a directory of its own.
         """
-        current = stamp(directory)
+        current, identity = _directory_stamp(directory)
+        if identity in ancestors:
+            return
         previous = known.get(directory)
-        if previous is not None and previous.stamp == current:
-            names, subdirs = sorted(previous.files), previous.subdirs
+        if previous is not None and matches(directory, previous.stamp, lambda _: current):
+            recorded, names, subdirs = previous.stamp, sorted(previous.files), previous.subdirs
         else:
-            names, subdirs = _entries(directory)
-        files: dict[str, tuple[Stamp | None, frozenset[str]]] = {}
+            listed = _entries(directory)  # None: cannot be listed
+            recorded = current if listed is not None else UNREADABLE
+            names, subdirs = listed if listed is not None else ([], ())
+        files: dict[str, _File] = {}
         for name in names:
             path = os.path.join(directory, name)  # noqa: PTH118 (see the docstring)
-            now = self._stamps[path] = stamp(path)
             before = previous.files.get(name) if previous is not None else None
-            models = before[1] if before is not None and before[0] == now else _named(addon, path)
-            files[name] = (now, models)
-            if models:
-                yield path, models
-        self._directories[directory] = _Directory(current, files, subdirs)
+            files[name] = self._file(addon, path, before)
+            if files[name][1]:
+                yield path, files[name][1]
+        self._directories[directory] = _Directory(recorded, files, subdirs)
+        inner = ancestors if identity is None else ancestors | {identity}
         for name in subdirs:
-            yield from self._walk(addon, os.path.join(directory, name), known)  # noqa: PTH118
+            yield from self._walk(addon, os.path.join(directory, name), known, inner)  # noqa: PTH118
+
+    def _file(self, addon: Addon, path: str, before: _File | None) -> _File:
+        """A file's recorded stamp and the models it names, read again only if changed.
+
+        One that cannot be read is kept as :data:`UNREADABLE`, naming no model.
+        """
+        now = stamp(path)
+        if before is not None and matches(path, before[0], lambda _: now):
+            found = before
+        else:
+            models = _named(addon, path)
+            found = (now, models) if models is not None else (UNREADABLE, frozenset())
+        self._stamps[path] = found[0]
+        return found
 
 
 def module_of(addon: Addon, path: Path) -> str | None:
@@ -158,31 +188,58 @@ def module_of(addon: Addon, path: Path) -> str | None:
     return ".".join([addon.module_prefix, *parts])
 
 
-def _entries(directory: str) -> tuple[list[str], tuple[str, ...]]:
-    """The ``.py`` files and the subdirectories (that may hold models) of a directory."""
+def _directory_stamp(directory: str) -> tuple[Stamp | None, _Identity | None]:
+    """A directory's stamp, and what it is on its device (``None``: cannot be stat'ed)."""
+    status = stat_result(directory)
+    if status is None:
+        return None, None
+    return (status.st_mtime_ns, status.st_size), (status.st_dev, status.st_ino)
+
+
+def _entries(directory: str) -> tuple[list[str], tuple[str, ...]] | None:
+    """The ``.py`` files and the subdirectories (that may hold models) of a directory.
+
+    An entry that cannot be stat'ed (a symlink loop) is left out, not the directory.
+
+    Returns:
+        The names; ``None`` if the directory cannot be listed (no permission).
+    """
     try:
         with os.scandir(directory) as iterator:
             entries = list(iterator)
-        names = [entry.name for entry in entries if entry.name.endswith(".py") and entry.is_file()]
-        subdirs = [
-            entry.name for entry in entries if entry.is_dir() and entry.name not in NO_MODEL_DIRS
-        ]
+    except PermissionError:
+        return None
     except OSError:
-        return [], ()  # removed meanwhile, or not readable: no files
+        return [], ()  # removed meanwhile: no files
+    subdirs = [
+        entry.name for entry in entries if entry.name not in NO_MODEL_DIRS and is_directory(entry)
+    ]
+    names = [entry.name for entry in entries if entry.name.endswith(".py") and _is_file(entry)]
     return sorted(names), tuple(sorted(subdirs))
 
 
-def _named(addon: Addon, path: str) -> frozenset[str]:
+def _is_file(entry: os.DirEntry[str]) -> bool:
+    """Whether a directory entry is a file or a link to one (not if it cannot tell)."""
+    try:
+        return entry.is_file()
+    except OSError:
+        return False
+
+
+def _named(addon: Addon, path: str) -> frozenset[str] | None:
     """The model names in a file's ``_name`` / ``_inherit`` assignments.
 
     A text search for string literals; a file with another kind of assignment (a
     constant, an expression) is read by the scanner, which evaluates them as the addon
     scan does (:func:`odoo_typing.scanner.scan_file_classes`).
+
+    Returns:
+        The names; ``None`` if the file cannot be read (a broken symlink, no permission).
     """
     try:
         data = read_source(Path(path))
     except SourceError:
-        return frozenset()  # a broken symlink, a file that cannot be read
+        return None
     if b"_name" not in data and b"_inherit" not in data:
         return frozenset()
     names: set[str] = set()
@@ -190,9 +247,13 @@ def _named(addon: Addon, path: str) -> frozenset[str]:
     for extended, literal in CLASS_MODELS_PATTERN.findall(data):
         evaluate = evaluate or bool(extended) or not literal
         names.update(model.decode(errors="replace") for model in QUOTED_PATTERN.findall(literal))
-    if evaluate:
-        for item in scan_file_classes(addon, Path(path)):
-            names.update((item.model, *item.parents))
+    if not evaluate:
+        return frozenset(names)
+    try:
+        classes = scan_file_classes(addon, Path(path))
+    except SourceError:
+        return None
+    names.update(name for item in classes for name in (item.model, *item.parents))
     return frozenset(names)
 
 
@@ -223,7 +284,7 @@ def _parse(record: Record | None) -> dict[str, _Directory]:
         recorded, files, subdirs = row
         if not isinstance(files, dict) or not isinstance(subdirs, list):
             continue
-        entries: dict[str, tuple[Stamp | None, frozenset[str]]] = {}
+        entries: dict[str, _File] = {}
         for name, value in files.items():
             if isinstance(value, list) and len(value) == 2 and isinstance(value[1], list):
                 models = frozenset(model for model in value[1] if isinstance(model, str))

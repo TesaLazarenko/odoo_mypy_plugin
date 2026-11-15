@@ -212,6 +212,8 @@ class SaleOrder(models.Model):
 - Model names known only at run time (`env[name]`) give `Any`.
 - Code outside any addon (scripts, Odoo's own `odoo/*.py`) is left as plain mypy sees
   it.
+- Only mypy 2.1–2.4 and the final Odoo releases 17.0–20.0 are supported: another mypy
+  version or an Odoo SaaS checkout (`saas~18.3`) gets a warning.
 
 [The full list →](docs/checks.md#not-yet-supported)
 

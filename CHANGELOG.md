@@ -119,6 +119,69 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   6–9 MB lower (sale 298 → 292 MB, account 355 → 348 MB), about a fifth of what the
   plugin adds.
 
+### Robustness
+
+- The plugin's records sit in a subdirectory per interpreter, since a scan parses with
+  the running Python's grammar: `<cache_dir>/odoo_typing/<cache_tag>/`
+  (`.mypy_cache/odoo_typing/cpython-312/`) and `<scan_cache_dir>/<cache_tag>/`.
+  Records of earlier versions, directly in `odoo_typing/` or in `scan_cache_dir`, are
+  never read again and can be deleted.
+- The first run after an upgrade (any change of the plugin's source) is a full cold run,
+  the standard library and Odoo's own modules included (`plugins differ` in `mypy -v`).
+  Before, modules outside addons kept the results of the earlier version.
+- Odoo's own modules (`odoo`, `odoo.*`, not its addons) carry `odoo_version` in their
+  cache data, in every layout: correcting it checks them again.
+- Read on the next run, where they used to go unnoticed: a file saved during a run
+  (stamps are taken before each read), any manifest edit (each scan includes its
+  manifest, so adding or removing data files updates the XML ids), a new `__init__.py`
+  in an imported directory, and a `depends` edit that changes whether a model outside
+  the closure is `odoo-model` or `odoo-model-depends`.
+- A file, manifest or directory that cannot be read gets a stamp no file has. A source
+  file is reported (`cannot parse ...: Permission denied`, also as
+  `<dir>/__init__.py` for a package directory that cannot be searched). What was
+  computed without it is kept while it stays unreadable, and it is read again once it
+  can be (after `chmod` or `chown`), in runs and in the daemon, without a new registry
+  on every daemon update. This holds for scans, data files, the class-file index and
+  the addon index.
+- Subdirectories of an addons root that cannot be read (`lost+found`) are not addons;
+  they were a configuration error or an INTERNAL ERROR. Nor are `__pycache__` and the
+  directories whose name starts with `.`, which are not stamped either: git or IDE
+  activity in an addons root (`.git`, `.idea`) no longer invalidates the addon index.
+  A symlink loop skips only its entry, and the class-file index does not follow it.
+- A file nested too deeply for Python's parser is reported as
+  `cannot parse ...: too complex to parse (RecursionError)` (or `MemoryError`).
+- Compiler warnings (`SyntaxWarning: invalid escape sequence '\d'`) are no longer
+  printed for scanned files, manifests and string domains, and `-W error` does not make
+  them errors.
+- Data files in a multi-byte encoding (Shift_JIS, GBK, EUC-JP) are decoded with their
+  codec. A data file in an unknown encoding, a data entry with a NUL, a manifest that is
+  no literal dict and a stored record that cannot be decoded are skipped instead of
+  crashing mypy.
+- A symlink loop in `odoo_path`, `overlay_root` or an `addons_path` entry
+  (`... cannot be resolved: ...`), and a `pyproject.toml` that is not UTF-8 beside a
+  `mypy.ini` (`cannot read ...`), are configuration errors instead of crashes.
+- New warnings on stderr (mypy goes on):
+  - a mypy outside the tested range `>=2.1,<2.5`: the plugin relies on mypy internals;
+  - an intermediate (SaaS or development) Odoo such as `saas~18.3`, also of the
+    configured major, and a major the plugin does not support (the advice
+    `set it to <N>` is given only for a supported final release);
+  - an Odoo that does not define the classes the profile of `odoo_version` expects.
+- An exception the plugin does not expect while it finds the models a module relies on,
+  computes a module's cache data or checks the addons for changes prints
+  `odoo-typing: internal error while <doing>: <Type>: <message> (please report it to odoo-typing)`
+  before mypy's INTERNAL ERROR (the exit status stays 2).
+- `odoo.http.request` is a `Request` on Odoo 17-19 in every module, also one without
+  model classes and on warm runs, so `request.env[...]` in controller helpers is
+  checked. A project that checks Odoo's own `http.py` (without
+  `follow_imports = "silent"`) may see new errors there.
+- dmypy: the hooks chosen from declared signatures (`odoo.domain.*` and `DomainType`
+  parameters) are chosen again on each update, so declarations in files the registry
+  does not scan (an addon's `tests/`, a helper package) follow edits.
+- Known dmypy limit: after a module that defines model classes is deleted or renamed,
+  the files that used its models get a spurious `import-not-found` error without a line
+  number until they are edited or the daemon restarts.
+- The CI tests Python 3.11 (on Odoo 17) and 3.13 (on Odoo 20) besides 3.12.
+
 ### Tooling
 
 - `odoo-typing-stubs` writes `.pyi` stubs of the models for editors (Pyright,

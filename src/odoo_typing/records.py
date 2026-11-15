@@ -1,6 +1,8 @@
 """JSON records the plugin keeps next to mypy's cache, and the stored addon index.
 
-Records live in ``<cache_dir>/odoo_typing``. Each one says which version of the plugin
+Records live in ``<cache_dir>/odoo_typing/<interpreter>`` (``cpython-312``): the scans
+parse sources with the running interpreter's grammar, so a file one Python version
+cannot parse may be fine for another. Each record says which version of the plugin
 wrote it and carries the ``stat`` stamps (:mod:`odoo_typing.stamps`) of the files it was
 computed from; it is used only while both still match.
 
@@ -12,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from functools import cache
 from pathlib import Path
 from typing import TypeGuard
@@ -26,6 +29,7 @@ __all__ = [
     "addon_data",
     "digest",
     "index_key",
+    "interpreter_tag",
     "is_str_list",
     "load_index",
     "package_source_hash",
@@ -40,7 +44,7 @@ Record = dict[str, object]
 
 
 class RecordStore:
-    """JSON records in a directory (``<cache_dir>/odoo_typing``), or nowhere.
+    """JSON records in a directory (``<cache_dir>/odoo_typing/<interpreter>``), or nowhere.
 
     Writes are atomic (a temporary file renamed over the record), so concurrent mypy
     runs on one cache never read half a record. Unreadable records count as missing.
@@ -55,7 +59,15 @@ class RecordStore:
         """The store next to mypy's cache, or none if mypy writes no cache."""
         if not cache_dir or cache_dir == os.devnull:
             return cls(None)
-        return cls(Path(cache_dir) / STORE_DIR)
+        return cls(Path(cache_dir) / STORE_DIR / interpreter_tag())
+
+    @classmethod
+    def shared(cls, directory: Path | None) -> RecordStore | None:
+        """The store of addon scans for every project (``scan_cache_dir``), if one is set.
+
+        Like the one in mypy's cache, in a subdirectory for the running interpreter.
+        """
+        return cls(directory / interpreter_tag()) if directory is not None else None
 
     def load(self, key: str) -> Record | None:
         """Return a record written by this plugin version, or ``None``."""
@@ -63,7 +75,7 @@ class RecordStore:
             return None
         try:
             data = json.loads((self._directory / key).read_bytes())
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):  # RecursionError: nested too deeply
             return None
         if not isinstance(data, dict) or data.get("version") != source_digest():
             return None
@@ -84,6 +96,16 @@ class RecordStore:
         return True
 
 
+def interpreter_tag() -> str:
+    """The running interpreter, as it names its bytecode files (``cpython-312``).
+
+    The directory of the records it writes: the scans depend on its grammar.
+    """
+    implementation = sys.implementation
+    version = f"{sys.version_info[0]}{sys.version_info[1]}"
+    return implementation.cache_tag or f"{implementation.name}-{version}"
+
+
 @cache
 def source_digest() -> str:
     """Digest of the plugin's own source: a new plugin version invalidates everything.
@@ -95,11 +117,19 @@ def source_digest() -> str:
 
 
 def package_source_hash(package: Path) -> str:
-    """SHA-256 of a package's Python files and their paths inside it."""
+    """SHA-256 of a package's Python files and their paths inside it.
+
+    A file that cannot be read counts by its path alone, with a marker: it runs at the
+    plugin's import (``__version__``), and an editable checkout may hold a dangling
+    link named like a module (``.#models.py``, an Emacs lock), which Python never imports.
+    """
     hashed = hashlib.sha256()
     for path in sorted(package.rglob("*.py")):
         hashed.update(path.relative_to(package).as_posix().encode() + b"\0")
-        hashed.update(path.read_bytes() + b"\0")
+        try:
+            hashed.update(path.read_bytes() + b"\0")
+        except OSError:
+            hashed.update(b"\0unreadable\0")
     return hashed.hexdigest()
 
 

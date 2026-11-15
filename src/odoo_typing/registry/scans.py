@@ -30,7 +30,7 @@ from odoo_typing.scanner import (
     referenced_models,
     scan_addon,
 )
-from odoo_typing.stamps import Stamp, Stamps, read_index, scan_stamps, stamp, unchanged
+from odoo_typing.stamps import UNREADABLE, Stamp, Stamps, matches, read_index, stamp, unchanged
 
 __all__ = ["NO_REFERENCES", "FileReferences", "IndexLoader", "ScanCache", "ScannedAddons"]
 
@@ -174,8 +174,9 @@ class ScannedAddons:
         load_key = self.addons.load_key(addon_name)
         stored = self._scans.load(addon, load_key) if self._scans else None
         if stored is None:
-            result = scan_addon(addon, load_key)
-            stored = (result, scan_stamps(addon, result))
+            stamps: Stamps = {}
+            result = scan_addon(addon, load_key, stamps)  # stamps taken before each read
+            stored = (result, stamps)
             if self._scans is not None:
                 self._scans.save(addon, load_key, *stored)
         if addon_name not in self._warned:
@@ -273,37 +274,55 @@ class ScannedAddons:
         guards = scan.guards if scan is not None else self._unreached_file(resolved).found.guards
         return is_guarded(guards, model, line)
 
+    def source_stamp(self, path: str | Path) -> Stamp | None:
+        """A source file's stamp as the answers about it were read (scan or own parse)."""
+        addon = self.addons.addon_for_path(path)
+        resolved = self.addons.real_path(path)
+        if addon is not None:
+            _, stamps = self.scan_result(addon.name)
+            if str(resolved) in stamps:
+                return stamps[str(resolved)]
+        known = self._unreached.get(resolved)
+        return known.stamp if known is not None else stamp(path)
+
     def _unreached_file(self, path: Path) -> _UnreachedFile:
         """What a file the addon scans did not reach refers to; parsed once per version.
 
         Its stamp is checked on each use: no addon scan records it, so a daemon update
-        that changes it (a test file) does not start a new registry.
+        that changes it (a test file) does not start a new registry. One that cannot be
+        read is kept as :data:`~odoo_typing.stamps.UNREADABLE` until it can be.
         """
         current = stamp(path)
         known = self._unreached.get(path)
-        if known is not None and known.stamp == current:
+        if known is not None and matches(path, known.stamp, lambda _: current):
             return known
         stored = self._scans.load_file(path, current) if self._scans else None
         if stored is not None:
-            found = self._unreached[path] = _UnreachedFile(current, stored)
-            return found
-        try:
-            source = read_source(path)
-            tree = parse_bytes(source, path)
-        except SourceError:  # mypy reports unparsable files it checks itself
-            found = _UnreachedFile(current, NO_REFERENCES)
+            found = _UnreachedFile(current, stored)
         else:
-            nodes = index_nodes(tree)
-            references = FileReferences(
-                frozenset(referenced_models(tree, nodes)),
-                model_guards(nodes),
-                annotation_aliases(source),
-            )
-            found = _UnreachedFile(current, references)
-            if self._scans is not None:
-                self._scans.save_file(path, current, references)
+            found = self._parse_unreached(path, current)
         self._unreached[path] = found
         return found
+
+    def _parse_unreached(self, path: Path, current: Stamp | None) -> _UnreachedFile:
+        """Parse a file the addon scans did not reach (and store what it refers to)."""
+        try:
+            source = read_source(path)
+        except SourceError:  # mypy reports files it cannot read itself
+            return _UnreachedFile(UNREADABLE if current is not None else None, NO_REFERENCES)
+        try:
+            tree = parse_bytes(source, path)
+        except SourceError:  # mypy reports unparsable files it checks itself
+            return _UnreachedFile(current, NO_REFERENCES)
+        nodes = index_nodes(tree)
+        references = FileReferences(
+            frozenset(referenced_models(tree, nodes)),
+            model_guards(nodes),
+            annotation_aliases(source),
+        )
+        if self._scans is not None:
+            self._scans.save_file(path, current, references)
+        return _UnreachedFile(current, references)
 
     def addon_name_for_path(self, path: str | Path) -> str | None:
         """Return the name of the addon a source file belongs to."""

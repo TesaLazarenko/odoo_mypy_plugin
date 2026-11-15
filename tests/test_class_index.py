@@ -5,12 +5,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
 from pytest_mock import MockerFixture
 
 from odoo_typing.addons import Addon
 from odoo_typing.records import Record
 from odoo_typing.registry import class_index
 from odoo_typing.registry.class_index import ClassFileIndex, module_of
+
+NOT_ROOT = pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
 
 
 class _Keeper:
@@ -107,3 +110,111 @@ def test_index_reads_names_the_scanner_evaluates(tmp_path: Path) -> None:
 
     assert index.files("shop.annotated") == (("shop", forms),)
     assert index.files("shop.const") == (("shop", forms),)
+
+
+def test_index_does_not_follow_symlink_loops(tmp_path: Path) -> None:
+    shop = _shop(tmp_path)
+    (shop.path / "models" / "up").symlink_to(shop.path)  # back to the addon's directory
+
+    index = ClassFileIndex([shop], None)
+
+    assert index.files("shop.order") == (("shop", shop.path / "models" / "order.py"),)
+
+
+def test_index_entry_that_cannot_be_stat_ed_skips_only_that_entry(tmp_path: Path) -> None:
+    shop = _shop(tmp_path)
+    models = shop.path / "models"
+    for number in range(20):
+        _write(models / f"part_{number}.py", f'_name = "shop.part{number}"\n')
+    (models / "loop").symlink_to("loop")  # a link to itself
+    (models / "loop.py").symlink_to("loop.py")
+
+    index = ClassFileIndex([shop], None)
+
+    assert {f"shop.part{number}" for number in range(20)} <= index.model_names()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_kept_index_reads_a_file_again_once_readable(tmp_path: Path) -> None:
+    shop = _shop(tmp_path)
+    keeper = _Keeper()
+    order = shop.path / "models" / "order.py"
+    order.chmod(0)
+    try:
+        unreadable = ClassFileIndex([shop], keeper).files("shop.order")
+    finally:
+        order.chmod(0o644)  # a permission fix: the same mtime and size
+
+    readable = ClassFileIndex([shop], keeper).files("shop.order")
+
+    assert unreadable == ()
+    assert readable == (("shop", order),)
+
+
+def test_index_walks_sibling_alias_symlinks(tmp_path: Path) -> None:
+    shop = _shop(tmp_path)
+    (shop.path / "aaa_compat").symlink_to(shop.path / "models")  # not a loop: walked too
+
+    index = ClassFileIndex([shop], None)
+
+    assert index.files("shop.order") == (
+        ("shop", shop.path / "aaa_compat" / "order.py"),
+        ("shop", shop.path / "models" / "order.py"),
+    )
+
+
+@NOT_ROOT
+def test_kept_index_lists_a_directory_again_once_listable(tmp_path: Path) -> None:
+    shop = _shop(tmp_path)
+    keeper = _Keeper()
+    models = shop.path / "models"
+    models.chmod(0o311)  # searched, but not listed
+    try:
+        locked = ClassFileIndex([shop], keeper).files("shop.order")
+    finally:
+        models.chmod(0o755)  # a permission fix: the same mtime and size
+
+    fixed = ClassFileIndex([shop], keeper).files("shop.order")
+
+    assert locked == ()
+    assert fixed == (("shop", models / "order.py"),)
+
+
+@NOT_ROOT
+def test_kept_index_still_unreadable_file_is_not_read_again(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    shop = _shop(tmp_path)
+    keeper = _Keeper()
+    order = shop.path / "models" / "order.py"
+    order.chmod(0)
+    try:
+        ClassFileIndex([shop], keeper).model_names()
+        read = mocker.spy(class_index, "read_source")
+        index = ClassFileIndex([shop], keeper)
+        index.model_names()
+    finally:
+        order.chmod(0o644)
+
+    assert read.call_count == 0
+    assert index.changed() is True  # readable now
+
+
+@NOT_ROOT
+@pytest.mark.parametrize(("entry", "mode"), [("models", 0o311), ("models/order.py", 0)])
+def test_index_changed_unreadable_entry_returns_false_until_readable(
+    tmp_path: Path, entry: str, mode: int
+) -> None:
+    shop = _shop(tmp_path)
+    path = shop.path / entry
+    before = path.stat().st_mode
+    path.chmod(mode)
+    try:
+        index = ClassFileIndex([shop], None)
+        index.model_names()
+        locked = index.changed()
+    finally:
+        path.chmod(before)
+
+    assert locked is False  # a daemon keeps its registry
+    assert index.changed() is True

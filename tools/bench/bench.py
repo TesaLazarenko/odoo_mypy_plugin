@@ -50,17 +50,14 @@ __all__ = [
     "parse_errors",
 ]
 
-SCRATCH = Path(
-    "/tmp/claude-1000/-home-whoami-odoo-typing/b1f32af2-e055-42a6-9b2e-eb618a6e734f/scratchpad"
-)
-DEFAULT_ODOO_ROOT = SCRATCH / "smoke" / "odoo_root"
-DEFAULT_BENCH_DIR = SCRATCH / "bench"
 DEFAULT_ODOO_VERSION = 18
 NAMESPACE_ODOO_VERSION = 19  # first version whose odoo/ and odoo/addons/ are namespaces
 # tools/odoo/fetch.sh <version>.0 builds <cache>/<version>.0/root (its odoo/ is ODOO_PATH).
 FETCH_CACHE = Path(
     os.environ.get("ODOO_TYPING_ODOO_CACHE", Path.home() / ".cache/odoo-typing/odoo")
 )
+DEFAULT_ODOO_ROOT = FETCH_CACHE / f"{DEFAULT_ODOO_VERSION}.0" / "root"
+DEFAULT_BENCH_DIR = Path.home() / ".cache" / "odoo-typing" / "bench"
 DEFAULT_ADDONS = ("crm", "sale", "account", "website_sale", "project_sms", "sale_stock")
 # ``--profile``: the addons measured when ``--addons`` is not given.
 PROFILES = {
@@ -593,7 +590,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--odoo-version", type=int, default=DEFAULT_ODOO_VERSION, help="odoo_version to target"
     )
     parser.add_argument(
-        "--odoo-root", type=Path, help="dir with odoo/ (default: per version, see fetched_root)"
+        "--odoo-root",
+        type=Path,
+        help=f"dir with odoo/ (default: what fetch.sh N.0 builds, {DEFAULT_ODOO_ROOT} for 18)",
     )
     parser.add_argument(
         "--bench-dir",
@@ -619,9 +618,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         args.addons = project_addons(args.project) if args.project else list(PROFILES[args.profile])
     version = args.odoo_version
     if args.odoo_root is None:
-        args.odoo_root = (
-            DEFAULT_ODOO_ROOT if version == DEFAULT_ODOO_VERSION else fetched_root(version)
-        )
+        args.odoo_root = fetched_root(version)
     if version != DEFAULT_ODOO_VERSION:
         # Each version has its own baseline and labels; 18 keeps the original layout.
         args.bench_dir = args.bench_dir / f"odoo-{version}"

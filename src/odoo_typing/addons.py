@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import ast
 import os
+import stat
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
@@ -18,17 +20,26 @@ from pathlib import Path
 __all__ = [
     "CORE_PREFIX",
     "MANIFEST_NAMES",
+    "UNREADABLE_MANIFEST",
     "Addon",
     "AddonIndex",
     "LoadKey",
     "find_manifest",
+    "is_file",
+    "literal_manifest",
+    "may_be_addon",
     "read_depends",
+    "search_manifest",
 ]
 
 CORE_PREFIX = "odoo.addons.{}"  # how Odoo itself names every addon package
 # Same names and preference as odoo.modules.module.MANIFEST_NAMES.
 MANIFEST_NAMES = ("__manifest__.py", "__openerp__.py")
 BASE = "base"
+# What reading a manifest with ast.literal_eval raises for a file it cannot evaluate:
+# an unreadable file, a syntax error, a NUL or bad UTF-8 (ValueError), an unhashable key
+# (TypeError), an expression too deep for the parser (MemoryError, RecursionError).
+UNREADABLE_MANIFEST = (OSError, SyntaxError, ValueError, TypeError, MemoryError, RecursionError)
 
 LoadKey = tuple[int, str]
 
@@ -53,13 +64,71 @@ class Addon:
     depends: tuple[str, ...]
 
 
+def may_be_addon(name: str) -> bool:
+    """Whether an entry of an addons root may be an addon, judging by its name.
+
+    Not a dot directory (``.git``, ``.idea``: tools write in them all the time) nor
+    ``__pycache__``: ``odoo.addons.<name>`` could not import them.
+    """
+    return not name.startswith(".") and name != "__pycache__"
+
+
 def find_manifest(directory: Path) -> Path | None:
-    """Return the manifest file of an addon directory, like Odoo's ``module_manifest``."""
+    """Return the manifest file of an addon directory, like Odoo's ``module_manifest``.
+
+    A directory that cannot be read (``lost+found`` at the root of a volume) is no addon,
+    as for Odoo, whose ``os.path.isfile`` never raises.
+    """
+    return search_manifest(directory)[0]
+
+
+def search_manifest(directory: Path) -> tuple[Path | None, bool]:
+    """The manifest of an addon directory (:func:`find_manifest`), and whether it could look.
+
+    Returns:
+        The manifest, ``None`` if there is none; and ``False`` if the directory could not
+        be searched (no permission): it may hold a manifest all the same.
+    """
     for name in MANIFEST_NAMES:
         candidate = directory / name
-        if candidate.is_file():
-            return candidate
-    return None
+        kind = _file_kind(candidate)
+        if kind is None:
+            return None, False
+        if kind:
+            return candidate, True
+    return None, True
+
+
+def is_file(path: Path) -> bool:
+    """Whether a path is a file or a link to one (``False`` if it cannot tell)."""
+    return _file_kind(path) is True
+
+
+def _file_kind(path: Path) -> bool | None:
+    """Whether a path is a file or a link to one; ``None``: no permission to tell."""
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except PermissionError:  # in a directory that cannot be searched
+        return None
+    except (OSError, ValueError):  # missing, a symlink loop, a NUL in the path
+        return False
+
+
+def literal_manifest(text: str) -> object:
+    """The value of a manifest's text, read with ``ast.literal_eval`` (never executed).
+
+    Warnings of the compiler (an invalid escape sequence in a string) are not printed,
+    and are no errors under ``-W error``: what is read from a manifest is stored, and a
+    later run without the option would keep the error.
+
+    Raises:
+        SyntaxError: If the text is no literal (or ``ValueError``, ``TypeError``,
+            ``MemoryError``, ``RecursionError``: see :data:`UNREADABLE_MANIFEST`).
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return ast.literal_eval(text)
 
 
 def read_depends(manifest: Path) -> tuple[str, ...]:
@@ -74,8 +143,8 @@ def read_depends(manifest: Path) -> tuple[str, ...]:
     # Strict UTF-8 text on purpose (unlike Python sources): Odoo reads manifests the
     # same way (tools.file_open + ast.literal_eval), so a BOM manifest is broken there too.
     try:
-        data = ast.literal_eval(manifest.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError, ValueError, UnicodeDecodeError):
+        data = literal_manifest(manifest.read_text(encoding="utf-8"))
+    except UNREADABLE_MANIFEST:
         return ()
     if not isinstance(data, dict):
         return ()
@@ -132,10 +201,12 @@ class AddonIndex:
             self._add_root(root, prefix_template=custom_prefix, aliases=True)
 
     def _add_root(self, root: Path, prefix_template: str, aliases: bool) -> None:
-        if not root.is_dir():
+        try:
+            children = sorted(child for child in root.iterdir() if may_be_addon(child.name))
+        except OSError:  # missing, or it cannot be listed: no addons (see the stamps)
             return
         real_root = root.resolve()
-        for child in sorted(root.iterdir()):
+        for child in children:
             manifest = None if child.name in self.addons else find_manifest(child)
             if manifest is None:
                 continue

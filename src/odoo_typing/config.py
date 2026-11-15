@@ -35,7 +35,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from odoo_typing.addons import CORE_PREFIX, MANIFEST_NAMES, find_manifest
+from odoo_typing.addons import CORE_PREFIX, MANIFEST_NAMES, find_manifest, may_be_addon
 from odoo_typing.compat import SUPPORTED_VERSIONS
 
 __all__ = ["OVERLAY_MARKER", "ConfigError", "Settings", "default_scan_cache_dir", "load_settings"]
@@ -210,7 +210,7 @@ def _toml_table(path: Path) -> dict[str, object]:
     try:
         with path.open("rb") as handle:
             raw = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"cannot read {path}: {exc}") from exc
     tool = raw.get("tool", {})
     section = tool.get(SECTION, {}) if isinstance(tool, dict) else {}
@@ -241,12 +241,24 @@ def _odoo_path(value: object, base_dir: Path, mypy_path: Sequence[str]) -> Path:
     if value is None:
         path = _find_odoo(mypy_path)
     elif isinstance(value, str):
-        path = (base_dir / value).resolve()
+        path = _resolve(base_dir / value, "odoo_path")
     else:
         raise ConfigError("odoo_path must be a string")
     if not (path / "release.py").is_file():
         raise ConfigError(f"odoo_path {path} does not contain release.py")
     return path
+
+
+def _resolve(path: Path, option: str) -> Path:
+    """``path.resolve()``; a symlink loop is a configuration error.
+
+    Up to Python 3.12 ``Path.resolve`` raises ``RuntimeError`` on a loop (3.13 returns the
+    path, which then is no directory).
+    """
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ConfigError(f"{option} {path} cannot be resolved: {exc}") from exc
 
 
 def _scan_cache_dir(table: dict[str, object], base_dir: Path) -> Path | None:
@@ -293,7 +305,7 @@ def _overlay_root(value: object, base_dir: Path, required: bool) -> Path | None:
         return None
     if not isinstance(value, str):
         raise ConfigError("overlay_root must be a string")
-    path = (base_dir / value).resolve()
+    path = _resolve(base_dir / value, "overlay_root")
     if required and not (path / OVERLAY_MARKER).is_file():
         raise ConfigError(
             f"overlay_root {path} is not generated (no {OVERLAY_MARKER} file); "
@@ -305,7 +317,7 @@ def _overlay_root(value: object, base_dir: Path, required: bool) -> Path | None:
 def _addons_paths(value: object, base_dir: Path) -> tuple[Path, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ConfigError("addons_path must be a list of strings")
-    paths = tuple((base_dir / item).resolve() for item in value)
+    paths = tuple(_resolve(base_dir / item, "addons_path entry") for item in value)
     missing = [str(path) for path in paths if not path.is_dir()]
     if missing:
         raise ConfigError(f"addons_path entries are not directories: {', '.join(missing)}")
@@ -319,12 +331,13 @@ def _check_addons_dir(path: Path) -> None:
 
     Odoo 18 itself accepts such entries and then just finds no module there. For a
     type checker that is a silent failure: the files of the user's addons would
-    belong to no addon, and their models would be reported as unknown.
+    belong to no addon, and their models would be reported as unknown. A subdirectory
+    that cannot be read (``lost+found``) is just no addon (``find_manifest``).
     """
     try:
-        if any(find_manifest(child) for child in path.iterdir()):
+        if any(may_be_addon(child.name) and find_manifest(child) for child in path.iterdir()):
             return
-    except OSError as exc:
+    except OSError as exc:  # the entry itself cannot be listed
         raise ConfigError(f"cannot list addons_path entry {path}: {exc.strerror}") from exc
     if find_manifest(path):
         raise ConfigError(

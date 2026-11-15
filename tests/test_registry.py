@@ -14,6 +14,7 @@ from pytest_mock import MockerFixture
 from odoo_typing import addons as addons_module
 from odoo_typing.config import Settings
 from odoo_typing.registry import Registry
+from odoo_typing.registry import scans as registry_scans
 
 
 def _addon(root: Path, name: str, depends: list[str], files: Mapping[str, str | bytes]) -> None:
@@ -342,3 +343,24 @@ def test_log_access_base_model_is_off(tmp_path: Path) -> None:
     assert base is not None
 
     assert registry.log_access(base) is False
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_unreached_file_unreadable_is_parsed_once_readable(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    registry = _registry(tmp_path, {"refs": {"__init__.py": "", "tests/test_x.py": REFS}})
+    path = tmp_path / "addons" / "refs" / "tests" / "test_x.py"
+    path.chmod(0)
+    try:
+        locked = registry.referenced_models(path)
+        read = mocker.spy(registry_scans, "read_source")
+        again = registry.referenced_models(path)
+        reads = read.call_count
+    finally:
+        path.chmod(0o644)  # a permission fix: the same mtime and size
+
+    fixed = registry.referenced_models(path)  # the same registry, as in the daemon
+
+    assert (locked, again, reads) == (frozenset(), frozenset(), 0)
+    assert fixed == frozenset({"res.users"})

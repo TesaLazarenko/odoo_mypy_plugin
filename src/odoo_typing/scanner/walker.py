@@ -3,6 +3,11 @@
 Only files reachable through the addon's ``__init__.py`` imports are scanned. Imports
 run where they appear, also inside ``try``/``if`` blocks, which is the order in which
 Odoo registers the classes.
+
+The scan stamps (:mod:`odoo_typing.stamps`) every file and directory it reads or looks
+into, right before it does: the stored scan is valid while they are unchanged. One it
+cannot read or search is :data:`~odoo_typing.stamps.UNREADABLE`: the scan stays valid
+while it still cannot be, and is redone once it can (a permission fix keeps the mtime).
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ import ast
 from collections import ChainMap
 from dataclasses import dataclass, field
 from pathlib import Path
+from stat import S_ISREG
 
 from odoo_typing.addons import Addon, LoadKey, find_manifest
 from odoo_typing.guards import model_guards
@@ -30,26 +36,30 @@ from odoo_typing.scanner.evaluation import UNKNOWN, assign, class_attributes
 from odoo_typing.scanner.fields import declared_fields
 from odoo_typing.scanner.referenced import referenced_models
 from odoo_typing.scanner.results import AddonScan, Contribution, ModuleScan, SourceError
-from odoo_typing.scanner.syntax import parse_bytes, parse_source, read_source
+from odoo_typing.scanner.syntax import parse_bytes, read_source
+from odoo_typing.stamps import UNREADABLE, Stamps, stamp
 from odoo_typing.xmlids import scan_data
 
 __all__ = ["scan_addon", "scan_file_classes"]
 
 
-def scan_addon(addon: Addon, load_key: LoadKey) -> AddonScan:
+def scan_addon(addon: Addon, load_key: LoadKey, stamps: Stamps | None = None) -> AddonScan:
     """Scan all Python files of an addon that its ``__init__.py`` imports, and its data.
 
     Args:
         addon: Addon to scan.
         load_key: Position of the addon in Odoo's load order
             (:meth:`odoo_typing.addons.AddonIndex.load_key`).
+        stamps: Filled with the stamps of what the scan reads or looks into (the
+            manifest too), each taken before; a file that could not be read gets
+            :data:`~odoo_typing.stamps.UNREADABLE`.
 
     Returns:
         The scanned files, and the files that could not be parsed.
     """
-    walker = _ImportWalker(addon, load_key)
+    walker = _ImportWalker(addon, load_key, stamps)
     walker.visit_module(addon.module_prefix, addon.path)
-    data = scan_data(addon.name, addon.path, find_manifest(addon.path))
+    data = scan_data(addon.name, addon.path, find_manifest(addon.path), walker.stamps)
     return AddonScan(modules=tuple(walker.scans), errors=tuple(walker.errors), data=data)
 
 
@@ -61,10 +71,14 @@ def scan_file_classes(addon: Addon, path: Path) -> tuple[Contribution, ...]:
     whole addon would cost seconds. Without the other files of the addon, a model name
     or argument taken from another module's constant is unknown, and the classes'
     positions mean nothing. A file that cannot be parsed has no classes.
+
+    Raises:
+        SourceError: If the file cannot be read: its classes are not known.
     """
+    source = read_source(path)
     walker = _FileWalker(addon, (0, addon.name))
     try:
-        tree = parse_source(path)
+        tree = parse_bytes(source, path)
     except SourceError:
         return ()
     file = _File(module=addon.module_prefix, package=addon.module_prefix)
@@ -90,7 +104,8 @@ class _ImportWalker:
     at the import statement, before the importing module's later classes.
     """
 
-    def __init__(self, addon: Addon, load_key: LoadKey) -> None:
+    def __init__(self, addon: Addon, load_key: LoadKey, stamps: Stamps | None = None) -> None:
+        self.stamps: Stamps = {} if stamps is None else stamps  # see scan_addon
         self.addon = addon
         self.load_key = load_key
         self.scans: list[ModuleScan] = []
@@ -101,20 +116,54 @@ class _ImportWalker:
         # Absolute spellings of the addon's own package: Odoo's, and the one mypy uses.
         self._roots = {f"odoo.addons.{addon.name}", addon.module_prefix}
 
+    def look(self, path: Path) -> None:
+        """Stamp a file or directory before it is read or looked into (the first time).
+
+        A missing one is not stamped: creating it changes the stamp of its directory,
+        which was looked into before.
+        """
+        key = str(path)
+        if key not in self.stamps and (current := stamp(path)) is not None:
+            self.stamps[key] = current
+
     def visit_module(self, module: str, base: Path) -> None:
         """Execute a module or package of the addon, the first time it is imported."""
+        if base != self.addon.path:  # never the addons root: any new addon changes it
+            self.look(base.parent)  # where ``base.py`` and ``base/`` are looked up
+        self.look(base)  # a package directory, also one without ``__init__.py`` yet
         init = base / "__init__.py"
-        if init.is_file():
+        if self._is_file(init):
             self._visit(init, module, package=module)
         else:
             self._visit(base.with_suffix(".py"), module, package=module.rpartition(".")[0])
 
+    def _is_file(self, path: Path) -> bool:
+        """Whether a file exists; one in a directory that cannot be searched is an error."""
+        try:
+            return S_ISREG(path.stat().st_mode)
+        except PermissionError as error:
+            if path not in self._seen:
+                self._seen.add(path)
+                self.errors.append(SourceError(path, error.strerror or str(error)))
+                self.stamps[str(path.parent)] = UNREADABLE  # until it can be searched
+            return False
+        except (OSError, ValueError):
+            return False
+
     def _visit(self, path: Path, module: str, package: str) -> None:
-        if path in self._seen or not path.is_file():
+        if path in self._seen:
+            return
+        self.look(path)
+        if not self._is_file(path):
             return
         self._seen.add(path)
         try:
             source = read_source(path)
+        except SourceError as error:
+            self.stamps[str(path)] = UNREADABLE  # until it can be read
+            self.errors.append(error)
+            return
+        try:
             tree = parse_bytes(source, path)
         except SourceError as error:
             self.errors.append(error)

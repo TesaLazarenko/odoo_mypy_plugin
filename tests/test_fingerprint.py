@@ -6,6 +6,7 @@ import dataclasses
 import os
 from pathlib import Path
 
+import pytest
 from pytest_mock import MockerFixture
 
 from odoo_typing import records
@@ -13,9 +14,11 @@ from odoo_typing.config import Settings
 from odoo_typing.fingerprint import Fingerprints
 from odoo_typing.records import RecordStore, load_index
 from odoo_typing.registry import Registry
+from odoo_typing.registry import scans as registry_scans
 from odoo_typing.stamps import index_stamps, stamp, unchanged
 
 MODEL = 'from odoo import models\n\nclass A(models.Model):\n    _name = "x.a"\n'
+NOT_ROOT = pytest.mark.skipif(os.geteuid() == 0, reason="root reads every file")
 
 
 def _odoo(tmp_path: Path) -> Settings:
@@ -69,11 +72,19 @@ def test_record_store_corrupt_record_loads_none(tmp_path: Path) -> None:
     assert store.load("r.json") is None
 
 
+def test_record_store_too_deeply_nested_record_loads_none(tmp_path: Path) -> None:
+    store = RecordStore(tmp_path)
+    (tmp_path / "r.json").write_text("[" * 200_000 + "]" * 200_000)
+
+    assert store.load("r.json") is None
+
+
 def test_record_store_without_directory_keeps_nothing(tmp_path: Path) -> None:
     store = RecordStore.for_cache_dir(os.devnull)
     store.save("r.json", {"a": 1})
 
     assert store.load("r.json") is None
+    assert RecordStore.shared(None) is None  # scan_cache_dir = ""
 
 
 def test_load_index_unchanged_roots_reuses_stored_index(
@@ -280,3 +291,175 @@ def test_module_data_file_with_values_annotation_follows_the_list_of_addons(
 
     assert after[0] != before[0]  # odoo.values keys may come from the new addon
     assert after[1] == before[1]
+
+
+def test_addon_digest_manifest_edited_after_index_read_is_not_kept(tmp_path: Path) -> None:
+    settings = _odoo(tmp_path)
+    extra = settings.odoo_path / "addons/extra"
+    extra.mkdir()
+    (extra / "__manifest__.py").write_text("{'depends': ['base']}")
+    (extra / "__init__.py").write_text("")
+    store = RecordStore(tmp_path / "cache")
+    prints = _fingerprints(settings, store)
+    prints.addon_digest("base")  # reads the addon index
+    _touch(settings.odoo_path / "addons/my_mod/__manifest__.py", "{'depends': ['base', 'extra']}")
+    prints.addon_digest("my_mod")  # from the index read before the edit
+
+    kept = _fingerprints(settings, store).addon_digest("my_mod")
+
+    assert kept == _fingerprints(settings, RecordStore(None)).addon_digest("my_mod")
+
+
+def test_addon_digest_addon_created_after_index_read_is_not_kept(tmp_path: Path) -> None:
+    settings = _odoo(tmp_path)
+    _touch(settings.odoo_path / "addons/my_mod/__manifest__.py", "{'depends': ['base', 'later']}")
+    store = RecordStore(tmp_path / "cache")
+    prints = _fingerprints(settings, store)
+    prints.addon_digest("base")  # reads the addon index
+    later = settings.odoo_path / "addons/later"
+    later.mkdir()
+    (later / "__manifest__.py").write_text("{'depends': ['base']}")
+    (later / "__init__.py").write_text("")
+    os.utime(later.parent, ns=(10**18, 10**18))  # a new stamp of the root even within the clock
+    prints.addon_digest("my_mod")  # from the index read before ``later`` existed
+
+    kept = _fingerprints(settings, store).addon_digest("my_mod")
+
+    assert kept == _fingerprints(settings, RecordStore(None)).addon_digest("my_mod")
+
+
+def _custom_module(tmp_path: Path, source: str) -> tuple[Settings, Path]:
+    """``_custom`` with ``cust/m.py`` (imported by the addon)."""
+    settings = _custom(tmp_path)
+    cust = tmp_path / "custom" / "cust"
+    (cust / "__init__.py").write_text("from . import m\n")
+    (cust / "m.py").write_text(source)
+    return settings, cust / "m.py"
+
+
+def test_module_data_file_edited_after_scan_is_not_kept(tmp_path: Path) -> None:
+    settings, path = _custom_module(tmp_path, "X = 1\n")
+    store = RecordStore(tmp_path / "cache")
+    prints = _fingerprints(settings, store)
+    prints.addon_digest("cust")  # scans the addon: m.py names no model yet
+    _touch(path, 'def f(env):\n    env["x.nowhere"]\n')
+    prints.module_data("cust.m", str(path))
+
+    kept = _fingerprints(settings, store).module_data("cust.m", str(path))
+
+    assert kept == _fingerprints(settings, RecordStore(None)).module_data("cust.m", str(path))
+
+
+def test_module_data_outside_part_follows_closure_change(tmp_path: Path) -> None:
+    settings, path = _custom_module(tmp_path, 'def f(env):\n    env["x.dep"]\n')
+    dep = tmp_path / "custom" / "dep"
+    dep.mkdir()
+    (dep / "__manifest__.py").write_text("{'depends': ['base']}")
+    (dep / "__init__.py").write_text("from . import models\n")
+    (dep / "models.py").write_text(MODEL.replace("x.a", "x.dep"))
+    manifest = tmp_path / "custom" / "cust" / "__manifest__.py"
+    _touch(manifest, "{'depends': ['my_mod', 'dep']}")
+    store = RecordStore(tmp_path / "cache")
+    _fingerprints(settings, store).module_data("cust.m", str(path))
+    _touch(manifest, "{'depends': ['my_mod']}")  # x.dep is now outside the closure
+
+    kept = _fingerprints(settings, store).module_data("cust.m", str(path))
+
+    assert kept == _fingerprints(settings, RecordStore(None)).module_data("cust.m", str(path))
+
+
+def test_module_data_odoo_module_follows_odoo_version(tmp_path: Path) -> None:
+    settings = _odoo(tmp_path)
+    path = str(settings.odoo_path / "models.py")
+    other = dataclasses.replace(settings, odoo_version=18)
+
+    data = _fingerprints(settings, RecordStore(None)).module_data("odoo.models", path)
+    changed = _fingerprints(other, RecordStore(None)).module_data("odoo.models", path)
+
+    assert data is not None
+    assert changed is not None
+    assert data != changed
+
+
+def test_module_data_odoo_modules_of_symlinked_layouts_follow_odoo_version(
+    tmp_path: Path,
+) -> None:
+    settings = dataclasses.replace(_odoo(tmp_path), odoo_version=19)
+    odoo = settings.odoo_path
+    (odoo / "http.py").write_text("")
+    (tmp_path / "src" / "orm").mkdir(parents=True)
+    (tmp_path / "src" / "orm" / "models.py").write_text("")
+    (odoo / "orm").symlink_to(tmp_path / "src" / "orm")  # fetch.sh: a subpackage elsewhere
+    overlay = tmp_path / "overlay" / "odoo"  # odoo-typing-root: a directory of symlinks
+    overlay.mkdir(parents=True)
+    for entry in ("http.py", "orm"):
+        (overlay / entry).symlink_to(odoo / entry)
+    prints = _fingerprints(settings, RecordStore(None))
+
+    data = [
+        prints.module_data("odoo", str(overlay / "__init__.py")),
+        prints.module_data("odoo.http", str(overlay / "http.py")),
+        prints.module_data("odoo.orm.models", str(overlay / "orm" / "models.py")),
+        prints.module_data("odoo.orm.models", str(odoo / "orm" / "models.py")),
+        prints.module_data("odoo_helpers", str(tmp_path / "odoo_helpers.py")),
+    ]
+
+    assert data == [*["odoo_version=19"] * 4, None]
+
+
+@NOT_ROOT
+def test_registry_inputs_changed_unreadable_file_returns_false_until_readable(
+    tmp_path: Path,
+) -> None:
+    settings = _odoo(tmp_path)
+    models = settings.odoo_path / "addons/my_mod/models.py"
+    registry = Registry(settings)
+    models.chmod(0)
+    try:
+        registry.contribution("odoo.addons.my_mod.models.A")
+        locked = registry.inputs_changed()
+    finally:
+        models.chmod(0o644)  # a permission fix: the same mtime and size
+
+    assert locked is False  # a daemon keeps its registry
+    assert registry.inputs_changed() is True
+
+
+@NOT_ROOT
+def test_registry_inputs_changed_unsearchable_addon_returns_false_until_searchable(
+    tmp_path: Path,
+) -> None:
+    settings = _odoo(tmp_path)
+    addon = settings.odoo_path / "addons/my_mod"
+    registry = Registry(settings)
+    addon.chmod(0o600)  # listed, but its manifest cannot be looked up
+    try:
+        registry.addon_name_for_path(settings.odoo_path / "addons/base/models.py")
+        locked = registry.inputs_changed()
+    finally:
+        addon.chmod(0o755)
+
+    assert locked is False
+    assert registry.inputs_changed() is True
+
+
+@NOT_ROOT
+def test_addon_digest_still_unreadable_file_reuses_the_stored_records(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    settings = _odoo(tmp_path)
+    models = settings.odoo_path / "addons/my_mod/models.py"
+    store = RecordStore(tmp_path / "cache")
+    models.chmod(0)
+    try:
+        first = _fingerprints(settings, store).addon_digest("my_mod")
+        scan = mocker.spy(registry_scans, "scan_addon")
+        second = _fingerprints(settings, store).addon_digest("my_mod")
+    finally:
+        models.chmod(0o644)
+
+    fixed = _fingerprints(settings, store).addon_digest("my_mod")
+
+    assert scan.call_count == 1  # my_mod, once readable
+    assert second == first
+    assert fixed != first

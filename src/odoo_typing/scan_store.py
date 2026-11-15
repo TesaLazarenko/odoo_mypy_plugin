@@ -35,7 +35,7 @@ from odoo_typing.scanner import (
 from odoo_typing.stamps import Stamp, Stamps, unchanged
 from odoo_typing.xmlids import DataScan, XmlId
 
-__all__ = ["ScanStore", "dataclass_fields", "decode", "encode"]
+__all__ = ["DecodeError", "ScanStore", "dataclass_fields", "decode", "encode"]
 
 # The classes a scan is made of, by name (the only ones ``decode`` builds).
 CLASSES: Final[Mapping[str, type]] = {
@@ -95,22 +95,30 @@ def decode(value: object) -> object:
     """The scan value :func:`encode` gave ``value`` for.
 
     Raises:
-        DecodeError: If the value was not made by :func:`encode` (an older format).
+        DecodeError: If the value was not made by :func:`encode` (an older format, or a
+            record of the right version with another shape).
     """
+    try:
+        return _decode(value)
+    except DecodeError:
+        raise
+    # TypeError: an unhashable set member or key; RecursionError: nested too deeply.
+    except (TypeError, ValueError, RecursionError) as error:
+        raise DecodeError(f"{type(error).__name__}: {error}") from error
+
+
+def _decode(value: object) -> object:
     if isinstance(value, str):
         return sys.intern(value)  # names repeat in every scan: one object each
     if isinstance(value, list):
-        return [decode(item) for item in value]
+        return [_decode(item) for item in value]
     if not isinstance(value, dict):
         return value
     if "$" in value:
         cls = CLASSES.get(str(value["$"]))
         if cls is None:
             raise DecodeError(f"unknown class {value['$']!r}")
-        try:
-            return cls(**{key: decode(item) for key, item in value.items() if key != "$"})
-        except TypeError as error:
-            raise DecodeError(str(error)) from error
+        return cls(**{key: _decode(item) for key, item in value.items() if key != "$"})
     if len(value) != 1:
         raise DecodeError(f"unknown value {value!r}")
     tag, payload = next(iter(value.items()))
@@ -131,11 +139,13 @@ def _decode_tagged(tag: str, payload: object) -> object:
     if not isinstance(payload, list):
         raise DecodeError(f"unknown value {tag}: {payload!r}")
     if tag == "$tuple":
-        return tuple(decode(item) for item in payload)
+        return tuple(_decode(item) for item in payload)
     if tag == "$set":
-        return frozenset(decode(item) for item in payload)
+        return frozenset(_decode(item) for item in payload)
     if tag == "$dict":
-        return {decode(pair[0]): decode(pair[1]) for pair in payload if isinstance(pair, list)}
+        if not all(isinstance(pair, list) and len(pair) == 2 for pair in payload):
+            raise DecodeError(f"unknown value {tag}: {payload!r}")
+        return {_decode(key): _decode(item) for key, item in payload}
     if tag == "$error" and len(payload) == 2:
         return SourceError(Path(str(payload[0])), str(payload[1]))
     raise DecodeError(f"unknown tag {tag!r}")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import textwrap
+import warnings
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,31 @@ def test_parse_source_invalid_file_raises_source_error(
 def test_parse_source_missing_file_raises_source_error(tmp_path: Path) -> None:
     with pytest.raises(SourceError, match="No such file"):
         parse_source(tmp_path / "missing.py")
+
+
+def test_parse_source_invalid_escape_is_neither_printed_nor_an_error(tmp_path: Path) -> None:
+    path = tmp_path / "regex.py"
+    path.write_text('import re\n\nPATTERN = re.compile("\\d+")\n')
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("error")  # python -W error
+        tree = parse_source(path)
+
+    assert caught == []
+    assert isinstance(tree.body[-1], ast.Assign)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [b"x = " + b"-" * 200_000 + b"1\n", b"x = a" + b".b" * 200_000 + b"\n"],
+    ids=["parser-stack", "recursion"],
+)
+def test_parse_source_too_deeply_nested_raises_source_error(tmp_path: Path, source: bytes) -> None:
+    path = tmp_path / "deep.py"
+    path.write_bytes(source)
+
+    with pytest.raises(SourceError, match="too complex"):
+        parse_source(path)
 
 
 def test_referenced_models_subscript_of_env_alias_with_model_name_counts() -> None:

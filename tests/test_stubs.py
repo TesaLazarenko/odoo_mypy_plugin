@@ -6,10 +6,8 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from conftest import OdooNames, write_addon
-from mypy import api as mypy_api
+from conftest import OdooNames, run_mypy_in_process, write_addon
 
-from odoo_typing.compat import profile_for
 from odoo_typing.config import Settings
 from odoo_typing.stubs import _environment_stub, main, model_class_name, write_stubs
 
@@ -73,8 +71,6 @@ def test_environment_stub_adds_overloads_and_fixes_aliases() -> None:
 def test_stubs_give_an_editor_the_model_types(
     tmp_path: Path, odoo_path: Path, odoo_version: int, names: OdooNames
 ) -> None:
-    if profile_for(odoo_version) is None:
-        pytest.skip("no profile")
     write_addon(tmp_path / "addons" / "t_mod", ADDON)
     settings = Settings(
         odoo_path=odoo_path, addons_paths=(tmp_path / "addons",), odoo_version=odoo_version
@@ -93,7 +89,7 @@ def test_stubs_give_an_editor_the_model_types(
     config = tmp_path / "mypy.ini"
     config.write_text(f"[mypy]\nmypy_path = {editor}\n[mypy-odoo.*]\nfollow_imports = silent\n")
 
-    stdout, _, _ = mypy_api.run(
+    stdout, _, _ = run_mypy_in_process(
         [
             "--config-file",
             str(config),

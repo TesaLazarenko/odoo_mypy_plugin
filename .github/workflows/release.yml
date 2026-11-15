@@ -1,26 +1,78 @@
 # Publish to PyPI when a version tag is pushed, with PyPI trusted publishing (no API
-# token): configure the project on PyPI to trust this repository and workflow first.
+# token): configure the project on PyPI to trust this repository, this workflow and the
+# "pypi" environment first. Nothing is published unless the whole CI passes on the
+# tagged commit, the tag is the version in pyproject.toml (with a CHANGELOG.md
+# section), and the built wheel works installed on its own (tools/release/smoke.sh).
 name: Release
 
 on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.11.17"
+
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+      - name: The tag, pyproject.toml and CHANGELOG.md agree
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+              echo "::error::tag $GITHUB_REF_NAME, but pyproject.toml has version $version"
+              exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+              echo "::error::CHANGELOG.md has no section '## [$version]'"
+              exit 1
+          fi
       - run: uv build
+      - name: Check the distributions
+        run: uvx twine check --strict dist/*
+      - name: Pinned Odoo 19 commit
+        id: odoo
+        run: |
+          commit=$(awk '$1 == "19.0" { print $2 }' tools/odoo/commits.txt)
+          [[ -n "$commit" ]] || { echo "::error::no pin for 19.0 in tools/odoo/commits.txt"; exit 1; }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4  # CI saves it (same key, see ci.yml)
+        with:
+          path: ~/.cache/odoo-typing/odoo/19.0
+          key: odoo-19.0-${{ steps.odoo.outputs.commit }}-${{ hashFiles('tools/odoo/fetch.sh') }}
+          restore-keys: |
+            odoo-19.0-${{ steps.odoo.outputs.commit }}-
+            odoo-19.0-
+      - name: Install the wheel in a fresh environment and run mypy with it
+        run: |
+          odoo_path=$(tools/odoo/fetch.sh 19.0)
+          tools/release/smoke.sh dist/*.whl "$odoo_path" 19
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
 
   publish:
-    needs: build
-    runs-on: ubuntu-latest
+    needs: [ci, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     environment: pypi
     permissions:
       id-token: write  # trusted publishing
@@ -29,4 +81,6 @@ jobs:
         with:
           name: dist
           path: dist/
+      # TODO before the first release: pin this action to a full commit sha (with its
+      # version in a comment). release/v1 is a moving branch, and this job can publish.
       - uses: pypa/gh-action-pypi-publish@release/v1

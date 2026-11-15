@@ -43,9 +43,22 @@ Everything is lazy: manifests are read on the first question (a fully cached myp
 reads the stored index instead, see [Incremental mode](#incremental-mode)), and an addon
 is scanned only when a file whose `depends` closure contains it needs a model.
 
-Sources are parsed as bytes, so a UTF-8 BOM or a `# -*- coding: ... -*-` cookie works. A
-file that cannot be parsed is reported once on stderr
-(`odoo-typing: warning: cannot parse ...`), since its models are then missing.
+Sources are parsed as bytes, so a UTF-8 BOM or a `# -*- coding: ... -*-` cookie works.
+The compiler's warnings (an invalid escape sequence such as `"\d"`) are not printed, as
+mypy does not print them, and `-W error` does not make them errors; the same holds for
+manifests and string domains. A file that cannot be parsed is reported once on stderr,
+since its models are then missing:
+
+```text
+odoo-typing: warning: cannot parse addons/my_addon/models/x.py: invalid syntax (line 3); the Odoo models it defines are ignored
+```
+
+The reason is the syntax error, `Permission denied` for a file that cannot be read (and
+for `<dir>/__init__.py` when a package directory cannot be searched), or
+`too complex to parse (RecursionError)` (or `MemoryError`) for code nested too deeply
+for Python's parser. A file, manifest or directory that cannot be read is kept with a
+stamp that no file has (see [Incremental mode](#incremental-mode)), so it is read again
+once it can be.
 
 ## mypy hooks
 
@@ -116,6 +129,21 @@ file that cannot be parsed is reported once on stderr
   field is read, from the reading addon (or the record's own class, if the reading
   module does not load all the comodel's classes), so the result has every extension
   the reader sees. `Model.field` (read on the class) is the field itself.
+
+- **An exception in the plugin.** mypy calls `get_additional_deps` and
+  `report_config_data` outside the context in which it reports the crash of a hook: an
+  exception there ends mypy with an INTERNAL ERROR that points at mypy's issue tracker,
+  and without `--show-traceback` no message at all. So these two, and the check of the
+  addons for changes that comes first (it reads addons from disk), print one line and
+  raise the exception again; mypy's exit status (2) and traceback stay the same:
+
+  ```text
+  odoo-typing: internal error while finding the models odoo.addons.my_addon.models.x relies on: KeyError: 'x' (please report it to odoo-typing)
+  ```
+
+  The other two texts are `computing the cache data of <module>` and
+  `checking the addons for changes`. The hooks mypy asks for per name or expression
+  are not wrapped: mypy reports their crashes with the file and line it was checking.
 
 ## Annotations: `odoo.values` and `odoo.model`
 
@@ -226,16 +254,40 @@ file also depends on its addon's `depends` closure. So the plugin gives mypy, fo
 module in an addon (`report_config_data`), a digest of that closure: each addon's name,
 path, manifest `depends` and what its scan found (model classes, `_name` / `_inherit`,
 registration order, comodels, model names used in `env[...]`), plus the plugin's version.
+Odoo's own modules (`odoo`, `odoo.*`, not in an addon) get `odoo_version=<N>`, whichever
+layout mypy finds them through (the overlay root, a symlink, the package directory):
+the profile of `odoo_version` types some of their names (`odoo.http.request`, and on
+Odoo 19+ the relational field classes), so correcting the version checks them again.
+Other modules outside addons get no data.
 
 When a dependency gains an `_inherit` extension, a manifest changes `depends`, an
 extension module is deleted or moved, or `addons_path` changes, mypy checks the affected
 modules again instead of replaying stale errors. Editing a method body changes no
 digest: mypy's own dependency tracking handles it.
 
-The digests are kept in `<cache_dir>/odoo_typing/`, together with `stat` stamps (mtime
-and size) of the manifests, addons directories and scanned files they come from. A run
-in which nothing changed reads these small files and calls `stat` on the files they
-list, but parses nothing.
+mypy also keeps a snapshot of its plugins with its cache: the plugin module's hash and
+its `__version__`, which is a digest of the plugin's whole source. A new plugin version
+(an upgrade, or any edit of its source) therefore makes the next run a full cold run,
+the standard library and Odoo's own modules included (`plugins differ` in `mypy -v`).
+
+The digests are kept in `<cache_dir>/odoo_typing/<cache_tag>/`
+(`.mypy_cache/odoo_typing/cpython-312/`: one directory per interpreter, whose grammar
+the scans use), together with `stat` stamps (mtime and size) of the manifests, addons
+directories and scanned files they come from. Records of earlier versions, directly in
+`<cache_dir>/odoo_typing/`, are never read again and can be deleted.
+
+- Each stamp is taken right before its file is read or its directory listed, never
+  after: a file saved during a run then has a newer stamp than the recorded one, and is
+  read again on the next run.
+- Each addon's scan includes its manifest, whose `data` lists name the files of its XML
+  ids: any manifest edit, even of the version, scans that addon again.
+- A file, manifest or directory that cannot be read gets a stamp that no file has. What
+  was computed without it is kept while it still cannot be read; once it can be (a
+  `chmod` or `chown` changes neither its mtime nor its size), the next run reads it.
+  This holds for the scans, the data files, the class-file index and the addon index.
+
+A run in which nothing changed reads these small files and calls `stat` on the files
+they list, but parses nothing.
 
 **Limits:**
 
@@ -243,11 +295,12 @@ list, but parses nothing.
   addon makes mypy recheck every module of the addons that depend on it, not only the
   ones that use the changed model.
 - Whether an unknown name is reported as `odoo-model` or as `odoo-model-depends`
-  follows an addon *outside* the closure being added or removed: the cache entry of a
-  file of an `addons_path` addon that names such models depends on the list of addons
-  (not for Odoo's own addons, whose files often name optional models). It can still lag
-  when an existing outside addon starts or stops defining the model without a directory
-  change (only its file was edited), until the file is checked again.
+  depends on the addons *outside* the closure. The cache entry of a file of an
+  `addons_path` addon that names such models depends on the list of addons and on the
+  closure (not for Odoo's own addons, whose files often name optional models): an addon
+  added or removed anywhere, or a `depends` edit, checks the file again. It can still
+  lag when an existing outside addon starts or stops defining the model without a
+  directory change (only its file was edited), until the file is checked again.
 - Switching `overlay_root` on or off changes every addon's module names and invalidates
   the whole cache.
 
@@ -265,6 +318,12 @@ machine:
 - a path relative to the config file;
 - or `""` to keep the scans in mypy's cache only.
 
+The scans sit in `<scan_cache_dir>/<cache_tag>/` (`~/.cache/odoo-typing/scans/cpython-312/`),
+one directory per interpreter: a scan parses with the running Python's grammar, and a
+file that one Python version cannot parse may be fine for another. So each interpreter
+scans Odoo's addons once. Scans that earlier versions wrote directly in
+`scan_cache_dir` are never read again and can be deleted.
+
 A new mypy cache, another worktree or another project on the same Odoo then skips the
 scans of Odoo's addons (on the `small` benchmark profile, a cold run without the scans
 takes 20–26 % less time). A directory that cannot be written falls back to mypy's cache.
@@ -281,6 +340,34 @@ The daemon only rechecks the code that changed (and its dependents), so the new
 registry or settings show in what is checked again. After editing only a manifest or
 the `[tool.odoo_typing]` / `[odoo_typing]` settings, run `dmypy restart` to see their
 effect everywhere.
+
+A file that cannot be read does not make every update start over: the registry starts
+over on the first update after it can be read (a `chmod` or `chown`).
+
+The hooks that depend on a declared signature (the method, function and signature hooks
+for `odoo.domain.*` and `DomainType` parameters) are chosen again each time mypy loads a
+set of modules, that is on each update: the declaration may be in a file the registry
+does not read (an addon's `tests/`, a helper package), which changes without a new
+registry. The class and attribute hooks depend only on the registry and the profile,
+and are kept.
+
+**Deleting or renaming a module that defines model classes.** mypy records the
+dependencies the plugin adds to a module (the modules that define the models it uses)
+when it parses that module, and computes them again only when it parses that module
+again. A plugin can neither ask mypy to compute another module's dependencies again nor
+learn that a file was deleted. So after such a module is deleted, dmypy may report a
+spurious error, with no line number, in each file that used its models, until that file
+is edited or the daemon restarts:
+
+```text
+error: Cannot find implementation or library stub for module named "odoo.addons.my_base.models.extra"  [import-not-found]
+```
+
+When the deletion is the only change of an update, dmypy does not refresh the registry
+at all: the deleted classes (and, for example, the fields of a deleted extension) still
+count until the next update that changes a file. After deleting or renaming a module
+that defines model classes, run `dmypy restart`, or edit the files that use those
+models. A normal mypy run, with or without a cache, is not affected.
 
 **Checks that read fields of other modules.** A check of a domain, of `vals` or of a
 field path reads the fields of models that other modules define. The daemon reruns a
