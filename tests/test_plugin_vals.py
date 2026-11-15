@@ -515,3 +515,39 @@ def test_vals_built_in_a_variable_checked(run_mypy: RunMypy) -> None:
         '25: error: Odoo model "t.order" has no field "stat" (default_stat in with_context)',
         # 28: the key set after the call; 30: a loop variable
     ]
+
+
+BRANCHES = """
+from odoo import models
+
+class Line(models.Model):
+    _inherit = "t.line"
+
+    def make(self, kind: str):
+        orders = self.env["t.order"]
+        vals = {"name": "x"}
+        if kind == "a":
+            vals = {"email": "x"}  # a res.partner field
+            return self.env["res.partner"].create(vals)
+        else:
+            orders.create(vals)  # the dict of the other arm does not reach here
+        match kind:
+            case "b":
+                vals = {"email": "x"}
+                self.env["res.partner"].create(vals)
+            case {"vals": captured}:
+                orders.create(captured)
+            case _:
+                orders.create(vals)
+        orders.create({"nme": 1})
+        self.env[b"t.order"]
+"""
+
+
+def test_vals_of_another_arm_of_if_or_match_do_not_reach_the_call(run_mypy: RunMypy) -> None:
+    messages = _messages(run_mypy, BRANCHES)
+
+    assert [message for message in messages if "odoo-vals" in message] == [
+        '23: error: Odoo model "t.order" has no field "nme"; did you mean "name"?  [odoo-vals-key]',
+    ]
+    assert not any("odoo-model" in message for message in messages)  # b"..." is no name

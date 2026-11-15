@@ -35,6 +35,10 @@ Point the editor at the directory:
 The stubs are checked with mypy without the plugin (as an editor sees them); Pyright and
 PyCharm themselves are not part of the test suite.
 
+Live checking of unsaved buffers (mypy's `--shadow-file`, which some editor plugins
+pass) checks the buffer, but the plugin reads the addons from disk: models and fields
+typed and not saved yet are unknown until the file is saved.
+
 ## pre-commit
 
 The repository provides the hook `odoo-typing` (mypy with the plugin, on the whole

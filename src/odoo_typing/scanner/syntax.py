@@ -7,6 +7,7 @@ coding cookie is honoured.
 from __future__ import annotations
 
 import ast
+import sys
 import warnings
 from pathlib import Path
 
@@ -72,7 +73,11 @@ def parse_bytes(source: bytes, path: Path) -> ast.Module:
             warnings.simplefilter("ignore", DeprecationWarning)
             return ast.parse(source, filename=str(path))
     except SyntaxError as exc:
-        raise SourceError(path, f"{exc.msg} (line {exc.lineno})") from exc
+        # The grammar is the running Python's, which may be older than the code's
+        # (``--python-version 3.13`` checked by mypy on 3.12, a pre-commit environment).
+        running = f"{sys.version_info[0]}.{sys.version_info[1]}"
+        reason = f"{exc.msg} (line {exc.lineno}; read as Python {running})"
+        raise SourceError(path, reason) from exc
     except ValueError as exc:  # e.g. null bytes on older Python versions
         raise SourceError(path, str(exc)) from exc
     except (MemoryError, RecursionError) as exc:  # nested too deeply for the parser

@@ -452,3 +452,16 @@ def test_load_settings_pyproject_beside_ini_not_utf8_raises_config_error(tmp_pat
 
     with pytest.raises(ConfigError, match="cannot read"):
         load_settings(config)
+
+
+def test_scan_cache_dir_in_a_home_that_cannot_be_found_keeps_scans_in_mypy_cache(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # ``~nosuchuser`` here; in a container, ``~`` of a user without a passwd entry.
+    config = Path(_config(tmp_path, []))
+    config.write_text(config.read_text() + 'scan_cache_dir = "~nosuchuser-odoo-typing/scans"\n')
+
+    settings = load_settings(str(config))
+
+    assert settings.scan_cache_dir is None
+    assert "scan_cache_dir ~nosuchuser-odoo-typing/scans names a home" in capsys.readouterr().err

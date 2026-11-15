@@ -18,10 +18,13 @@ import mypy.build
 import mypy.checker
 import pytest
 from mypy.checker import CheckerScope, TypeChecker
+from mypy.checkexpr import ExpressionChecker
 from mypy.errors import Errors
 from mypy.messages import MessageBuilder
-from mypy.nodes import MypyFile, TypeInfo
+from mypy.nodes import LambdaExpr, MypyFile, TypeInfo
+from mypy.plugin import Plugin
 from mypy.semanal import SemanticAnalyzer
+from mypy.typeanal import TypeAnalyser
 from mypy.typestate import type_state
 from mypy.version import __version__ as mypy_version
 
@@ -39,6 +42,11 @@ METHODS: list[tuple[object, str, str]] = [
     (TypeInfo, "calculate_metaclass_type", "classes.py"),
     (type_state, "reset_all_subtype_caches_for", "classes.py"),
     (mypy.build, "take_module_snapshot", "plugin.py (__version__)"),
+    (TypeAnalyser, "try_analyze_special_unbound_type", "hooks/annotations.py"),
+    (ExpressionChecker, "accept", "hooks/vals.py, hooks/recordsets.py"),
+    (ExpressionChecker, "method_fullname", "plugin.py (_method_fullname: names of hooks)"),
+    (TypeInfo, "get_method", "plugin.py (_declared_signature)"),
+    (LambdaExpr, "expr", "hooks/domains.py"),
 ]
 ATTRIBUTES: list[tuple[object, str, str]] = [
     (TypeChecker, "scope", "hooks/models.py, hooks/field_definitions.py"),
@@ -53,6 +61,10 @@ ATTRIBUTES: list[tuple[object, str, str]] = [
     (Errors, "_watchers", "hooks/nodes.py (fail_unfiltered)"),
     (MessageBuilder, "errors", "hooks/nodes.py"),
     (TypeInfo, "special_alias", "classes.py"),
+    (TypeInfo, "self_type", "methods.py (_self_signature)"),
+    (TypeAnalyser, "api", "hooks/annotations.py (through getattr: odoo.* annotations)"),
+    (Plugin, "_modules", "plugin.py"),
+    (SemanticAnalyzer, "cur_mod_node", "hooks/models.py (errors_hidden)"),
 ]
 
 

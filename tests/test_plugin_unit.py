@@ -20,7 +20,7 @@ from odoo_typing.fingerprint import Fingerprints
 from odoo_typing.plugin import OdooPlugin, plugin
 from odoo_typing.records import source_digest
 from odoo_typing.registry import Registry
-from odoo_typing.startup import TESTED_MYPY
+from odoo_typing.startup import TESTED_MYPY, follow_imports_warning
 
 
 def test_plugin_init_fully_cached_run_reads_no_manifest(
@@ -284,3 +284,13 @@ def test_get_additional_deps_mypy_compile_error_is_not_reported(
         found.get_additional_deps(_module_file(tmp_path))
 
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(("follow", "warned"), [("skip", True), ("silent", False)])
+def test_follow_imports_skip_for_odoo_is_warned_about(follow: str, warned: bool) -> None:
+    options = Options()
+    options.per_module_options["odoo.*"] = {"follow_imports": follow}
+
+    warning = follow_imports_warning(options)
+
+    assert (warning is not None) == warned

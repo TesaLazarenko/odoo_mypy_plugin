@@ -136,3 +136,17 @@ def test_dependency_modules_with_overlay_uses_odoo_addons_names(tmp_path: Path) 
 
     assert "odoo.addons.my_mod.m" in modules
     assert not any(name.startswith("my_mod") for name in modules)
+
+
+def test_misnamed_module_outside_the_addon_is_another_module(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An addon named like a module mypy loads (``json``, ``logging``): the standard
+    # library's file of that name is not the addon's.
+    registry = Registry(_settings(tmp_path, overlay=True))
+    elsewhere = tmp_path / "stdlib" / "my_mod" / "m.py"
+
+    assert registry.misnamed("my_mod.m", str(elsewhere)) is False
+    assert capsys.readouterr().err == ""
+    addon_file = registry.addons.addons["my_mod"].path / "m.py"
+    assert registry.misnamed("my_mod.m", str(addon_file)) is True

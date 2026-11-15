@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import os
 import stat
+import sys
 import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -144,12 +145,18 @@ def read_depends(manifest: Path) -> tuple[str, ...]:
     # same way (tools.file_open + ast.literal_eval), so a BOM manifest is broken there too.
     try:
         data = literal_manifest(manifest.read_text(encoding="utf-8"))
+    except OSError:
+        return ()  # an unreadable file: its stamp makes the index read it again
     except UNREADABLE_MANIFEST:
-        return ()
-    if not isinstance(data, dict):
-        return ()
-    depends = data.get("depends", [])
+        data = None
+    depends = data.get("depends", []) if isinstance(data, dict) else None
     if not isinstance(depends, list | tuple):
+        # Odoo cannot load such a manifest either (it reads it with literal_eval).
+        print(
+            f"odoo-typing: warning: cannot read the depends of {manifest} (not a literal "
+            "dict with a list); the addon is checked as if it depended on nothing",
+            file=sys.stderr,
+        )
         return ()
     return tuple(item for item in depends if isinstance(item, str))
 
@@ -207,8 +214,18 @@ class AddonIndex:
             return
         real_root = root.resolve()
         for child in children:
-            manifest = None if child.name in self.addons else find_manifest(child)
+            manifest = find_manifest(child)
             if manifest is None:
+                continue
+            if child.name in self.addons:
+                first = self.addons[child.name].path
+                if first != child.resolve():
+                    print(
+                        f"odoo-typing: warning: addon {child.name} of {root} is not used: "
+                        f"{first} comes first on the addons path (as for Odoo), so the "
+                        "plugin does not check the files of this one as an addon",
+                        file=sys.stderr,
+                    )
                 continue
             addon = Addon(
                 name=child.name,

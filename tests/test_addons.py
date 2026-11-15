@@ -202,3 +202,32 @@ def test_read_depends_invalid_escape_is_read_under_w_error(tmp_path: Path) -> No
 
     assert caught == []
     assert depends == ("base", "sale")
+
+
+def test_read_depends_that_are_no_literal_list_are_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Odoo cannot load such a manifest either; the addon then checks as if it had none.
+    manifest = tmp_path / "__manifest__.py"
+    manifest.write_text("{'depends': [BASE]}")
+
+    assert read_depends(manifest) == ()
+    assert f"cannot read the depends of {manifest}" in capsys.readouterr().err
+
+
+def test_addon_index_addon_in_two_roots_reports_the_one_not_used(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    odoo = tmp_path / "odoo"
+    (odoo / "addons" / "base").mkdir(parents=True)
+    (odoo / "addons" / "base" / "__manifest__.py").write_text("{'depends': []}")
+    for root in ("first", "second"):
+        (tmp_path / root / "shop").mkdir(parents=True)
+        (tmp_path / root / "shop" / "__manifest__.py").write_text("{'depends': ['base']}")
+
+    index = AddonIndex(odoo, [tmp_path / "first", tmp_path / "second"])
+
+    assert index.addons["shop"].path == tmp_path / "first" / "shop"
+    err = capsys.readouterr().err
+    assert f"addon shop of {tmp_path / 'second'} is not used" in err
+    assert err.count("warning") == 1

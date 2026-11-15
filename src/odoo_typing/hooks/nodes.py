@@ -262,7 +262,11 @@ def literal_string(node: Expression, node_type: Type) -> StrExpr | None:
     proper = get_proper_type(node_type)
     if isinstance(proper, Instance) and proper.last_known_value is not None:
         proper = proper.last_known_value
-    if not isinstance(proper, LiteralType) or not isinstance(proper.value, str):
+    if (
+        not isinstance(proper, LiteralType)
+        or not isinstance(proper.value, str)
+        or proper.fallback.type.fullname != "builtins.str"  # mypy holds b"x" as "x" too
+    ):
         return None
     found = StrExpr(proper.value)
     found.set_line(node)

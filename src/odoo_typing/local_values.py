@@ -15,6 +15,7 @@ functions and lambdas are not looked into, nor calls inside other expressions.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from typing import Final, TypeAlias
 
@@ -29,9 +30,11 @@ from mypy.nodes import (
     IfStmt,
     IndexExpr,
     ListExpr,
+    MatchStmt,
     MemberExpr,
     NameExpr,
     OperatorAssignmentStmt,
+    RaiseStmt,
     ReturnStmt,
     Statement,
     SymbolNode,
@@ -39,6 +42,15 @@ from mypy.nodes import (
     TupleExpr,
     WhileStmt,
     WithStmt,
+)
+from mypy.patterns import (
+    AsPattern,
+    ClassPattern,
+    MappingPattern,
+    OrPattern,
+    Pattern,
+    SequencePattern,
+    StarredPattern,
 )
 
 __all__ = ["MAX_DEPTH", "Built", "Change", "LocalValues", "Path"]
@@ -111,6 +123,10 @@ NOTHING: Final = Built(None, 0, ())
 
 _Key: TypeAlias = SymbolNode | str
 
+# Statements of which one arm runs: a binding in another arm of one that holds the line
+# read does not reach it (``try`` handlers do follow a part of the body).
+EXCLUSIVE: Final = frozenset({"if", "match"})
+
 
 @dataclass(frozen=True, slots=True)
 class _Binding:
@@ -142,6 +158,8 @@ class LocalValues:
         collector.block(function.body)
         self._events = collector.events
         self._loops = tuple(collector.loops)
+        self._arms = tuple(collector.arms)
+        self._ending = frozenset(collector.ending)
         self.returns: tuple[ReturnStmt, ...] = tuple(collector.returns)
 
     def bindings(self, name: NameExpr) -> list[Expression | None]:
@@ -180,11 +198,18 @@ class LocalValues:
         events = self._events.get(_key(name), [])
         binding: _Binding | None = None
         changes: list[Change] = []
+        here = self._arms_at(line)
         for event in sorted(events, key=lambda event: event.line):
             if event.line >= line:
                 break
             if event.end >= line:
                 continue  # the statement that holds the name
+            if any(
+                here.get(key, arm) != arm or (key not in here and (key, arm) in self._ending)
+                for kind, key, arm in event.path
+                if kind in EXCLUSIVE
+            ):
+                continue  # another arm of an ``if`` / ``match``, or one that returns
             if isinstance(event, _Binding):
                 binding = event
                 changes = []
@@ -193,6 +218,10 @@ class LocalValues:
         if binding is None:
             return Built(None, 0, tuple(changes))
         return Built(binding.value, binding.line, tuple(changes), binding.path)
+
+    def _arms_at(self, line: int) -> dict[int, int]:
+        """The arm of each ``if`` / ``match`` statement whose arm holds a line."""
+        return {key: arm for key, arm, first, last in self._arms if first <= line <= last}
 
 
 def _key(name: NameExpr) -> _Key:
@@ -210,10 +239,18 @@ class _Collector:
         self.events: dict[_Key, list[_Binding | Change]] = {}
         self.returns: list[ReturnStmt] = []
         self.loops: list[tuple[int, int]] = []  # first and last line of each loop
+        # The arms of ``if`` / ``match`` statements: (statement, arm, first line, last line).
+        self.arms: list[tuple[int, int, int, int]] = []
+        self.ending: set[tuple[int, int]] = set()  # arms whose last statement returns or raises
         self._path: list[tuple[str, int, int]] = []
 
     def _within(self, kind: str, statement: Statement, arm: int, block: Block | None) -> None:
         """Collect a block of a compound statement, with the statement on the path."""
+        if kind in EXCLUSIVE and block is not None and block.body:
+            last = block.body[-1]
+            self.arms.append((id(statement), arm, block.body[0].line, last.end_line or last.line))
+            if isinstance(last, ReturnStmt | RaiseStmt):
+                self.ending.add((id(statement), arm))
         self._path.append((kind, id(statement), arm))
         self.block(block)
         self._path.pop()
@@ -254,6 +291,14 @@ class _Collector:
                 self._within("try", statement, arm, handler)
             self._within("try", statement, 0, statement.else_body)
             self.block(statement.finally_body)
+        elif isinstance(statement, MatchStmt):
+            # Its cases are alternatives, like the arms of an ``if``; the names a pattern
+            # captures (``case {"x": vals}``) get unknown values.
+            cases = zip(statement.patterns, statement.bodies, strict=True)
+            for arm, (pattern, body) in enumerate(cases):
+                for name in _captured(pattern):
+                    self._add(name, _Binding(None, pattern.line))
+                self._within("match", statement, arm, body)
         elif isinstance(statement, Block):
             self.block(statement)
 
@@ -301,3 +346,26 @@ class _Collector:
             names = tuple(call.arg_names)
             change = Change(callee.name, tuple(call.args), names, call.line, end)
             self._add(callee.expr, change)
+
+
+def _captured(pattern: Pattern) -> Iterator[NameExpr]:
+    """The names a ``case`` pattern binds (``case [x, *rest]``, ``case {"k": v} as d``)."""
+    if isinstance(pattern, AsPattern):
+        if pattern.name is not None:
+            yield pattern.name
+        if pattern.pattern is not None:
+            yield from _captured(pattern.pattern)
+    elif isinstance(pattern, StarredPattern):
+        if pattern.capture is not None:
+            yield pattern.capture
+    elif isinstance(pattern, OrPattern | SequencePattern):
+        for item in pattern.patterns:
+            yield from _captured(item)
+    elif isinstance(pattern, MappingPattern):
+        for item in pattern.values:
+            yield from _captured(item)
+        if pattern.rest is not None:
+            yield pattern.rest
+    elif isinstance(pattern, ClassPattern):
+        for item in (*pattern.positionals, *pattern.keyword_values):
+            yield from _captured(item)

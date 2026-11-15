@@ -18,7 +18,12 @@ import pytest
 from mypy import api as mypy_api
 
 from odoo_typing.compat import SUPPORTED_VERSIONS, OdooProfile, profile_for
+from odoo_typing.errors import RAISE_VARIABLE
 from odoo_typing.odoo_version import read_odoo_version
+
+# A hook that raises must fail the test, not fall back to mypy's result (also in the mypy
+# subprocesses, which inherit the environment).
+os.environ[RAISE_VARIABLE] = "1"
 
 FIND_ODOO = "import os, odoo; print(os.path.dirname(odoo.__file__))"
 

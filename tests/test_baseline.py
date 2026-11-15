@@ -43,7 +43,7 @@ def test_main_record_then_check(tmp_path: Path, capsys: pytest.CaptureFixture[st
     outputs = iter([(OUTPUT, "", 1), (OUTPUT, "", 1), (OUTPUT + OUTPUT.splitlines()[0], "", 1)])
 
     def run(args: list[str]) -> tuple[str, str, int]:
-        assert args == ["-p", "my"]
+        assert args[:2] == ["-p", "my"]  # then the output flags (OUTPUT_FLAGS)
         return next(outputs)
 
     assert main(["record", "--baseline", str(baseline), "--", "-p", "my"], run) == 0
@@ -57,3 +57,26 @@ def test_main_check_without_baseline_returns_2(tmp_path: Path) -> None:
     status = main(["check", "--baseline", str(tmp_path / "none.json")], lambda _: ("", "", 0))
 
     assert status == 2
+
+
+def test_main_runs_mypy_with_one_error_per_line(tmp_path: Path) -> None:
+    # ``pretty = true`` in the config wrapped messages at the terminal's width: the keys
+    # recorded in a wide window did not match those checked in a narrow one.
+    seen: list[list[str]] = []
+
+    def run(args: list[str]) -> tuple[str, str, int]:
+        seen.append(args)
+        return OUTPUT, "", 1
+
+    main(["record", "--baseline", str(tmp_path / "b.json"), "--", "-p", "x"], run=run)
+
+    assert seen[0][:2] == ["-p", "x"]
+    assert {"--no-pretty", "--show-error-codes", "--hide-error-context"} <= set(seen[0])
+
+
+def test_error_keys_of_a_windows_path() -> None:
+    lines = ['C:\\addons\\a\\models.py:10: error: Unknown Odoo model "x"  [odoo-model]']
+
+    assert error_keys(lines) == [
+        ('C:\\addons\\a\\models.py:odoo-model:Unknown Odoo model "x"', lines[0])
+    ]

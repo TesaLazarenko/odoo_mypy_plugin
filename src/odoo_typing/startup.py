@@ -20,6 +20,7 @@ from odoo_typing.registry import Registry
 
 __all__ = [
     "TESTED_MYPY",
+    "follow_imports_warning",
     "mypy_version_warning",
     "package_bases_warning",
     "profile_or_exit",
@@ -121,6 +122,21 @@ def python_version_warning_or_exit(
     return (
         f"odoo-typing: warning: Odoo {profile.version} uses Python {needed} syntax: set "
         f'python_version = "{needed}" in [tool.mypy] (mypy targets {target})'
+    )
+
+
+def follow_imports_warning(options: Options) -> str | None:
+    """Warning text if mypy skips Odoo's modules (``follow_imports = "skip"``).
+
+    The plugin then sees no ``BaseModel``, no field class and no ``Environment``: almost
+    every check stays silent, and mypy reports success. ``"silent"`` analyzes them
+    without showing their errors.
+    """
+    if options.clone_for_module("odoo.models").follow_imports != "skip":
+        return None
+    return (
+        'odoo-typing: warning: follow_imports = "skip" for odoo: the plugin cannot see '
+        'Odoo\'s classes, so it checks almost nothing; use "silent" instead'
     )
 
 

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 from conftest import OdooNames, RunMypy
 from pytest_mock import MockerFixture
 from test_harness import ENV_LOOKUP
 
+from odoo_typing.errors import RAISE_VARIABLE
+from odoo_typing.hooks.vals import ValsHooks
 from odoo_typing.plugin import OdooPlugin
 from odoo_typing.registry import scans as registry_scans
 
@@ -393,3 +396,41 @@ def test_inherit_from_utf8_bom_file_exposes_fields(run_mypy: RunMypy) -> None:
     )
 
     assert result.messages("user.py") == ['8: note: Revealed type is "int"']
+
+
+def test_hook_that_raises_falls_back_to_mypy_and_names_the_plugin(
+    run_mypy: RunMypy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without ODOO_TYPING_RAISE (which the test suite sets), a bug in a hook must not end
+    # the run with mypy's INTERNAL ERROR, nor hide the user's own errors.
+    monkeypatch.delenv(RAISE_VARIABLE)
+
+    def broken(*_args: object) -> NoReturn:
+        raise RuntimeError("seeded failure of a hook")
+
+    monkeypatch.setattr(ValsHooks, "check", broken)
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    def action(self) -> None:
+                        self.write({"nope": 1})
+                        self.env["t.thng"]
+                        1 + ""
+                """
+            }
+        }
+    )
+
+    messages = result.messages("models.py")
+    assert messages[0] == '9: error: Unknown Odoo model "t.thng"  [odoo-model]'
+    assert messages[1].startswith("10: error: Unsupported operand types")
+    assert "odoo-typing: internal error while running the hook of " in result.stderr
+    assert ".py:" in result.stderr  # where it first failed (a file of Odoo, here)
+    assert "RuntimeError: seeded failure of a hook" in result.stderr
+    assert result.stderr.count("seeded failure") == 1  # once per hook function and exception

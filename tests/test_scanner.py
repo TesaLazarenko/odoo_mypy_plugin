@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import ast
+import sys
 import textwrap
 import warnings
 from pathlib import Path
 
 import pytest
 
-from odoo_typing.scanner import SourceError, parse_source, referenced_models
+from odoo_typing.scanner import SourceError, parse_bytes, parse_source, referenced_models
 
 NESTED = """
     from odoo import fields, models
@@ -110,3 +111,14 @@ def test_referenced_models_subscript_of_env_alias_with_model_name_counts() -> No
     source = 'ENV["res.partner"]\nenvironment["sale.order.line"]\nvals["name"]\nrows["Not.Model"]\n'
 
     assert referenced_models(ast.parse(source)) == {"res.partner", "sale.order.line"}
+
+
+def test_parse_error_names_the_python_that_read_the_file(tmp_path: Path) -> None:
+    # The grammar is the running Python's: newer syntax checked with --python-version.
+    path = tmp_path / "models.py"
+
+    with pytest.raises(SourceError) as error:
+        parse_bytes(b"x = (\n", path)
+
+    running = f"{sys.version_info[0]}.{sys.version_info[1]}"
+    assert f"read as Python {running}" in error.value.reason

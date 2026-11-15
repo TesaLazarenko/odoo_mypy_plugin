@@ -27,7 +27,18 @@ from mypy import api as mypy_api
 __all__ = ["DEFAULT_BASELINE", "error_keys", "main", "new_errors"]
 
 DEFAULT_BASELINE: Final = Path("odoo-typing-baseline.json")
-ERROR: Final = re.compile(r"^(?P<path>[^:\n]+):(?P<line>\d+)(?::\d+)?: error: (?P<rest>.*)$")
+# The path may start with a drive (``C:\\addons\\x.py`` on Windows).
+ERROR: Final = re.compile(
+    r"^(?P<path>(?:[A-Za-z]:)?[^:\n]+):(?P<line>\d+)(?::\d+)?: error: (?P<rest>.*)$"
+)
+# One error per line, each with its code, whatever the config says (``pretty = true``
+# wraps a message at the terminal's width, so the keys would follow the window).
+OUTPUT_FLAGS: Final = (
+    "--no-pretty",
+    "--show-error-codes",
+    "--hide-error-context",
+    "--no-error-summary",
+)
 CODE: Final = re.compile(r"  \[(?P<code>[a-z0-9-]+)\]$")
 
 MypyRun = Callable[[list[str]], tuple[str, str, int]]
@@ -82,7 +93,7 @@ def main(argv: Sequence[str] | None = None, run: MypyRun = mypy_api.run) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     split = arguments.index("--") if "--" in arguments else len(arguments)
     args = parser.parse_args(arguments[:split])  # mypy's own arguments follow "--"
-    stdout, stderr, status = run(arguments[split + 1 :])
+    stdout, stderr, status = run([*arguments[split + 1 :], *OUTPUT_FLAGS])
     if status not in (0, 1):
         sys.stdout.write(stdout)
         sys.stderr.write(stderr)

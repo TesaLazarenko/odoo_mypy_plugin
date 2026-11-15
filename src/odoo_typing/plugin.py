@@ -61,6 +61,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
+from typing import TypeVar
 
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import Decorator, FuncDef, MypyFile, TypeInfo
@@ -76,7 +77,7 @@ from mypy.plugin import (
     Plugin,
     ReportConfigContext,
 )
-from mypy.types import FunctionLike, Type
+from mypy.types import AnyType, FunctionLike, Type, TypeOfAny
 
 from odoo_typing import records
 from odoo_typing.addons import Addon
@@ -89,7 +90,7 @@ from odoo_typing.annotations import (
 from odoo_typing.compat import profile_for
 from odoo_typing.config import ConfigError, Settings, load_settings
 from odoo_typing.domains import DOMAIN_METHODS, PARAMETER_DOMAIN_METHODS
-from odoo_typing.errors import report_internal_error
+from odoo_typing.errors import fail_soft, report_internal_error
 from odoo_typing.fingerprint import Fingerprints
 from odoo_typing.hooks.annotations import (
     DICT_GET,
@@ -135,6 +136,7 @@ from odoo_typing.scan_store import ScanStore
 from odoo_typing.scanner import LOG_ACCESS_USERS
 from odoo_typing.stamps import Stamps, stamp
 from odoo_typing.startup import (
+    follow_imports_warning,
     mypy_version_warning,
     package_bases_warning,
     profile_or_exit,
@@ -149,6 +151,9 @@ __all__ = ["ODOO_MODEL", "ODOO_MODEL_DEPENDS", "OdooPlugin", "plugin"]
 # ``__version__``, mypy.build.take_module_snapshot) is unchanged. The digest of the whole
 # package makes a change of any plugin file check everything again, also the modules
 # outside addons (Odoo's own), which report no config data.
+ContextT = TypeVar("ContextT")
+ResultT = TypeVar("ResultT")
+
 __version__ = records.source_digest()
 
 DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
@@ -182,6 +187,8 @@ class OdooPlugin(Plugin):
             print(warning, file=sys.stderr)
         if warning := package_bases_warning(profile, settings, options):
             print(warning, file=sys.stderr)
+        if warning := follow_imports_warning(options):
+            print(warning, file=sys.stderr)
         self._store = RecordStore.for_cache_dir(options.cache_dir)
         self._kept_index: dict[str, tuple[list[Addon], Stamps]] = {}
         self._kept_scans: dict[str, object] = {}
@@ -204,6 +211,13 @@ class OdooPlugin(Plugin):
             name: partial(annotations.annotated, name) for name in ANNOTATED_NAMES
         }
         self._type_hooks[TRIGGER_FULLNAME] = annotations.rewritten
+        self._type_hooks = {
+            name: fail_soft(hook, _any_type, f"the annotation {name}")
+            for name, hook in self._type_hooks.items()
+        }
+        self._after_class_body = fail_soft(
+            self._classes.after_class_body, _no_result, "the class hook of a model"
+        )
         self._rewritten: dict[str, MypyFile] = {}  # module -> the tree rewritten last
 
     def _new_registry(self, settings: Settings) -> Registry:
@@ -310,7 +324,7 @@ class OdooPlugin(Plugin):
         try:
             self._refresh_registry()
             registry = self._models.registry
-            if registry.misnamed(file.fullname):
+            if registry.misnamed(file.fullname, file.path):
                 return []  # never make mypy load the addon again under its configured name
             modules = set(registry.dependency_modules(file.fullname, file.path))
         except Exception as exc:
@@ -377,7 +391,9 @@ class OdooPlugin(Plugin):
         self._rewrite_module_of(fullname)
         found = self._hooks.mro
         if fullname not in found:
-            found[fullname] = self._find_customize_class_mro_hook(fullname)
+            found[fullname] = _soft(
+                self._find_customize_class_mro_hook(fullname), _no_result, f"the MRO of {fullname}"
+            )
         return found[fullname]
 
     def get_method_hook(self, fullname: str) -> Callable[[MethodContext], Type] | None:
@@ -385,7 +401,11 @@ class OdooPlugin(Plugin):
         found = self._hooks.method
         if fullname not in found:
             self._type_request()
-            found[fullname] = self._find_method_hook(self._method_fullname(fullname))
+            found[fullname] = _soft(
+                self._find_method_hook(self._method_fullname(fullname)),
+                _default_return,
+                f"the hook of {fullname}()",
+            )
         return found[fullname]
 
     def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
@@ -393,7 +413,9 @@ class OdooPlugin(Plugin):
         found = self._hooks.function
         if fullname not in found:
             self._type_request()
-            found[fullname] = self._find_function_hook(fullname)
+            found[fullname] = _soft(
+                self._find_function_hook(fullname), _default_return, f"the hook of {fullname}()"
+            )
         return found[fullname]
 
     def get_function_signature_hook(
@@ -409,7 +431,11 @@ class OdooPlugin(Plugin):
         found = self._hooks.signature
         if fullname not in found:
             self._type_request()
-            found[fullname] = self._find_method_signature_hook(self._method_fullname(fullname))
+            found[fullname] = _soft(
+                self._find_method_signature_hook(self._method_fullname(fullname)),
+                _default_signature,
+                f"the signature hook of {fullname}()",
+            )
         return found[fullname]
 
     def _method_fullname(self, fullname: str) -> str:
@@ -435,7 +461,9 @@ class OdooPlugin(Plugin):
         found = self._hooks.attribute
         if fullname not in found:
             self._type_request()
-            found[fullname] = self._find_attribute_hook(fullname)
+            found[fullname] = _soft(
+                self._find_attribute_hook(fullname), _default_attribute, f"the hook of {fullname}"
+            )
         return found[fullname]
 
     def _type_request(self) -> None:
@@ -466,7 +494,7 @@ class OdooPlugin(Plugin):
 
     def get_base_class_hook(self, fullname: str) -> Callable[[ClassDefContext], None] | None:
         """Relax model meta attributes such as ``_inherit``; add delegated fields."""
-        return self._classes.after_class_body
+        return self._after_class_body
 
     # -- type checking: env[...] and relational fields -------------------------------------
 
@@ -603,6 +631,35 @@ class OdooPlugin(Plugin):
             # Declared as ``Many2one[Any]``: the res.users records the reading addon sees.
             return partial(self._env.record, "res.users")
         return self._values.record_attribute if registry.contribution(owner) else None
+
+
+def _soft(
+    hook: Callable[[ContextT], ResultT] | None,
+    fallback: Callable[[ContextT], ResultT],
+    what: str,
+) -> Callable[[ContextT], ResultT] | None:
+    """:func:`~odoo_typing.errors.fail_soft` of a hook, if there is one."""
+    return fail_soft(hook, fallback, what) if hook is not None else None
+
+
+def _default_return(ctx: MethodContext | FunctionContext) -> Type:
+    return ctx.default_return_type
+
+
+def _default_signature(ctx: MethodSigContext) -> FunctionLike:
+    return ctx.default_signature
+
+
+def _default_attribute(ctx: AttributeContext) -> Type:
+    return ctx.default_attr_type
+
+
+def _any_type(_ctx: AnalyzeTypeContext) -> Type:
+    return AnyType(TypeOfAny.from_error)
+
+
+def _no_result(_ctx: ClassDefContext) -> None:
+    return None
 
 
 def _checked(check: Callable[[MethodContext], None], ctx: MethodContext) -> Type:

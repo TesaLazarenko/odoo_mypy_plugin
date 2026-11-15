@@ -32,6 +32,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 
 - Every check also runs where `self` is a type variable: in an unannotated `create` /
   `copy` override (typed `(self: Self) -> Self`), under `-> Self` and `self: T`.
+- A `vals` or domain variable assigned in another arm of the `if` / `match` the call is
+  in, or in an arm that returns, is not taken for its value; `match` statements are
+  followed like `if`.
 - Option `required_values`: required fields and `display_name` read without
   `| Literal[False]` (off by default: a new record reads `False`).
 - Fewer false errors: a key that only an addon outside the closure adds to a selection
@@ -144,6 +147,18 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   plugin adds.
 
 ### Robustness
+
+- A hook that raises no longer ends the run with mypy's INTERNAL ERROR: its result is
+  mypy's own there, and one line names the plugin, the file and the line
+  (`ODOO_TYPING_RAISE=1` raises, as the test suite does).
+- Warnings where checks would silently stop: `follow_imports = "skip"` for `odoo`, an
+  addon shadowed by one of the same name earlier on the addons path, a manifest whose
+  `depends` cannot be read. `scan_cache_dir = "~/..."` without a home keeps the scans in
+  mypy's cache instead of crashing.
+- `odoo-typing-baseline` runs mypy with one error per line (`--no-pretty`...), so a
+  baseline recorded in a wide terminal matches a check in a narrow one.
+- No false "analyzed twice" warning for an addon named like a module mypy loads
+  (`json`); `env[b"x"]` is no model name.
 
 - The plugin's records sit in a subdirectory per interpreter, since a scan parses with
   the running Python's grammar: `<cache_dir>/odoo_typing/<cache_tag>/`

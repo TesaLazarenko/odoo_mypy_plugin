@@ -650,8 +650,10 @@ With real recordset types, some plain mypy codes appear more often:
 
 - `vals` returned by a helper that is not annotated with
   [`odoo.values.*`](#annotated-helpers-odoovalues-and-odoomodel)
-  (`self._prepare_vals()`), or assigned in another branch than the last assignment
-  before the call (source order stands for the flow).
+  (`self._prepare_vals()`). A variable's value is its last assignment before the call
+  in source order, leaving out the other arms of an `if` / `match` the call is in and
+  the arms that end with `return` or `raise`; after an `if` without such an end, the
+  value of its last arm stands for all of them.
 - Domains returned by a helper or taken as a parameter without an
   [`odoo.domain.*` annotation](#annotated-domains-odoodomain), and string arguments of
   `mapped()` / `filtered()` known only at run time (not a literal or a `Final` /

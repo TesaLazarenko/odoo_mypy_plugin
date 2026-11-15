@@ -214,17 +214,21 @@ class ScannedAddons:
         self._models_of(found[0].name)
         return self._by_class.get(found[1])
 
-    def misnamed(self, module: str) -> bool:
+    def misnamed(self, module: str, path: str | None = None) -> bool:
         """Whether mypy names an addon's module in the spelling this configuration does not use.
 
         That happens when mypy is given an addon's real directory although the overlay
         root names it ``odoo.addons.<name>`` (or the reverse): the file is then likely
-        analyzed under both names. Warns once per addon.
+        analyzed under both names. Warns once per addon. A module of that name outside
+        the addon's directory (the standard library's ``json`` beside an addon ``json``)
+        is another module.
         """
         found = self.addons.resolve_module(module)
         if found is None or found[1] == module:
             return False
         addon = found[0]
+        if path is not None and not _inside(Path(path), addon.path):
+            return False
         if addon.name not in self._misnamed:
             self._misnamed.add(addon.name)
             _warn_misnamed(module, addon)
@@ -415,6 +419,14 @@ class _ClosureIds(Mapping[str, str]):
 
     def __len__(self) -> int:
         return sum(1 for _ in self)
+
+
+def _inside(path: Path, directory: Path) -> bool:
+    """Whether a file is in a directory (through symlinks too, as mypy may name it)."""
+    try:
+        return path.resolve().is_relative_to(directory.resolve())
+    except (OSError, RuntimeError):  # a symlink loop
+        return False
 
 
 def _warn_unparsable(error: SourceError) -> None:

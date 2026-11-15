@@ -30,6 +30,7 @@ import configparser
 import importlib.util
 import os
 import re
+import sys
 import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -277,7 +278,16 @@ def _scan_cache_dir(table: dict[str, object], base_dir: Path) -> Path | None:
         raise ConfigError("scan_cache_dir must be a string")
     if not value.strip():
         return None
-    return base_dir / Path(value).expanduser()
+    try:
+        expanded = Path(value).expanduser()
+    except RuntimeError:  # "~" without a home (a container user with no passwd entry)
+        print(
+            f"odoo-typing: warning: scan_cache_dir {value} names a home directory that "
+            "cannot be found; scans are kept in mypy's cache only",
+            file=sys.stderr,
+        )
+        return None
+    return base_dir / expanded
 
 
 def default_scan_cache_dir() -> Path | None:
