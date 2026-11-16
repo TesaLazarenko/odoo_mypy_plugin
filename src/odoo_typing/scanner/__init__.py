@@ -26,11 +26,13 @@ from odoo_typing.scanner.annotations import (
     AnnotationAlias,
     annotation_aliases,
 )
-from odoo_typing.scanner.fields import POSITIONAL_PARAMETERS
+from odoo_typing.scanner.field_classes import POSITIONAL, FieldKind, field_kind
+from odoo_typing.scanner.fields import POSITIONAL_PARAMETERS, unread_positional
 from odoo_typing.scanner.referenced import LOG_ACCESS_USERS, referenced_models
 from odoo_typing.scanner.results import (
     AddonScan,
     Contribution,
+    FieldClass,
     FieldInfo,
     ModuleScan,
     SourceError,
@@ -43,19 +45,24 @@ __all__ = [
     "KINDS",
     "LOG_ACCESS_USERS",
     "MODEL",
+    "POSITIONAL",
     "POSITIONAL_PARAMETERS",
     "VALUES",
     "AddonScan",
     "AnnotationAlias",
     "Contribution",
+    "FieldClass",
     "FieldInfo",
+    "FieldKind",
     "ModuleScan",
     "SourceError",
     "annotation_aliases",
+    "field_kind",
     "parse_bytes",
     "parse_source",
     "read_source",
     "referenced_models",
     "scan_addon",
     "scan_file_classes",
+    "unread_positional",
 ]

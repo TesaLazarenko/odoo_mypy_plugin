@@ -30,6 +30,18 @@ imports Odoo or touches a database. It mirrors Odoo 18's loading rules:
   `_inherit = _name` and f-strings of module constants are understood. Several
   `_inherit` entries without `_name` define a new model named after the class. A `_name`
   that cannot be computed statically (for example in a loop) is skipped.
+- **Fields** are the calls of field classes in a class body. The class is found the way
+  Python finds it, not by how the call is spelled: the scan follows what each name of
+  the file is bound to (`from odoo import fields`, `from odoo.fields import Char`,
+  `from .fields import BigInteger`, `Alias = BigInteger`) and what each class derives
+  from. Odoo's classes are the ones `odoo.fields` has; any other class is a field class
+  if one of its bases is, and its fields are fields of that Odoo class (`BigInteger` of
+  `Integer`). The scan of an addon cannot look into another addon, so it names a class
+  of another addon by its dotted name (`odoo.addons.queue_job.fields.JobSerialized`)
+  and records which of its own classes may be field classes; the registry links the
+  two when it reads the scans. A subclass that defines a `convert_to_*` method has
+  values of its own (they are not checked), one that defines `__init__` takes positional
+  arguments of its own (they are not read). A call of anything else is no field.
 - **Every model inherits `base` last**, like `_build_model` does, so methods that addons
   add with `_inherit = "base"` exist on `self` and on extensions of other models.
 - **A model's class chain** is built like Odoo's registry class (`_build_model`'s

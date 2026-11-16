@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 from collections import ChainMap
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from stat import S_ISREG
 
@@ -34,14 +35,23 @@ from odoo_typing.scanner.class_bodies import (
     model_name,
 )
 from odoo_typing.scanner.evaluation import UNKNOWN, assign, class_attributes
+from odoo_typing.scanner.field_classes import FieldKind, class_bases, field_kind, origin_of
 from odoo_typing.scanner.fields import declared_fields
 from odoo_typing.scanner.referenced import referenced_models
-from odoo_typing.scanner.results import AddonScan, Contribution, ModuleScan, SourceError
+from odoo_typing.scanner.results import (
+    AddonScan,
+    Contribution,
+    FieldClass,
+    ModuleScan,
+    SourceError,
+)
 from odoo_typing.scanner.syntax import parse_bytes, read_source
 from odoo_typing.stamps import UNREADABLE, Stamps, stamp
 from odoo_typing.xmlids import scan_data
 
 __all__ = ["scan_addon", "scan_file_classes"]
+
+ADDONS_PREFIX = "odoo.addons."
 
 
 def scan_addon(addon: Addon, load_key: LoadKey, stamps: Stamps | None = None) -> AddonScan:
@@ -95,6 +105,9 @@ class _File:
     package: str  # what relative imports are relative to
     names: dict[str, object] = field(default_factory=dict)  # module-level constants
     contributions: list[Contribution] = field(default_factory=list)
+    # What the module's names are bound to (see odoo_typing.scanner.field_classes).
+    origins: dict[str, str] = field(default_factory=dict)
+    classes: dict[str, FieldClass] = field(default_factory=dict)  # by class name
 
 
 class _ImportWalker:
@@ -114,6 +127,11 @@ class _ImportWalker:
         self._seen: set[Path] = set()
         self._classes: set[str] = set()
         self._names: dict[str, dict[str, object]] = {}  # module-level names of each module
+        self._origins: dict[str, dict[str, str]] = {}  # what each module's names are bound to
+        # The classes of the addon that may be field classes, by dotted name.
+        self._field_classes: dict[str, FieldClass] = {}
+        # Whether every class of the addon that a file can name was walked before it.
+        self._whole_addon = True
         # Absolute spellings of the addon's own package: Odoo's, and the one mypy uses.
         self._roots = {f"odoo.addons.{addon.name}", addon.module_prefix}
 
@@ -172,6 +190,7 @@ class _ImportWalker:
         nodes = index_nodes(tree)
         file = _File(module=module, package=package)
         self._names[module] = file.names
+        self._origins[module] = file.origins
         self._walk(tree.body, file)
         self.scans.append(
             ModuleScan(
@@ -181,8 +200,22 @@ class _ImportWalker:
                 referenced_models=frozen(referenced_models(tree, nodes)),
                 guards=model_guards(nodes),
                 annotations=annotation_aliases(source),
+                classes=self._exported_classes(file),
             )
         )
+
+    def _exported_classes(self, file: _File) -> tuple[FieldClass, ...]:
+        """The classes of a module that may be field classes, and those it re-exports.
+
+        A name the module imports from another module of the addon is exported as a
+        class whose base is the class it names: ``from odoo.addons.x.models import Big``
+        in another addon then finds what ``models/__init__.py`` imports from ``.fields``.
+        """
+        exported = dict(file.classes)
+        for name, origin in file.origins.items():
+            if name not in exported and origin in self._field_classes:
+                exported[name] = FieldClass(name, (origin,))
+        return tuple(exported.values())
 
     def _walk(self, body: list[ast.stmt], file: _File) -> None:
         for node in body:
@@ -193,8 +226,10 @@ class _ImportWalker:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     self._import(alias.name.split("."))
+                    self._bind_import(alias, file)
             elif isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
                 assign(node, file.names)
+                _bind_alias(node, file.origins)
             else:
                 for block in _executed_blocks(node):
                     self._walk(block, file)
@@ -205,13 +240,30 @@ class _ImportWalker:
         dotted += node.module.split(".") if node.module else []
         parts = self._inner_parts(dotted)
         if parts is None:
+            for alias in node.names:  # ``from odoo import fields``
+                if alias.name != "*":
+                    file.origins[alias.asname or alias.name] = ".".join([*dotted, alias.name])
             return
         self._import(dotted)
-        source = self._names.get(".".join([self.addon.module_prefix, *parts]), {})
+        module = ".".join([self.addon.module_prefix, *parts])
+        source = self._names.get(module, {})
+        origins = self._origins.get(module, {})
         for alias in node.names:
             self._import([*dotted, alias.name])  # runs only if it is a submodule
+            name = alias.asname or alias.name
             if alias.name in source:  # ``from .consts import STATES``: a known value
-                file.names[alias.asname or alias.name] = source[alias.name]
+                file.names[name] = source[alias.name]
+            if alias.name != "*":
+                # What the module binds the name to, or the name in it (a submodule).
+                file.origins[name] = origins.get(alias.name, f"{module}.{alias.name}")
+
+    def _bind_import(self, alias: ast.alias, file: _File) -> None:
+        """Bind what ``import a.b`` (the name ``a``) or ``import a.b as c`` names."""
+        if alias.asname is not None:
+            file.origins[alias.asname] = alias.name
+        else:
+            top = alias.name.partition(".")[0]
+            file.origins[top] = top
 
     def _import(self, dotted: list[str]) -> None:
         """Run ``import a.b.c`` if it names this addon: each package, then the module."""
@@ -235,7 +287,11 @@ class _ImportWalker:
         fullname = f"{file.module}.{node.name}"
         # A second definition under the same name (if/else alternatives) is not the
         # class mypy knows by that name; mypy keeps the first one.
-        if model is None or not attrs.get("_register", True) or fullname in self._classes:
+        if model is None or not attrs.get("_register", True):
+            self._add_field_class(node, fullname, file)
+            return
+        file.origins.pop(node.name, None)  # a model class is no field class
+        if fullname in self._classes:
             return
         self._classes.add(fullname)
         methods = defined_methods(node)
@@ -250,7 +306,9 @@ class _ImportWalker:
                 parents=as_names(attrs.get("_inherit")),
                 position=(*self.load_key, len(self._classes)),
                 comodels=declared_comodels(node),
-                fields=declared_fields(node, scope, frozenset(methods)),
+                fields=declared_fields(
+                    node, scope, frozenset(methods), partial(self._field_class_of, file)
+                ),
                 methods=methods,
                 delegates=delegated_models(node, inherits),
                 inherits=inherits_pairs(inherits),
@@ -259,12 +317,97 @@ class _ImportWalker:
             )
         )
 
+    def _add_field_class(self, node: ast.ClassDef, fullname: str, file: _File) -> None:
+        """Remember a class that is no model class, and what may make it a field class."""
+        if file.origins.get(node.name) == fullname:
+            return  # a second definition: the first one is the class of that name
+        file.origins[node.name] = fullname
+        found = class_bases(
+            node, partial(self._origin, file), self._field_classes, self._described_elsewhere
+        )
+        if found is not None:
+            self._field_classes[fullname] = file.classes[node.name] = found
+
+    def _origin(self, file: _File, node: ast.expr) -> str | None:
+        """The dotted name an expression names, this addon's package in the scan's spelling."""
+        origin = origin_of(node, file.origins)
+        if origin is None:
+            return None
+        parts = self._inner_parts(origin.split("."))
+        return ".".join([self.addon.module_prefix, *parts]) if parts is not None else origin
+
+    def _described_elsewhere(self, origin: str) -> bool:
+        """Whether a dotted name may be a class that a scan this one cannot see describes.
+
+        A class of another addon (addons import each other as ``odoo.addons.<name>``);
+        one of this addon only when its files are not all walked (:class:`_FileWalker`).
+        """
+        if origin.startswith(self.addon.module_prefix + "."):
+            return not self._whole_addon
+        return origin.startswith(ADDONS_PREFIX)
+
+    def _field_class_of(self, file: _File, call: ast.Call) -> FieldKind | str | None:
+        """The field class a call in a model's class body makes a field of.
+
+        Returns:
+            The kind of the class, if Odoo's classes and those of this addon tell it; the
+            dotted name of a class that only another scan can tell about; ``None`` if the
+            callee is not a field class.
+        """
+        origin = self._origin(file, call.func)
+        if origin is None:
+            return _unbound_fields_class(call.func)
+        kind = field_kind(origin, self._field_classes.get)
+        if kind is not None:
+            return kind
+        # A class of this addon that derives from another addon's, or a class of another.
+        elsewhere = origin in self._field_classes or self._described_elsewhere(origin)
+        return origin if elsewhere else None
+
 
 class _FileWalker(_ImportWalker):
-    """Walks one file's top-level statements without running its imports."""
+    """Walks one file's top-level statements without running its imports.
+
+    The classes of the addon's other files are then not known: a class of the addon that
+    a field is made of is left for the registry to link, like one of another addon.
+    """
+
+    def __init__(self, addon: Addon, load_key: LoadKey, stamps: Stamps | None = None) -> None:
+        super().__init__(addon, load_key, stamps)
+        self._whole_addon = False
 
     def _import(self, dotted: list[str]) -> None:
         return None
+
+
+def _unbound_fields_class(func: ast.expr) -> FieldKind | None:
+    """Odoo's class of ``fields.<Class>`` in a file that does not bind ``fields``.
+
+    A name the file gets from a star import (or a snippet without imports) is read as
+    Odoo's ``fields`` module.
+    """
+    if (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "fields"
+        and func.attr[:1].isupper()
+    ):
+        return FieldKind(func.attr, func.attr)
+    return None
+
+
+def _bind_alias(node: ast.stmt, origins: dict[str, str]) -> None:
+    """Follow ``Alias = Class`` (and forget what a rebound name was bound to)."""
+    if not isinstance(node, ast.Assign):
+        return
+    origin = origin_of(node.value, origins)
+    for target in node.targets:
+        if not isinstance(target, ast.Name):
+            continue
+        if origin is not None and isinstance(node.value, ast.Name | ast.Attribute):
+            origins[target.id] = origin
+        else:
+            origins.pop(target.id, None)
 
 
 def _executed_blocks(node: ast.stmt) -> list[list[ast.stmt]]:

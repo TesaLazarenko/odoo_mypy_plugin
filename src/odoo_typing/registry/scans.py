@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property, partial
 from pathlib import Path
 from typing import Protocol
@@ -20,16 +20,21 @@ from odoo_typing.guards import Guard, is_guarded, model_guards
 from odoo_typing.node_index import index_nodes
 from odoo_typing.records import Record
 from odoo_typing.scanner import (
+    POSITIONAL,
     AddonScan,
     AnnotationAlias,
     Contribution,
+    FieldClass,
+    FieldInfo,
     ModuleScan,
     SourceError,
     annotation_aliases,
+    field_kind,
     parse_bytes,
     read_source,
     referenced_models,
     scan_addon,
+    unread_positional,
 )
 from odoo_typing.stamps import UNREADABLE, Stamp, Stamps, matches, read_index, stamp, unchanged
 
@@ -117,6 +122,8 @@ class ScannedAddons:
         self._by_path: dict[Path, ModuleScan] = {}
         self._by_class: dict[str, Contribution] = {}
         self._by_model: dict[str, dict[str, list[Contribution]]] = {}
+        # The classes of each addon that may be field classes, by dotted name.
+        self._field_classes: dict[str, dict[str, FieldClass]] = {}
         self._unreached: dict[Path, _UnreachedFile] = {}  # files the addon scans miss
         self._xml_ids: dict[str, Mapping[str, str]] = {}  # of a closure (_ClosureIds)
         self._own_xml_ids: dict[str, Mapping[str, str]] = {}  # of one addon's data files
@@ -159,13 +166,67 @@ class ScannedAddons:
         """Scan an addon once; return its contributions by model name."""
         if addon_name not in self._by_model:
             models = self._by_model[addon_name] = {}
-            stored = self._load_scan(addon_name)
-            result = stored[0]
-            self._scan_results[addon_name] = stored
-            self._peeked.pop(addon_name, None)
-            for scan in result.modules:
-                self._index(scan, models)
+            for scan in self._read_scan(addon_name).modules:
+                self._index(self._linked(scan), models)
         return self._by_model[addon_name]
+
+    def _read_scan(self, addon_name: str) -> AddonScan:
+        """An addon's scan as it was made (its field classes not linked), read once."""
+        if addon_name not in self._scan_results:
+            self._scan_results[addon_name] = self._load_scan(addon_name)
+            self._peeked.pop(addon_name, None)
+        return self._scan_results[addon_name][0]
+
+    def _linked(self, scan: ModuleScan) -> ModuleScan:
+        """A module's scan with the fields of other addons' field classes resolved."""
+        if not any(_unlinked(item.fields) for item in scan.contributions):
+            return scan
+        return replace(scan, contributions=self.link_classes(scan.contributions))
+
+    def link_classes(self, classes: tuple[Contribution, ...]) -> tuple[Contribution, ...]:
+        """Model classes with the fields of other scans' field classes resolved.
+
+        The scan of an addon names a field class of another addon (or, for a file read
+        on its own, of another file) by its dotted name. Here the scan that describes
+        the class is read: the field gets the Odoo class that the class derives from,
+        and a name that is no field class after all is no field.
+        """
+        return tuple(
+            replace(item, fields=self._linked_fields(item.fields))
+            if _unlinked(item.fields)
+            else item
+            for item in classes
+        )
+
+    def _linked_fields(self, fields: tuple[FieldInfo, ...]) -> tuple[FieldInfo, ...]:
+        linked: list[FieldInfo] = []
+        for info in fields:
+            if "." not in info.field_type:
+                linked.append(info)
+                continue
+            kind = field_kind(info.field_type, self._field_class)
+            if kind is None:
+                continue  # not a field class: the name is no field
+            dynamic = info.dynamic
+            if POSITIONAL in dynamic:
+                dynamic = frozen((dynamic - {POSITIONAL}) | unread_positional(kind.base))
+            linked.append(replace(info, field_type=kind.field_type, dynamic=dynamic))
+        return tuple(linked)
+
+    def _field_class(self, origin: str) -> FieldClass | None:
+        """What an addon's scan says about the class of a dotted name, if it has it."""
+        found = self.addons.resolve_module(origin)
+        if found is None:
+            return None
+        addon, name = found
+        classes = self._field_classes.get(addon.name)
+        if classes is None:
+            classes = self._field_classes[addon.name] = {
+                f"{module.module}.{item.name}": item
+                for module in self._read_scan(addon.name).modules
+                for item in module.classes
+            }
+        return classes.get(name)
 
     def _load_scan(self, addon_name: str) -> tuple[AddonScan, Stamps]:
         """An addon's scan and stamps: stored, or scanned now (and stored).
@@ -419,6 +480,11 @@ class _ClosureIds(Mapping[str, str]):
 
     def __len__(self) -> int:
         return sum(1 for _ in self)
+
+
+def _unlinked(fields: tuple[FieldInfo, ...]) -> bool:
+    """Whether a field is of a class named by its dotted name (see ``link_classes``)."""
+    return any("." in info.field_type for info in fields)
 
 
 def _inside(path: Path, directory: Path) -> bool:

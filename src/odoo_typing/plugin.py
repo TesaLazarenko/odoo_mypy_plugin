@@ -144,6 +144,7 @@ from odoo_typing.startup import (
     settings_or_exit,
     stale_overlay_warning,
 )
+from odoo_typing.term_lists import is_term_list_method, term_list_signature
 
 __all__ = ["ODOO_MODEL", "ODOO_MODEL_DEPENDS", "OdooPlugin", "plugin"]
 
@@ -581,6 +582,8 @@ class OdooPlugin(Plugin):
             return partial(create_signature, profile.base_model, untyped=profile.untyped_fields)
         if is_command_id_method(fullname):
             return partial(command_id_signature, profile.new_id)
+        if is_term_list_method(fullname):
+            return term_list_signature
         domain_class = profile.domain_class  # Odoo 19+: DomainType parameters
         widen: Callable[[MethodSigContext], FunctionLike] | None = None
         if domain_class is not None and has_domain_type(

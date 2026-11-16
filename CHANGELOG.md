@@ -20,6 +20,12 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - Relational fields are typed with their comodel (also from `related=`, through chains of
   related fields); `Binary`,
   `Reference` and log-access fields get real types; option `literal_selection`.
+- A field is a call of a field class, however the file names the class: `fields.Char`,
+  `from odoo.fields import Char`, `from odoo import fields as f`, an alias, and the
+  subclasses that addons define (`class BigInteger(fields.Integer)`), also those of
+  another addon and those a package re-exports. A subclass is a field of the Odoo class
+  it derives from; one that defines a `convert_to_*` method has values of its own, which
+  are not checked, and one that defines `__init__` takes positional arguments of its own.
 - `env.ref("module.name")` is the record's model, from the XML ids of data files (also
   the ids `_update_xmlids` gives, whose model the data does not say).
 - `odoo.http.request` has the attributes addons set at run time (`request.website`,
@@ -88,6 +94,10 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   mixins and delegated models fit).
 - On Odoo 19+, a domain built in a variable goes to `search()` (and every parameter
   Odoo annotates `DomainType`) without a false `arg-type`.
+- A list of domain terms takes a term with another kind of value:
+  `domain = [("state", "=", "draft")]` followed by
+  `domain.append(("company_id", "in", companies.ids))` (also `insert`, `extend`, `+=`,
+  `+`, and an operator such as `"|"`) is no `arg-type` error.
 - `odoo-xmlid` / `odoo-xmlid-depends`: XML ids of `env.ref(...)`.
 
 ### Annotated helpers

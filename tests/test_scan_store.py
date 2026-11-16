@@ -22,7 +22,9 @@ NOT_ROOT = pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
 DATA = '<odoo><record id="thing" model="x.base"/></odoo>'
 RICH = (
     "from odoo import api, fields, models\n\nSTATES = [('a', 'A')]\n\n"
+    "class Big(fields.Integer):\n    pass\n\n"
     'class Thing(models.Model):\n    _name = "x.base"\n'
+    "    big = Big()\n"
     '    _inherits = {"x.other": "other_id"}\n'
     "    state = fields.Selection(STATES)\n"
     '    other_id = fields.Many2one("x.other", delegate=True)\n'
@@ -49,7 +51,8 @@ def test_encode_decode_round_trip_of_a_real_scan(tmp_path: Path) -> None:
 
     assert isinstance(decoded, AddonScan)
     assert (decoded.modules, decoded.data) == (scan.modules, scan.data)
-    assert scan.modules[0].guards and scan.data.xml_ids  # the round trip covers them
+    # The round trip covers them.
+    assert scan.modules[0].guards and scan.modules[0].classes and scan.data.xml_ids
     assert [(error.path, error.reason) for error in decoded.errors] == [
         (error.path, error.reason) for error in scan.errors
     ]

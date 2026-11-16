@@ -388,5 +388,6 @@ class AnnotatedModels(ModelFields):
             else:
                 if self._scans is not None:
                     self._scans.save_classes(path, current, stored)
-        self._file_classes[path] = (current, stored)
-        return stored
+        linked = self.link_classes(stored)  # the stored ones are as scanned
+        self._file_classes[path] = (current, linked)
+        return linked

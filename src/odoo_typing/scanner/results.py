@@ -9,7 +9,7 @@ from typing import Final
 from odoo_typing.guards import Guard
 from odoo_typing.xmlids import DataScan
 
-__all__ = ["AddonScan", "Contribution", "FieldInfo", "ModuleScan", "SourceError"]
+__all__ = ["AddonScan", "Contribution", "FieldClass", "FieldInfo", "ModuleScan", "SourceError"]
 
 EMPTY_DATA: Final = DataScan((), ())
 
@@ -25,7 +25,10 @@ class FieldInfo:
 
     Attributes:
         name: Field name.
-        field_type: Name of the field class (``Char``, ``Many2one``).
+        field_type: Name of the field class (``Char``, ``Many2one``). For a class of
+            another addon, which the scan of one addon cannot look at: its dotted name
+            (``odoo.addons.queue_job.fields.JobSerialized``), until the registry links
+            it (:mod:`odoo_typing.registry.scans`).
         comodel: ``comodel_name`` of a relational field.
         inverse_name: ``inverse_name`` of a ``One2many``.
         selection: Keys of a ``selection`` given as a list of pairs.
@@ -63,6 +66,31 @@ class FieldInfo:
     compute_sql: bool | None = None
     attachment: bool | None = None
     dynamic: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class FieldClass:
+    """A class that may be a field class: what it derives from.
+
+    See :mod:`odoo_typing.scanner.field_classes`. Also a name a module only imports
+    (``from .fields import BigInteger`` in a package's ``__init__``): its one base is
+    the class it names, so that an import from the package finds it.
+
+    Attributes:
+        name: Name of the class in its module.
+        bases: Dotted names of the classes it derives from: Odoo's
+            (``odoo.fields.Integer``) and those of other addons. The bases that classes
+            of its own addon have stand for these classes.
+        converts: Whether the class or one of its addon's bases defines a
+            ``convert_to_*`` method: its values are not those of the Odoo class.
+        arguments: Whether one of them defines ``__init__``: its positional arguments
+            are not those of the Odoo class.
+    """
+
+    name: str
+    bases: tuple[str, ...]
+    converts: bool = False
+    arguments: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +159,7 @@ class ModuleScan:
         guards: Lines where a model is checked to be installed (``odoo_typing.guards``).
         annotations: The ``odoo.values.*`` / ``odoo.model.*`` names the file uses, as
             ``(kind, alias)`` pairs (``odoo_typing.scanner.annotations``).
+        classes: The classes of the file that may be field classes.
     """
 
     module: str
@@ -144,6 +173,7 @@ class ModuleScan:
     annotations: frozenset[tuple[str, str]] = field(
         default=frozenset(), metadata={"fingerprint": False}
     )
+    classes: tuple[FieldClass, ...] = ()
 
 
 class SourceError(Exception):

@@ -295,3 +295,41 @@ def test_structure_is_checked_on_any_model(run_mypy: RunMypy) -> None:
         "[odoo-domain]",
         '11: error: Domain item of type "int" is not a term or an operator  [odoo-domain]',
     ]
+
+
+GROWING_DOMAINS = """
+from odoo import models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self, ids: list[int], flag: bool) -> None:
+        domain = [("name", "=", "x")]
+        domain.append(("partner_id", "in", ids))
+        domain.insert(0, ("date", "!=", False))
+        domain.extend([("state", "=", "draft"), ("line_ids", "in", ids)])
+        domain += [("partner_id", "=", 1)]
+        domain = domain + [("date", "=", False)]
+        if flag:
+            domain.insert(0, "|")
+        domain.append(("nmae", "=", 1))
+        self.search(domain)
+        domain.append(5)
+        pairs = [("a", "b")]
+        pairs.append(("a", 1))
+        triples = [(1, "b", "c")]
+        triples.append((1, "b", 2))
+"""
+
+
+def test_domains_list_of_terms_takes_terms_with_other_values(run_mypy: RunMypy) -> None:
+    messages = _messages(run_mypy, GROWING_DOMAINS)
+
+    # mypy infers list[tuple[str, str, str]] from the first term: a term with another
+    # kind of value is still a term, anything else is not.
+    assert [message.split(";")[0] for message in messages] == [
+        '16: error: Odoo model "t.order" has no field "nmae" in domain',
+        '18: error: Argument 1 to "append" of "list" has incompatible type "int"',
+        '20: error: Argument 1 to "append" of "list" has incompatible type "tuple[str, int]"',
+        '22: error: Argument 1 to "append" of "list" has incompatible type "tuple[int, str, int]"',
+    ]

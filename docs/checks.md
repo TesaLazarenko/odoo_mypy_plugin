@@ -265,7 +265,10 @@ added to it in place (`vals["k"] = v`, `vals.update(...)`, `vals.setdefault(...)
 - a plain `bool` is taken wherever `False` is, since `x = cond and value` and
   `min(..., default=False)` are typed `bool`;
 - `Boolean` (`bool(value)`), computed `Binary` fields that are not stored (widget data),
-  `Json`, `Properties` and custom field classes are not checked.
+  `Json` and `Properties` are not checked;
+- a field of a class that an addon defines (`class BigInteger(fields.Integer)`) is
+  checked as the Odoo class it derives from, unless the class or one of its bases
+  defines a `convert_to_*` method: its values are then its own, and not checked.
 
 ## Domains: `odoo-domain`
 
@@ -494,7 +497,10 @@ an error. So:
 | `Many2one` | `int \| NewId \| BaseModel \| tuple \| bool \| None` |
 | `One2many`, `Many2many` | `list \| tuple \| BaseModel \| bool \| None` (commands, ids, records) |
 | `Reference` | `str \| BaseModel \| bool \| None` |
-| `Boolean`, `Json`, `Properties`, a custom class, a computed `Binary` that is not stored | `Any` |
+| `Boolean`, `Json`, `Properties`, a class that converts values itself, a computed `Binary` that is not stored | `Any` |
+
+A field of a subclass that an addon defines takes what the Odoo class it derives from
+takes (`class BigInteger(fields.Integer)`: the `Integer` row).
 
 So a selection key that does not exist and records of the wrong comodel are not errors
 in these values: they are checked in the dict literals of `create()` / `write()`
