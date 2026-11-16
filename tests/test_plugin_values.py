@@ -218,6 +218,47 @@ def test_required_values_read_without_false(run_mypy: RunMypy) -> None:
     ]
 
 
+RELATED_REQUIRED = """
+from odoo import fields, models
+
+class Value(models.Model):
+    _name = "t.value"
+
+    name = fields.Char(required=True)
+    code = fields.Char()
+
+class Line(models.Model):
+    _name = "t.value.line"
+
+    value_id = fields.Many2one("t.value", required=True)
+    other_id = fields.Many2one("t.value")
+    name = fields.Char(related="value_id.name")
+    code = fields.Char(related="value_id.code")
+    other_name = fields.Char(related="other_id.name")
+    named = fields.Char(related="name")
+
+    def check(self) -> None:
+        reveal_type(self.name)
+        reveal_type(self.code)
+        reveal_type(self.other_name)
+        reveal_type(self.named)
+        reveal_type(self.read(["name", "code"])[0])
+"""
+
+
+def test_a_related_path_of_required_fields_reads_as_required(run_mypy: RunMypy) -> None:
+    """``ptav.name`` is related to ``product_attribute_value_id.name``, both required."""
+    messages = run_mypy({"my_mod": {"models.py": RELATED_REQUIRED}}).messages("models.py")
+
+    assert [message.partition('"')[2].rstrip('"') for message in messages] == [
+        "str",
+        "str | Literal[False]",  # the last field is not required
+        "str | Literal[False]",  # a hop is not required
+        "str",  # related to a related field of required ones
+        "TypedDict({'id': int, 'name': str, 'code': str | Literal[False]})",
+    ], messages
+
+
 FIELD_OBJECTS = """
 from odoo import fields, models
 

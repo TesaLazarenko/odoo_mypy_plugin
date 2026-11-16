@@ -37,6 +37,7 @@ from odoo_typing.classes import instance_of, receiver_type
 from odoo_typing.compat import OdooProfile
 from odoo_typing.hooks.models import Hooks
 from odoo_typing.hooks.nodes import record_type, type_checker
+from odoo_typing.model_fields import value_required
 from odoo_typing.references import resolve_path
 from odoo_typing.scanner import FieldInfo
 from odoo_typing.vals import RECORDS, VALUE_TYPES, stored, value_type_named
@@ -107,7 +108,7 @@ class FieldValueHooks(Hooks):
             return signature
         info = self._read_field(records, ctx)
         name = member.name if isinstance(member, MemberExpr) else None
-        if name != "display_name" and (info is None or info.required is not True):
+        if name != "display_name" and not self._value_required(info, records, ctx.api):
             return signature
         value = get_proper_type(signature.ret_type)
         if not isinstance(value, UnionType):
@@ -237,6 +238,16 @@ class FieldValueHooks(Hooks):
             return signature
         view = self._models.view_type(comodel, addon_name, ctx.api)
         return signature.copy_modified(ret_type=view) if isinstance(view, Instance) else signature
+
+    def _value_required(
+        self, info: FieldInfo | None, records: Instance, api: CheckerPluginInterface
+    ) -> bool:
+        """Whether a field read always has a value (:func:`value_required`)."""
+        model = self._models.model_of(records.type)
+        addon_name = self.registry.addon_name_for_path(api.path)
+        if info is None or model is None or addon_name is None:
+            return False
+        return value_required(info, model, self._fields_of(addon_name, api))
 
     def _read_field(self, records: Instance, ctx: MethodSigContext) -> FieldInfo | None:
         """The field read by ``record.name`` (``ctx.context``), as the reading addon sees it."""

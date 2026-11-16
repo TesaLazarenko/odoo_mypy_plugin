@@ -130,7 +130,8 @@ still reported as a typo.
 
 **`required_values`** (on by default) reads a field that is required (`required=True`,
 as the merged definitions of the model leave it, also a field delegated through
-`_inherits` from a required one), `display_name`, `create_date` and `write_date` as
+`_inherits` from a required one, and a `related=` path of required `Many2one` fields to a
+required field, such as `product.template.attribute.value.name`), `display_name`, `create_date` and `write_date` as
 their value type without `| Literal[False]`: `", ".join(records.mapped("name"))`, `Telegram(bot.token)`,
 `format_date(env, rec.date)` and `rows[0]["partner_id"][0]` of a `read()` then type-check. On the 37 core addons of the
 benchmark's `big` profile about half of the `... | Literal[False]` errors are of required

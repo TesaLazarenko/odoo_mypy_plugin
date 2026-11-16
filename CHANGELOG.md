@@ -207,7 +207,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   that only `+=` changes and an empty list whose later items are no `False` as written
   are not such variables: `label = self.name` then `label += " (x)"` is `str`.
   `read()` / `search_read()` give a required field's value without `False` too
-  (`account["company_id"][0]`).
+  (`account["company_id"][0]`). A `related=` path of required `Many2one` fields to a
+  required field reads as required (`ptav.name`, related to
+  `product_attribute_value_id.name`); Odoo copies `required` only through `_inherits`.
 - `env.cr` has the methods of a cursor (`execute`, `fetchall`, `dbname`): Odoo 18 declares
   it as `BaseCursor`, which has none of them.
 - A model of an addon outside the dependencies is not reported in code written for that

@@ -19,7 +19,7 @@ the classes of a model's view.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Final, TypeVar
 
@@ -37,9 +37,11 @@ __all__ = [
     "merge_keys",
     "service_definitions",
     "stored",
+    "value_required",
 ]
 
 ArgumentT = TypeVar("ArgumentT")
+MAX_RELATED: Final = 8  # nested related= paths followed by value_required
 # Field classes that subclass another field class (Odoo 18-20); a redefinition with a
 # subclass keeps the arguments of the earlier definitions.
 FIELD_PARENTS: Final = {"Image": "Binary", "Reference": "Selection", "Many2oneReference": "Integer"}
@@ -273,3 +275,30 @@ def stored(info: FieldInfo) -> bool:
     if info.store is not None:
         return info.store
     return info.compute is None and info.related is None and not info.dynamic & {"compute"}
+
+
+def value_required(
+    info: FieldInfo, model: str, fields_of: Callable[[str], Mapping[str, FieldInfo]], depth: int = 0
+) -> bool:
+    """Whether a field of a saved record always has a value: required, or related to one.
+
+    Odoo copies ``required`` only to the fields delegated through ``_inherits``. A
+    ``related=`` path whose hops are required ``Many2one`` fields and whose last field is
+    required (``product.template.attribute.value.name``, related to
+    ``product_attribute_value_id.name``) reads a value just as surely.
+    """
+    if info.required is not None or depth > MAX_RELATED:
+        return info.required is True
+    if not info.related or "related" in info.dynamic:
+        return False
+    current = model
+    hops = info.related.split(".")
+    for index, hop in enumerate(hops):
+        field = fields_of(current).get(hop)
+        if field is None or not value_required(field, current, fields_of, depth + 1):
+            return False
+        if index < len(hops) - 1:
+            if field.field_type != "Many2one" or not field.comodel or "comodel" in field.dynamic:
+                return False
+            current = field.comodel
+    return True
