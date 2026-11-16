@@ -185,3 +185,22 @@ def test_call_strings_are_the_whole_arguments_of_the_function_around_a_line() ->
     assert call_strings(tree, 10) == {"inner_only"}
     assert call_strings(tree, 14) == {"crm"}
     assert call_strings(tree, 16) == frozenset()
+
+
+def test_call_strings_include_the_tests_that_decide_a_line() -> None:
+    source = """
+    def check(self):
+        if self.modules.search([("name", "=", "website"), ("state", "=", "installed")]):
+            a = self.env["website"]
+        if kind == "sale":
+            b = 1
+        c = self.env["sale.order"]
+        if not self.modules.search([("name", "=", "stock")]):
+            return
+        d = self.env["stock.move"]
+    """
+    tree = ast.parse(textwrap.dedent(source))
+
+    assert call_strings(tree, 4) == {"website", "name", "=", "state", "installed"}
+    assert call_strings(tree, 7) == frozenset()
+    assert call_strings(tree, 10) == {"stock", "name", "="}

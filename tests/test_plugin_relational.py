@@ -455,3 +455,65 @@ def test_annotated_relational_fields_take_what_write_takes(run_mypy: RunMypy) ->
     assert messages[0].endswith(("[assignment]", "[odoo-vals-type]"))
     assert messages[1].endswith(("[assignment]", "[odoo-vals-type]"))
     assert messages[2].startswith('18: note: Revealed type is "')
+
+
+def test_records_of_a_view_with_fewer_classes_than_the_readers_are_any(run_mypy: RunMypy) -> None:
+    """``partner.user_ids`` in an addon that never names the users' model.
+
+    mypy loads the reader's classes of a model only for the models the file names; the
+    view of the record's own class misses what the reader's other dependencies add.
+    """
+    result = run_mypy(
+        {
+            "a_core": {
+                "models.py": """
+                from odoo import fields, models
+
+                class User(models.Model):
+                    _name = "t.user"
+
+                    login = fields.Char()
+
+                class Partner(models.Model):
+                    _name = "t.partner"
+
+                    user_ids = fields.One2many("t.user", "partner_id")
+                    name = fields.Char()
+                """
+            },
+            "a_ext": {
+                "depends": ["a_core"],
+                "models.py": """
+                from odoo import models
+
+                class User(models.Model):
+                    _inherit = "t.user"
+
+                    def notify(self) -> None:
+                        pass
+                """,
+            },
+            "a_use": {
+                "depends": ["a_ext"],
+                "models.py": """
+                from odoo import fields, models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    partner_id = fields.Many2one("t.partner")
+
+                    def action(self) -> None:
+                        self.partner_id.user_ids.notify()
+                        reveal_type(self.partner_id.name)
+                        self.partner_id.nope
+                """,
+            },
+        },
+        check=["a_use"],
+    )
+
+    messages = result.messages("a_use/models.py")
+    assert messages[0] == '11: note: Revealed type is "str | Literal[False]"'
+    assert len(messages) == 2, messages
+    assert 'has no attribute "nope"' in messages[1]

@@ -18,7 +18,7 @@ from mypy.nodes import Context, MypyFile, TypeInfo
 from mypy.options import Options
 from mypy.plugin import CheckerPluginInterface, SemanticAnalyzerPluginInterface
 from mypy.server.trigger import make_trigger, make_wildcard_trigger
-from mypy.types import AnyType, Instance, TypeOfAny
+from mypy.types import AnyType, Instance, Type, TypeOfAny
 
 # isort: split
 # After mypy.types: these modules import each other at import time.
@@ -224,27 +224,47 @@ class Models:
 
     def comodel_at_use_site(
         self, comodel: Instance, owner: TypeInfo | None, api: CheckerPluginInterface
-    ) -> Instance | None:
+    ) -> Type | None:
         """Resolve a field's comodel from the addon that reads the field.
 
         The reading addon's view is used if mypy loads all the comodel's classes in it
         with the reading module (:meth:`Registry.loaded_with`); otherwise the view of
         the record's own class, if they are loaded with that class's module.
+
+        A view that is not the reader's has fewer classes when an addon the reader
+        sees extends the model: ``partner.user_ids.notify_info()`` in an addon that
+        depends on ``web_notify`` and never names ``res.users`` read the users as
+        ``mail`` sees them, and the method was an unknown attribute. Such records are
+        ``Any``: their class as the reader sees it is not there to be checked.
+
+        Returns:
+            The records' type; ``None`` to keep the declared comodel class.
         """
         model = self.model_of(comodel.type)
         if model is None:
             return None
         module = type_checker(api).tree.fullname
-        views: list[tuple[str | None, str, str | None]] = [
-            (self.registry.addon_name_for_path(api.path), module, api.path)
-        ]
+        reader = self.registry.addon_name_for_path(api.path)
+        views: list[tuple[str | None, str, str | None]] = [(reader, module, api.path)]
         if owner is not None:
             views.append((self.addon_of_class(owner), owner.module_name, None))
         for addon_name, host, path in views:
             if addon_name is not None and self.registry.loaded_with(model, addon_name, host, path):
                 resolved = self.view_type(model, addon_name, api)
-                return resolved if isinstance(resolved, Instance) else None
-        return None
+                if isinstance(resolved, Instance):
+                    return resolved if self._sees_as(model, addon_name, reader) else _unchecked()
+                # Its classes are loaded but not all analyzed yet (mypy checks a file
+                # before a module of its own addon that it never names): the next view.
+        declared = self.addon_of_class(comodel.type)
+        return None if self._sees_as(model, declared, reader) else _unchecked()
+
+    def _sees_as(self, model: str, addon_name: str | None, reader: str | None) -> bool:
+        """Whether an addon sees the same classes of a model as the reading addon does."""
+        if reader is None or addon_name is None or addon_name == reader:
+            return True
+        mine = self.registry.view_class(model, reader)
+        other = self.registry.view_class(model, addon_name)
+        return mine is None or other is None or mine.chain == other.chain
 
     def addon_of_class(self, info: TypeInfo) -> str | None:
         """The addon whose view a model class has (its own, or a merged class's)."""
@@ -261,6 +281,11 @@ class Models:
             return origin[0]
         contribution = self.registry.contribution(info.fullname)
         return contribution.model if contribution else None
+
+
+def _unchecked() -> AnyType:
+    """Records whose class, as the reading addon sees it, mypy has not loaded."""
+    return AnyType(TypeOfAny.special_form)
 
 
 def fine_grained(options: Options) -> bool:

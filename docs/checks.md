@@ -33,7 +33,11 @@ plugin:
 - **`fields.Many2one("res.partner")`** is `Many2one[Partner]`, not `Need type annotation`.
 - **`self.partner_id`, `self.line_ids`** are the comodel's records, with the extensions
   the reading addon sees, not `Any`. So `self.x_score + self.name` is an error
-  (`Unsupported operand types for + ("int" and "str")`) instead of silence.
+  (`Unsupported operand types for + ("int" and "str")`) instead of silence. Where mypy
+  has not loaded the reader's classes of a comodel (a file reaches it through another
+  model and never names it: `partner.user_ids`) and the classes it has are fewer than
+  the reader sees, the records are `Any` rather than a class without the reader's own
+  extensions.
 - **`self.sudo()`, `.with_context(...)`, `.filtered(...)`, `.search([])`, `.copy()`**
   keep the receiver's model, also through unannotated overrides of `create`, `copy`,
   `search`...
@@ -196,8 +200,10 @@ A model is not reported (and its records are `Any`):
   `self.env["payment.provider"]`): only another addon can add it;
 - in a function that passes the name of the addon that defines the model to a call
   (`cls.ensure_installed("sale")`, `modules._get("sale").state == "installed"`, then
-  `cls.env["sale.order"]`). A name inside a domain or a comparison
-  (`("type", "=", "sale")`) does not count.
+  `cls.env["sale.order"]`), or names it in the test of an `if` the line is under
+  (`if modules.search([("name", "=", "sale"), ("state", "=", "installed")]):`, also
+  `if not ...: return` before the line). A name inside a domain or a comparison
+  anywhere else (`("type", "=", "sale")`) does not count.
 
 ## Field definitions and field names: `odoo-field-ref`
 

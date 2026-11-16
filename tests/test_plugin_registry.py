@@ -565,8 +565,16 @@ def test_models_in_code_for_an_addon_outside_depends_are_any(run_mypy: RunMypy) 
                         self.env["ee.only"]
 
                     def with_domain(self) -> None:
-                        if self.env["ir.module.module"].search([("name", "=", "t_base")]):
+                        installed = self.env["ir.module.module"].search([("name", "=", "t_base")])
+                        self.env["t.partner"]
+
+                    def with_test(self) -> None:
+                        modules = self.env["ir.module.module"]
+                        if modules.search([("name", "=", "t_base"), ("state", "=", "installed")]):
                             self.env["t.partner"]
+                        if not modules.search([("name", "=", "other")]):
+                            return
+                        self.env["t.partner"]
 
                     def with_state(self) -> None:
                         if self.env["ir.module.module"]._get("t_base").state == "installed":
@@ -590,6 +598,7 @@ def test_models_in_code_for_an_addon_outside_depends_are_any(run_mypy: RunMypy) 
         '21: note: Revealed type is "Any"',
         '22: error: Unknown Odoo model "ee.only"  [odoo-model]',
         f"26: {depends}",  # the name in a domain is no argument of a call
+        f"34: {depends}",  # ... nor is the test of an ``if`` about another addon
     ]
 
 

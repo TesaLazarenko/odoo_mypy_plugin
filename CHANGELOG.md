@@ -60,6 +60,11 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   (`__getattr__ = __getitem__`, Odoo 20's `TableSQL`) has that method as the hook; what
   a `__getattr__` declared to return a base class of its own class gives is `Any`
   (`table.order_id.partner_id`: each step is declared `-> SQL`, which has no attributes).
+- Records read through a model the file never names (`partner.user_ids`) are `Any` when
+  the only classes mypy has loaded for them are fewer than the reading addon sees: the
+  methods and fields its other dependencies add were unknown attributes.
+- The test of an `if` names the addon whose models the lines under it use
+  (`if modules.search([("name", "=", "website"), ("state", "=", "installed")]):`).
 - A field takes what reading it gives: on Odoo 20 a binary field reads as a
   `BinaryValue`, and `tag.image = product.image_1920` was an `odoo-vals-type` error.
 - A list of relational commands takes the plain tuples as well

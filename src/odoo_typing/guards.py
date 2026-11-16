@@ -39,7 +39,8 @@ Two more signs of it are read where such a model would be reported
 (:func:`guarded_fields`, :func:`call_strings`): the line is under the guard of a field
 that no model of the dependencies has, or the function passes the name of the addon that
 defines the model to a call (``self.ensure_installed("sale")``,
-``modules._get("sale").state``).
+``modules._get("sale").state``) or names it in the test of an ``if`` the line is under
+(``if modules.search([("name", "=", "sale"), ("state", "=", "installed")]):``).
 """
 
 from __future__ import annotations
@@ -143,10 +144,13 @@ def guarded_fields(guards: Iterable[Guard], line: int) -> frozenset[str]:
 
 
 def call_strings(tree: ast.AST, line: int) -> frozenset[str]:
-    """The strings the function around a line passes to calls as whole arguments.
+    """The strings by which the function around a line may name an addon it relies on.
 
-    ``cls.ensure_installed("sale")`` gives ``sale``; a string inside a list, a tuple or
-    a comparison (``("type", "=", "sale")``, ``journal.type == "sale"``) is no argument.
+    Those it passes to calls as whole arguments (``cls.ensure_installed("sale")`` gives
+    ``sale``), and every string in the test of an ``if`` that the line is under, or that
+    ends the function before it (``if not modules.search([("name", "=", "sale"), ...]):
+    return``). A string in a list, a tuple or a comparison anywhere else
+    (``("type", "=", "sale")``, ``journal.type == "sale"``) names nothing.
     """
     functions = [
         node
@@ -162,7 +166,21 @@ def call_strings(tree: ast.AST, line: int) -> frozenset[str]:
         if isinstance(node, ast.Call):
             arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
             found.update(name for name in map(_string, arguments) if name is not None)
+        elif isinstance(node, ast.If) and _decides(node, line):
+            found.update(
+                part.value
+                for part in ast.walk(node.test)
+                if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            )
     return frozenset(found)
+
+
+def _decides(test: ast.If, line: int) -> bool:
+    """Whether an ``if`` decides that a line runs: the line is in it, or it ends before."""
+    last = test.body[-1]
+    if test.body[0].lineno <= line <= (last.end_lineno or last.lineno):
+        return True
+    return isinstance(last, TERMINATORS) and (last.end_lineno or last.lineno) < line
 
 
 def model_guards(nodes: Iterable[ast.AST] | NodeIndex) -> tuple[Guard, ...]:
