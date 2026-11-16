@@ -13,9 +13,9 @@ it calls ``Field``, wherever they are defined: ``odoo.orm.fields_numeric.Integer
 is known as such (:meth:`SourceClasses.is_odoo_field`).
 
 What a module says is kept between runs with its file's stamp (in the scan store, a
-record per ``odoo`` package), so a later run parses only the modules that changed. The
-registry does not watch these files: a daemon notices a change of an addon's file, not of
-Odoo's own modules or of an installed library, until it starts again.
+record per ``odoo`` package), so a later run parses only the modules that changed; a
+long-lived registry (the daemon) starts over when one of them does
+(:meth:`SourceClasses.inputs_changed`).
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from typing import Final, Protocol
 
 from odoo_typing.records import Record
 from odoo_typing.scanner import FieldClass, SourceError, describe_source, parse_source
-from odoo_typing.stamps import stamp
+from odoo_typing.stamps import Stamps, stamp, unchanged
 
 __all__ = ["SourceClasses"]
 
@@ -94,6 +94,7 @@ class SourceClasses:
         self._key = f"sources-{digest}.json"
         self._kept: dict[str, object] | None = None  # the record's modules, once loaded
         self._changed = False
+        self._stamps: Stamps = {}  # of the files read so far
         self._sources: dict[str, _Source] = {}
         self._bound: dict[str, str] | None = None  # what odoo.fields binds -> its name there
         self._is_field: dict[str, bool] = {}  # names of odoo.fields, once asked
@@ -176,6 +177,10 @@ class SourceClasses:
             found = self._sources[module] = self._read(module)
         return found
 
+    def inputs_changed(self) -> bool:
+        """Whether a file read so far changed on disk since (see ``ScannedAddons``)."""
+        return not unchanged(self._stamps)
+
     def save(self) -> None:
         """Keep what the modules parsed in this run say, for the next one."""
         if self._changed and self._keeper is not None and self._kept is not None:
@@ -187,7 +192,7 @@ class SourceClasses:
         if located is None:
             return NO_SOURCE
         path, package = located
-        current = stamp(path)
+        current = self._stamps[str(path)] = stamp(path)
         kept = self._kept_modules().get(module)
         found = _decoded(kept, path, current)
         if found is None:
@@ -235,7 +240,7 @@ def _parsed(path: Path, module: str, package: str) -> _Source:
 
 def _encoded(source: _Source, path: Path, current: tuple[int, int] | None) -> list[object]:
     classes = {
-        name: [list(item.bases), item.converts, item.arguments]
+        name: [list(item.bases), item.converts, item.arguments, list(item.passes)]
         for name, item in source.classes.items()
     }
     return [
@@ -257,8 +262,14 @@ def _decoded(kept: object, path: Path, current: tuple[int, int] | None) -> _Sour
         return None
     try:
         found = {
-            str(name): FieldClass(str(name), tuple(map(str, bases)), bool(converts), bool(own))
-            for name, (bases, converts, own) in classes.items()
+            str(name): FieldClass(
+                str(name),
+                tuple(map(str, bases)),
+                bool(converts),
+                bool(own),
+                tuple(map(str, passes)),
+            )
+            for name, (bases, converts, own, passes) in classes.items()
         }
     except (TypeError, ValueError):
         return None

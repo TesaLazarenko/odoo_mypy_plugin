@@ -33,6 +33,7 @@ from odoo_typing.scanner.results import FieldClass
 from odoo_typing.scanner.syntax import RELATIONAL_FIELDS, executed_blocks
 
 __all__ = [
+    "POSITIONAL",
     "FieldKind",
     "Origin",
     "bind_assignment",
@@ -49,6 +50,7 @@ __all__ = [
 
 ODOO_FIELDS: Final = "odoo.fields."
 PARTIAL: Final = "functools.partial"
+POSITIONAL: Final = "*"  # in ``FieldClass.passes``: positional arguments
 CONVERSION_PREFIX: Final = "convert_to_"
 
 # The dotted name an expression of a file names, if the file binds it.
@@ -64,12 +66,15 @@ class FieldKind:
         base: The Odoo field class it is or derives from (``Integer``).
         converts: Whether it (or a base before the Odoo class) converts values itself.
         arguments: Whether it (or such a base) defines ``__init__``.
+        passes: The parameters that factories on the way pass to the class themselves
+            (see :class:`~odoo_typing.scanner.results.FieldClass`).
     """
 
     name: str
     base: str
     converts: bool = False
     arguments: bool = False
+    passes: frozenset[str] = frozenset()
 
     @property
     def field_type(self) -> str:
@@ -142,16 +147,20 @@ def factory_class(
 
     ``def money(**kwargs): return fields.Float(digits=(16, 2), **kwargs)`` makes fields
     of ``Float``. Only a function whose every ``return`` is a call of a name the file
-    binds; what the function itself passes to the class is not read, so the positional
-    arguments of its fields are not either.
+    binds. The values the function itself passes to the class are not read: the
+    parameters it passes are recorded, so that what they give is known to be unknown.
     """
     returned = [item.value for item in _returns(node.body)]
-    if not returned or not all(isinstance(value, ast.Call) for value in returned):
+    calls = [value for value in returned if isinstance(value, ast.Call)]
+    if not calls or len(calls) != len(returned):
         return None
-    called = [origin(value.func) for value in returned if isinstance(value, ast.Call)]
+    called = [origin(call.func) for call in calls]
     if None in called:
         return None
-    return _derived(node.name, called, known, linkable, converts=False, arguments=True)
+    passes = {name for call in calls for name in _passed(call, call.args)}
+    return _derived(
+        node.name, called, known, linkable, converts=False, arguments=True, passes=passes
+    )
 
 
 def partial_class(
@@ -164,7 +173,22 @@ def partial_class(
     """``name = functools.partial(<class>, ...)`` described as that class (a factory)."""
     if not isinstance(value, ast.Call) or not value.args or origin(value.func) != PARTIAL:
         return None
-    return _derived(name, [origin(value.args[0])], known, linkable, converts=False, arguments=True)
+    passes = set(_passed(value, value.args[1:]))
+    return _derived(
+        name,
+        [origin(value.args[0])],
+        known,
+        linkable,
+        converts=False,
+        arguments=True,
+        passes=passes,
+    )
+
+
+def _passed(call: ast.Call, positional: list[ast.expr]) -> list[str]:
+    """The parameters a call passes: its keywords, and ``*`` for positional arguments."""
+    names = [keyword.arg for keyword in call.keywords if keyword.arg is not None]
+    return [*names, POSITIONAL] if positional else names
 
 
 def _derived(
@@ -175,8 +199,10 @@ def _derived(
     *,
     converts: bool,
     arguments: bool,
+    passes: set[str] | None = None,
 ) -> FieldClass | None:
     bases: dict[str, None] = {}
+    passed = set(passes or ())
     for base in named:
         if base is None:
             continue
@@ -185,9 +211,12 @@ def _derived(
             bases.update(dict.fromkeys(inner.bases))
             converts = converts or inner.converts
             arguments = arguments or inner.arguments
+            passed.update(inner.passes)
         elif odoo_class(base) is not None or linkable(base):
             bases[base] = None
-    return FieldClass(name, tuple(bases), converts, arguments) if bases else None
+    if not bases:
+        return None
+    return FieldClass(name, tuple(bases), converts, arguments, tuple(sorted(passed)))
 
 
 def _returns(body: list[ast.stmt]) -> Iterator[ast.Return]:
@@ -227,6 +256,7 @@ def field_kind(
                 kind.base,
                 described.converts or kind.converts,
                 described.arguments or kind.arguments,
+                kind.passes | frozenset(described.passes),
             )
     return None
 

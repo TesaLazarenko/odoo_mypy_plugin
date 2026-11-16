@@ -53,6 +53,9 @@ class Mixin(Helper):
 def money(**kwargs):
     return fields.Float(digits=(16, 2), **kwargs)
 
+def partner(**kwargs):
+    return fields.Many2one("res.partner", required=True, **kwargs)
+
 def big(flag=False, **kwargs):
     if flag:
         return BigInteger(**kwargs)
@@ -71,6 +74,7 @@ from odoo import fields as odoo_fields, models
 from odoo.fields import Char, Date
 from . import f
 from .f import Amount, BigInteger, Bigger, Helper, Packed, Partner, Typed, big, money, text
+from .f import partner
 
 Alias = BigInteger
 
@@ -88,6 +92,8 @@ class Order(models.Model):
     typed = Typed("char", required=True)
     partner_id = Partner("res.partner")
     price = money(required=True)
+    owner_id = partner()
+    seller_id = partner(readonly=True, required=False)
     count = big()
     amount = Amount("Amount")
     label = text("x")
@@ -147,6 +153,13 @@ def test_scan_fields_factory_makes_fields_of_the_class_it_returns(tmp_path: Path
     assert fields["price"] == FieldInfo("price", "Float", required=True)
     assert fields["count"] == FieldInfo("count", "Integer")
     assert fields["amount"] == FieldInfo("amount", "Monetary")  # functools.partial
+    # What the factory passes itself is not read: these attributes are unknown, not unset.
+    assert fields["owner_id"] == FieldInfo(
+        "owner_id", "Many2one", dynamic=frozenset({"comodel", "required"})
+    )
+    assert fields["seller_id"] == FieldInfo(
+        "seller_id", "Many2one", readonly=True, required=False, dynamic=frozenset({"comodel"})
+    )
 
 
 def test_scan_fields_other_calls_are_no_fields(tmp_path: Path) -> None:
@@ -195,9 +208,10 @@ def test_scan_classes_field_classes_of_a_module_with_flattened_bases(tmp_path: P
         FieldClass("Partner", ("odoo.fields.Many2one",), converts=True),
         FieldClass("Lines", ("odoo.fields.One2many",)),
         FieldClass("State", ("odoo.fields.Selection",)),
-        FieldClass("money", ("odoo.fields.Float",), arguments=True),
+        FieldClass("money", ("odoo.fields.Float",), arguments=True, passes=("digits",)),
+        FieldClass("partner", ("odoo.fields.Many2one",), arguments=True, passes=("*", "required")),
         FieldClass("big", ("odoo.fields.Integer",), arguments=True),
-        FieldClass("Amount", ("odoo.fields.Monetary",), arguments=True),
+        FieldClass("Amount", ("odoo.fields.Monetary",), arguments=True, passes=("currency_field",)),
     )
     # A module exports the field classes it imports from its addon: a package's __init__.
     models = registry.module_scan("t_core.m")
@@ -465,10 +479,12 @@ def test_source_classes_are_kept_until_the_file_changes(
 
     assert kept == integer == FieldClass("Integer", ("odoo.fields.Integer",))
     assert parse.call_count == 0
+    assert not second.inputs_changed()
     numeric = odoo / "orm" / "fields_numeric.py"
     numeric.write_text(ORM_NUMERIC.replace("class Integer(Number)", "class Integer"))
     os.utime(numeric, ns=(1, 1))  # another stamp, whatever the clock's resolution
 
+    assert second.inputs_changed()  # a long-lived registry starts over
     third = SourceClasses(odoo, lambda module: None, keeper)
 
     assert third.describe("odoo.orm.fields_numeric.Integer") is None

@@ -165,6 +165,8 @@ class ScannedAddons:
             return True
         if not all(unchanged(stamps) for _, stamps in self._peeked.values()):
             return True
+        if self._sources.inputs_changed():
+            return True  # a module outside the addons that a field class was traced into
         return not all(unchanged(stamps) for _, stamps in self._scan_results.values())
 
     def _models_of(self, addon_name: str) -> dict[str, list[Contribution]]:

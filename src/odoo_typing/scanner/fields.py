@@ -16,7 +16,7 @@ from typing import Final
 
 from odoo_typing.frozen import frozen
 from odoo_typing.scanner.evaluation import UNKNOWN, evaluate
-from odoo_typing.scanner.field_classes import FieldKind
+from odoo_typing.scanner.field_classes import POSITIONAL, FieldKind
 from odoo_typing.scanner.results import FieldInfo, Positional, UnlinkedField
 from odoo_typing.scanner.syntax import single_target
 
@@ -46,6 +46,28 @@ POSITIONAL_ATTRIBUTES: Final = {
 
 
 FIELD_ATTRIBUTES: Final = tuple(item.name for item in dataclasses.fields(FieldInfo))
+# The attributes that arguments of a field call give, by the argument's name.
+ARGUMENT_ATTRIBUTES: Final = {
+    **{name: name for name in FIELD_ATTRIBUTES if name not in {"name", "field_type", "dynamic"}},
+    "comodel_name": "comodel",
+}
+
+
+def _passed_unknown(kind: FieldKind, values: Mapping[str, object]) -> set[str]:
+    """The attributes that a factory on the way to the class gives, with unknown values.
+
+    Not one the call gives a value itself (it then replaces the factory's).
+    """
+    found: set[str] = set()
+    for parameter in kind.passes:
+        if parameter == POSITIONAL:
+            found.update(_unread_positional(kind.base))
+        elif parameter in ARGUMENT_ATTRIBUTES:
+            found.add(ARGUMENT_ATTRIBUTES[parameter])
+    given = {name for name in found if values.get(name) is not None}
+    if values.get("selection_method") is not None:
+        given.add("selection")
+    return found - given
 
 
 def _unread_positional(field_type: str) -> frozenset[str]:
@@ -74,6 +96,7 @@ def linked_field(info: UnlinkedField, kind: FieldKind) -> FieldInfo:
             _take_positional(parameter, value, values, dynamic)
     elif info.positional:
         dynamic.update(_unread_positional(kind.base))
+    dynamic.update(_passed_unknown(kind, values))
     values["field_type"] = kind.field_type
     values["dynamic"] = frozen(dynamic)
     return FieldInfo(**values)
@@ -167,7 +190,7 @@ def _field_info(
         dynamic.add("comodel")
     positional = _positional(call, scope, methods) if isinstance(kind, str) else None
     made = FieldInfo if positional is None else partial(UnlinkedField, positional=positional)
-    return made(
+    info = made(
         name=name,
         field_type=field_type,
         comodel=_interned(text("comodel_name")),
@@ -187,6 +210,10 @@ def _field_info(
         attachment=flag("attachment"),
         dynamic=frozen(dynamic),
     )
+    if isinstance(kind, str) or not kind.passes:
+        return info
+    values = {name: getattr(info, name) for name in FIELD_ATTRIBUTES}
+    return dataclasses.replace(info, dynamic=frozen(dynamic | _passed_unknown(kind, values)))
 
 
 def _positional(

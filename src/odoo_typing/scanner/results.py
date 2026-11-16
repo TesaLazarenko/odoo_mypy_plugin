@@ -117,12 +117,16 @@ class FieldClass:
             ``convert_to_*`` method: its values are not those of the Odoo class.
         arguments: Whether one of them defines ``__init__`` (or is a function): its
             positional arguments are not those of the Odoo class.
+        passes: The parameters a function passes to the class it returns a call of
+            (``required`` of ``return fields.Float(required=True, **kwargs)``; ``*`` for
+            positional ones): what they give its fields is not known where it is called.
     """
 
     name: str
     bases: tuple[str, ...]
     converts: bool = False
     arguments: bool = False
+    passes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
