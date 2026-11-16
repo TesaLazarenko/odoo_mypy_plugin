@@ -109,7 +109,7 @@ class ModuleTests:
             for test, block in zip(statement.expr, statement.body, strict=True):
                 parts = [
                     test,
-                    *(flags[n.name] for n in _names(test) if n.name in flags),
+                    *(flags[name.name] for name in _names(test) if name.name in flags),
                     *self._attribute_values(_own_attributes(test, receiver)),
                 ]
                 nodes = [node for part in parts for node in _expressions(part)]

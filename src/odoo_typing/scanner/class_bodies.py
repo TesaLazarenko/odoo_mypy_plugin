@@ -259,8 +259,8 @@ def record_dispatches(node: ast.ClassDef) -> tuple[tuple[str, str, tuple[str, ..
         if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
     }
     positional = {
-        name: [argument.arg for argument in (f.args.posonlyargs + f.args.args)[1:]]
-        for name, f in methods.items()
+        name: [argument.arg for argument in (method.args.posonlyargs + method.args.args)[1:]]
+        for name, method in methods.items()
     }
     tested: dict[tuple[str, str], set[str]] = {}
     passed: list[tuple[str, str, str, str]] = []  # method, parameter, callee, its parameter
@@ -407,8 +407,8 @@ def passed_containers(node: ast.ClassDef) -> tuple[Passed, ...]:
     if not any(annotations.values()):
         return ()
     positional = {
-        name: [argument.arg for argument in (f.args.posonlyargs + f.args.args)[1:]]
-        for name, f in methods.items()
+        name: [argument.arg for argument in (method.args.posonlyargs + method.args.args)[1:]]
+        for name, method in methods.items()
     }
     found: dict[Passed, None] = {}
     for name, function in methods.items():

@@ -309,7 +309,8 @@ def _children(node: Expression) -> list[Expression]:
     if isinstance(node, (ListComprehension, SetComprehension)):
         return [node.generator]
     if isinstance(node, GeneratorExpr):
-        return [node.left_expr, *node.sequences, *(c for cs in node.condlists for c in cs)]
+        conditions = [test for tests in node.condlists for test in tests]
+        return [node.left_expr, *node.sequences, *conditions]
     if isinstance(node, DictionaryComprehension):
         return [item for item in (node.key, node.value, *node.sequences) if item is not None]
     if isinstance(node, ConditionalExpr):
