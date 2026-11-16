@@ -34,6 +34,7 @@ from odoo_typing.scanner.class_bodies import (
     inherits_pairs,
     log_access,
     model_name,
+    passed_containers,
     read_value_keys,
     record_dispatches,
 )
@@ -346,6 +347,7 @@ class _ImportWalker:
                 abstract=abstract(node, attrs),
                 value_keys=read_value_keys(node),
                 dispatches=record_dispatches(node) if file.tests_names else (),
+                passed=passed_containers(node),
             )
         )
 

@@ -145,6 +145,13 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   "mail.template"`, also in a method of the class it passes the parameter to) takes
   the records of those models: `message_post_with_source(template)` on Odoo 20, which
   declares `source_ref: str | IrUiView`.
+- A parameter takes the containers that the class which annotated it passes it:
+  `_track_execute(trackings: dict[int, tuple[set[str], list[ValuesType]]])` of Odoo 20's
+  `mail.track.mixin` is called by the mixin itself with a list where the annotation
+  names a set, so an override that passes a list (`account.tax`) is no `arg-type` error,
+  also through `super()` and the methods the parameter is passed on to. Only for the
+  classes of modules whose errors mypy does not show; in the code being checked an
+  annotation is its author's word.
 - An operator that the `False` of an empty value does not support
   (`abs(picking.scheduled_date - out_date) <= delta`) is one error, about the operand:
   mypy went on with `int`, what `int.__sub__` returns, and reported the comparison too

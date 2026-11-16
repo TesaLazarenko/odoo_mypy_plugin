@@ -45,6 +45,7 @@ from odoo_typing.hooks.models import (
     not_in_dependencies,
 )
 from odoo_typing.hooks.nodes import class_infos, field_sources, incomplete_modules, lookup_class
+from odoo_typing.hooks.passed import widen_passed
 from odoo_typing.methods import annotate_self_overrides
 from odoo_typing.records import digest
 from odoo_typing.references import (
@@ -140,7 +141,10 @@ class ModelClassHooks(Hooks):
         annotate_self_overrides(ctx)
         contribution = self.registry.contribution(ctx.cls.info.fullname)
         if contribution is not None:
-            if not errors_hidden(ctx.api):
+            if errors_hidden(ctx.api):
+                # What Odoo annotates more narrowly than its own code passes.
+                widen_passed(ctx, self.registry.passed(contribution))
+            else:
                 self._check_meta_references(contribution, ctx)
             self._delegate_fields(contribution, ctx)
             if self.registry.log_access(contribution):

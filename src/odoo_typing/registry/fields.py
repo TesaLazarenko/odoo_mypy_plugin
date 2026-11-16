@@ -25,8 +25,13 @@ from odoo_typing.registry.scans import IndexLoader, ScanCache
 from odoo_typing.registry.views import ModelViews
 from odoo_typing.registry.visible import defines
 from odoo_typing.scanner import Contribution, FieldInfo
+from odoo_typing.scanner.class_bodies import FORWARD
 
-__all__ = ["ModelFields", "chain_log_access"]
+__all__ = ["ModelFields", "Passed", "chain_log_access"]
+
+# (method, parameter) -> the (path, kind) of the containers the parameter is given.
+Passed = Mapping[tuple[str, str], frozenset[tuple[tuple[str, ...], str]]]
+NOTHING_PASSED: Passed = MappingProxyType({})
 
 
 class ModelFields(ModelViews):
@@ -47,6 +52,7 @@ class ModelFields(ModelViews):
         # Equal field maps by a hash of their pooled infos (a key of the names and infos
         # themselves took more memory than the maps it pooled).
         self._fields_pool: dict[int, list[Mapping[str, FieldInfo]]] = {}
+        self._passed: dict[str, Passed] = {}
 
     def value_keys(self, model: str, addon_name: str) -> frozenset[str]:
         """The keys the ``create`` / ``write`` of a model's classes read from their values.
@@ -59,6 +65,21 @@ class ModelFields(ModelViews):
         if view is None:
             return frozenset()
         return frozenset(key for item in view.chain for key in item.value_keys)
+
+    def passed(self, contribution: Contribution) -> Passed:
+        """The containers the parameters of a class's methods are given by its classes.
+
+        Where the annotation of a parameter names another container than the class that
+        wrote it passes (:func:`odoo_typing.scanner.class_bodies.passed_containers`): by
+        the classes of the class's own registry class, so the answer is the same for
+        every addon that reads the class. A parameter that a method passes on to
+        another method is given what the first is, to a fixed point.
+        """
+        key = contribution.fullname
+        if key not in self._passed:
+            entries = [entry for item in self.linearization(contribution) for entry in item.passed]
+            self._passed[key] = _passed(entries) if entries else NOTHING_PASSED
+        return self._passed[key]
 
     def fields(self, model: str, addon_name: str) -> Mapping[str, FieldInfo]:
         """The fields of a model's registry class as an addon sees it (``_fields``).
@@ -249,6 +270,27 @@ class ModelFields(ModelViews):
 def _related_only(info: FieldInfo) -> bool:
     """Whether a relational field takes its comodel from its ``related=`` path."""
     return info.field_type in RELATIONAL and info.comodel is None and bool(info.related)
+
+
+def _passed(entries: Sequence[tuple[str, str, tuple[str, ...], str]]) -> Passed:
+    """What each parameter is given, also through the parameters passed on to it."""
+    given: dict[tuple[str, str], set[tuple[tuple[str, ...], str]]] = {}
+    forwards: list[tuple[str, str, str, str]] = []  # callee, its parameter, method, parameter
+    for method, parameter, path, kind in entries:
+        if path[:1] == (FORWARD,):
+            forwards.append((method, parameter, path[1], kind))
+        else:
+            given.setdefault((method, parameter), set()).add((path, kind))
+    changed = bool(given)
+    while changed:  # to a fixed point
+        changed = False
+        for callee, target, method, parameter in forwards:
+            found = given.get((method, parameter), set())
+            known = given.setdefault((callee, target), set())
+            if not found <= known:
+                known |= found
+                changed = True
+    return {name: frozenset(found) for name, found in given.items() if found}
 
 
 def chain_log_access(chain: Sequence[Contribution], model: str) -> bool:

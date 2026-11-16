@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from odoo_typing.scanner import SourceError, parse_bytes, parse_source, referenced_models
+from odoo_typing.scanner.class_bodies import passed_containers
 
 NESTED = """
     from odoo import fields, models
@@ -122,3 +123,47 @@ def test_parse_error_names_the_python_that_read_the_file(tmp_path: Path) -> None
 
     running = f"{sys.version_info[0]}.{sys.version_info[1]}"
     assert f"read as Python {running}" in error.value.reason
+
+
+PASSED = """
+class Mixin(models.AbstractModel):
+    _name = "t.mixin"
+
+    def _execute(self, trackings: dict[int, tuple[set[str], list[str]]], names: "list[str] | None"):
+        self._log(trackings, plain=names)
+        super()._execute(trackings, names)
+
+    def _log(self, trackings: dict[int, tuple[set[str], list[str]]], plain: list[str], count: int):
+        pass
+
+    def _finalize(self, records, changes):
+        kept = [name for name in changes if name]
+        if not changes:
+            kept = changes
+        records._execute({record.id: (kept, []) for record in records}, names=("a", "b"))
+        records._execute({1: ({"a"}, ["b"])}, ["a"])
+        records._log({}, {name for name in kept}, 3)
+        other.unknown([1], {2})
+"""
+
+
+def test_the_containers_a_class_passes_its_annotated_parameters() -> None:
+    """A display where the annotation names another container; parameters passed on."""
+    node = ast.parse(PASSED).body[0]
+    assert isinstance(node, ast.ClassDef)
+
+    assert set(passed_containers(node)) == {
+        ("_log", "trackings", ("=", "_execute"), "trackings"),
+        ("_log", "plain", ("=", "_execute"), "names"),
+        ("_execute", "trackings", ("v", "0"), "list"),
+        ("_execute", "names", (), "tuple"),
+        ("_log", "plain", (), "set"),
+    }
+
+
+def test_a_class_without_container_annotations_passes_nothing() -> None:
+    source = "class A:\n    def f(self, x: int, y=None):\n        self.f([1], {2})\n"
+    node = ast.parse(source).body[0]
+    assert isinstance(node, ast.ClassDef)
+
+    assert passed_containers(node) == ()

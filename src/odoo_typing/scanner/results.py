@@ -160,6 +160,9 @@ class Contribution:
         dispatches: The parameters of its methods that take records of the models they
             test (``source_ref._name == "mail.template"``): ``(method, parameter,
             models)``.
+        passed: The containers its methods pass its own annotated parameters where the
+            annotations name others (``odoo_typing.scanner.class_bodies.passed_containers``):
+            ``(method, parameter, path, kind)``.
     """
 
     addon: str
@@ -177,6 +180,7 @@ class Contribution:
     abstract: bool | None = None
     value_keys: tuple[str, ...] = ()
     dispatches: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+    passed: tuple[tuple[str, str, tuple[str, ...], str], ...] = ()
 
     @property
     def fullname(self) -> str:

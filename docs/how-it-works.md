@@ -247,6 +247,21 @@ once it can be.
   map a class of the model that the reading addon's view extends to that view
   (`Models.view_type`); a type variable (`Self` of an override) is left alone.
 
+- **Annotations narrower than the calls of their own class**
+  (`odoo_typing.hooks.passed`). The scan of a model class records where a call of one of
+  its own annotated methods passes a `list`, `set` or `tuple` display (or
+  comprehension, also through a name the method binds) and the annotation names another
+  container at that place, and which parameters a method passes on as it got them
+  (`Contribution.passed`). `Registry.passed` joins what the classes of a class's own
+  registry class say, to a fixed point over the parameters passed on; it does not depend
+  on the reading addon, so the result can be kept with the class's module. mypy calls no
+  hook for `super().m(...)`, so the annotation itself gets the alternative, in the hook
+  that runs after the class body: mypy analyzes the signatures of methods after the
+  class bodies of the module, and the hook rewrites the annotation that is not analyzed
+  yet (`dict[int, tuple[set[str], X]]` becomes a union with `dict[int, tuple[list[str],
+  X]]`; a name counts if it resolves to the builtin where it is written). Only in a
+  module whose errors mypy does not show.
+
 - **Operators of `False`** (`odoo_typing.hooks.comparisons.false_operand`). mypy names
   the hook of a literal's method after the class that defines the method, so `False - x`
   asks for `builtins.int.__sub__`. When the receiver is the literal `False` and the

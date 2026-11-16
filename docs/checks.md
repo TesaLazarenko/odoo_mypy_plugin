@@ -833,6 +833,21 @@ With real recordset types, some plain mypy codes appear more often:
   tests `source_ref._name == "mail.template"`. The scan reads `p._name == "m"` (`!=`,
   `in (...)`) of a parameter in the methods of a model class, also through the methods of
   the class it passes the parameter to.
+- A **parameter takes the containers its own class passes it**: Odoo 20 annotates
+  `_track_execute(self, ..., trackings: dict[int, tuple[set[str], list[ValuesType]]])` in
+  `mail.track.mixin`, and the mixin itself calls it with `{parent.id: (filtered_changes,
+  ...)}` where `filtered_changes` is a list comprehension. The annotation is narrower than
+  the code Odoo runs, so the parameter also takes a list there
+  (`dict[int, tuple[set[str], ...]] | dict[int, tuple[list[str], ...]]`), in every
+  class of the model that annotates the method, and so do the parameters it is passed on
+  to (`_track_log`). An override that builds its own dict with lists and calls
+  `super()._track_execute(...)` (`account.tax`) is then no error. The scan reads the
+  displays and comprehensions in the calls a class makes of its own annotated methods,
+  also through the names the calling method binds; a `list`, `set` or `tuple` where the
+  annotation names another of `list`, `set`, `frozenset` counts. Only for classes in
+  modules whose errors mypy does not show (Odoo's own, with `follow_imports = "silent"`):
+  where your own class annotates `names: set[str]` and passes a list, the call is still
+  reported.
 - An **operator that `False` does not support** is one error. A field that is not
   required reads as `datetime | Literal[False]`, and `abs(picking.scheduled_date -
   out_date) <= timedelta(seconds=1)` is reported for the operand (`Unsupported operand

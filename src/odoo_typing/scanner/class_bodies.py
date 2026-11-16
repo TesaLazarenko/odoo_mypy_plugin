@@ -15,7 +15,11 @@ from odoo_typing.scanner.evaluation import UNKNOWN
 from odoo_typing.scanner.syntax import RELATIONAL_FIELDS, callee_name, comodel_argument
 
 __all__ = [
+    "FORWARD",
+    "ITEM",
     "NAME_TEST",
+    "SEQUENCES",
+    "VALUE",
     "abstract",
     "as_names",
     "declared_comodels",
@@ -24,6 +28,7 @@ __all__ = [
     "inherits_pairs",
     "log_access",
     "model_name",
+    "passed_containers",
     "read_value_keys",
     "record_dispatches",
 ]
@@ -340,3 +345,228 @@ def _passed(
         and keyword.value.id in parameters
     ]
     return found
+
+
+# What a display or a comprehension builds, as the annotation of its value names it.
+DISPLAYS: Final = {
+    ast.Dict: "dict",
+    ast.DictComp: "dict",
+    ast.List: "list",
+    ast.ListComp: "list",
+    ast.Set: "set",
+    ast.SetComp: "set",
+    ast.Tuple: "tuple",
+}
+# The steps of a path into a value: the values of a dict, the items of a list or a set;
+# an item of a tuple is its index.
+VALUE: Final = "v"
+ITEM: Final = "i"
+FORWARD: Final = "="  # (callee, its parameter, ("=", method), parameter): passed on as given
+# The containers an annotation names that another display does not build.
+SEQUENCES: Final = frozenset({"list", "set", "frozenset"})
+GIVEN: Final = frozenset({"list", "set", "tuple"})
+MAX_PATH: Final = 4
+
+Passed = tuple[str, str, tuple[str, ...], str]
+
+
+def passed_containers(node: ast.ClassDef) -> tuple[Passed, ...]:
+    """The containers a class passes its own methods where their annotations name others.
+
+    ``_track_execute(self, ..., trackings: dict[int, tuple[set[str], list[ValuesType]]])``
+    of ``mail.track.mixin`` (Odoo 20) is called by the mixin itself with ``{parent.id:
+    (filtered_changes, filtered_trackings) for parent in parents}``, where
+    ``filtered_changes`` is a list comprehension: the class that wrote the annotation
+    passes a list where it names a set, so the annotation is narrower than the code.
+
+    Read are the calls, in the methods of the class, of the methods it defines with
+    annotated parameters: the displays and comprehensions of their arguments, also
+    through the names the calling method binds.
+
+    Returns:
+        ``(method, parameter, path, kind)``: ``parameter`` of ``method`` is given a
+        ``kind`` (``list``, ``set``, ``tuple``) at ``path`` (``("v", "0")``: the first
+        item of the tuples that are the values of a dict) where its annotation names
+        another of them. A parameter that a method passes on as it got it is
+        ``(callee, its parameter, ("=", method), parameter)``; one that a method passes
+        on to itself (a recursion, ``super()``) is left out.
+    """
+    methods = {
+        statement.name: statement
+        for statement in node.body
+        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+    annotations = {
+        name: {
+            argument.arg: argument.annotation
+            for argument in _parameters(function)
+            if argument.annotation is not None and _names_sequence(argument.annotation)
+        }
+        for name, function in methods.items()
+    }
+    if not any(annotations.values()):
+        return ()
+    positional = {
+        name: [argument.arg for argument in (f.args.posonlyargs + f.args.args)[1:]]
+        for name, f in methods.items()
+    }
+    found: dict[Passed, None] = {}
+    for name, function in methods.items():
+        own = {argument.arg for argument in _parameters(function)}
+        calls = [
+            item
+            for item in ast.walk(function)
+            if isinstance(item, ast.Call)
+            and isinstance(item.func, ast.Attribute)
+            and annotations.get(item.func.attr)
+        ]
+        bindings = _bindings(function) if calls else {}
+        for call in calls:
+            callee = call.func.attr if isinstance(call.func, ast.Attribute) else ""
+            annotated = annotations[callee]
+            arguments = [
+                (parameter, argument)
+                for parameter, argument in _arguments(call, positional[callee])
+                if parameter in annotated
+            ]
+            for parameter, argument in arguments:
+                given = _given(argument, annotated[parameter], name, own, bindings)
+                found.update(dict.fromkeys((callee, parameter, *item) for item in given))
+    return tuple(entry for entry in found if not _to_itself(entry))
+
+
+def _to_itself(entry: Passed) -> bool:
+    """Whether an entry says that a method passes a parameter on to itself."""
+    method, parameter, path, kind = entry
+    return path == (FORWARD, method) and kind == parameter
+
+
+def _given(
+    argument: ast.expr,
+    annotation: ast.expr,
+    method: str,
+    own: set[str],
+    bindings: Mapping[str, list[ast.expr]],
+) -> Iterator[tuple[tuple[str, ...], str]]:
+    """What an argument gives an annotated parameter: ``(path, kind)`` of :data:`Passed`."""
+    if isinstance(argument, ast.Name) and argument.id in own:
+        yield (FORWARD, method), argument.id  # the method's own parameter, as it got it
+        return
+    for path, kind in _displays(argument, bindings, (), frozenset()):
+        named = _annotated(annotation, path)
+        if named in SEQUENCES and kind in GIVEN and kind != named:
+            yield path, kind
+
+
+def _names_sequence(annotation: ast.expr) -> bool:
+    """Whether an annotation names a container that another display does not build."""
+    if isinstance(annotation, ast.Constant):
+        text = annotation.value
+        return isinstance(text, str) and any(name in text for name in SEQUENCES)
+    return any(isinstance(item, ast.Name) and item.id in SEQUENCES for item in ast.walk(annotation))
+
+
+def _parameters(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.arg]:
+    """The parameters of a method but its receiver."""
+    arguments = function.args
+    return [*(arguments.posonlyargs + arguments.args)[1:], *arguments.kwonlyargs]
+
+
+def _arguments(call: ast.Call, positional: list[str]) -> Iterator[tuple[str, ast.expr]]:
+    """The arguments of a call of a method, each with the parameter it is given for."""
+    for position, argument in enumerate(call.args):
+        if isinstance(argument, ast.Starred):
+            break
+        if position < len(positional):
+            yield positional[position], argument
+    for keyword in call.keywords:
+        if keyword.arg is not None:
+            yield keyword.arg, keyword.value
+
+
+def _bindings(function: ast.AST) -> dict[str, list[ast.expr]]:
+    """The values a function binds its names to (``name = value``)."""
+    bound: dict[str, list[ast.expr]] = {}
+    for item in ast.walk(function):
+        if isinstance(item, ast.Assign):
+            targets, value = item.targets, item.value
+        elif isinstance(item, ast.AnnAssign | ast.NamedExpr) and item.value is not None:
+            targets, value = [item.target], item.value
+        else:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                bound.setdefault(target.id, []).append(value)
+    return bound
+
+
+def _displays(
+    node: ast.expr,
+    bindings: Mapping[str, list[ast.expr]],
+    path: tuple[str, ...],
+    seen: frozenset[str],
+) -> Iterator[tuple[tuple[str, ...], str]]:
+    """The containers a value is built of, by syntax: ``(path, kind)`` for each."""
+    if len(path) > MAX_PATH:
+        return
+    if isinstance(node, ast.Name):
+        if node.id not in seen:
+            for value in bindings.get(node.id, ()):
+                yield from _displays(value, bindings, path, seen | {node.id})
+        return
+    if isinstance(node, ast.IfExp):
+        yield from _displays(node.body, bindings, path, seen)
+        yield from _displays(node.orelse, bindings, path, seen)
+        return
+    kind = DISPLAYS.get(type(node))
+    if kind is None:
+        return
+    yield path, kind
+    inner: list[tuple[str, ast.expr]] = []
+    if isinstance(node, ast.Dict):
+        inner = [(VALUE, value) for value in node.values]
+    elif isinstance(node, ast.DictComp):
+        inner = [(VALUE, node.value)]
+    elif isinstance(node, ast.Tuple):
+        if not any(isinstance(item, ast.Starred) for item in node.elts):
+            inner = [(str(index), item) for index, item in enumerate(node.elts)]
+    elif isinstance(node, ast.List | ast.Set):
+        inner = [(ITEM, item) for item in node.elts if not isinstance(item, ast.Starred)]
+    elif isinstance(node, ast.ListComp | ast.SetComp):
+        inner = [(ITEM, node.elt)]
+    for step, value in inner:
+        yield from _displays(value, bindings, (*path, step), seen)
+
+
+def _annotated(annotation: ast.expr, path: tuple[str, ...]) -> str | None:
+    """The container an annotation names at a path (``dict[int, set[str]]``, ``v``: ``set``).
+
+    By the name it is written with; ``None`` where the annotation names no container
+    there, or one that the path does not go through.
+    """
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            annotation = ast.parse(annotation.value, mode="eval").body
+        except SyntaxError:
+            return None
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        return _annotated(annotation.left, path) or _annotated(annotation.right, path)
+    if isinstance(annotation, ast.Name):
+        return annotation.id if not path else None
+    if not isinstance(annotation, ast.Subscript) or not isinstance(annotation.value, ast.Name):
+        return None
+    name = annotation.value.id
+    if not path:
+        return name
+    items = annotation.slice.elts if isinstance(annotation.slice, ast.Tuple) else [annotation.slice]
+    step = path[0]
+    variadic = any(isinstance(item, ast.Constant) and item.value is ... for item in items)
+    inner: ast.expr | None = None
+    if step == VALUE:
+        inner = items[1] if name == "dict" and len(items) == 2 else None
+    elif step == ITEM:
+        if name in SEQUENCES or (name == "tuple" and variadic):
+            inner = items[0]
+    elif name == "tuple" and not variadic and int(step) < len(items):
+        inner = items[int(step)]
+    return _annotated(inner, path[1:]) if inner is not None else None
