@@ -2,14 +2,34 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Final
 
 from mypy.lookup import lookup_fully_qualified
-from mypy.nodes import MDEF, MemberExpr, MypyFile, StrExpr, SymbolTableNode, TypeInfo, Var
-from mypy.plugin import AttributeContext, CheckerPluginInterface, ClassDefContext, MethodContext
+from mypy.nodes import (
+    MDEF,
+    ListExpr,
+    MemberExpr,
+    MypyFile,
+    SetExpr,
+    StrExpr,
+    SymbolTableNode,
+    TupleExpr,
+    TypeInfo,
+    Var,
+)
+from mypy.plugin import (
+    AttributeContext,
+    CheckerPluginInterface,
+    ClassDefContext,
+    MethodContext,
+    MethodSigContext,
+)
 from mypy.types import (
     AnyType,
+    CallableType,
+    FunctionLike,
     Instance,
     NoneType,
     Type,
@@ -78,6 +98,10 @@ XML_ID_METHODS: Final = {
 }
 
 
+# The name of a record of the data an addon loads, without a module (``tag_x_1``).
+BARE_XML_ID: Final = re.compile(r"[A-Za-z_]\w*")
+
+
 class EnvHooks(Hooks):
     """Type what an ``Environment`` gives, as the addon of the checked file sees it."""
 
@@ -99,7 +123,7 @@ class EnvHooks(Hooks):
         if self.registry.view_class(model, addon_name) is None:
             outside = self._models.unknown_model(model, addon_name, ctx.context, ctx.api)
             return outside or ctx.default_return_type
-        if self._models.extended_outside(model, addon_name, ctx.api.path, ctx.context.line):
+        if self._models.extended_outside(model, addon_name, ctx.api, ctx.context.line):
             return AnyType(TypeOfAny.special_form)
         return self._models.env_model(model, addon_name, ctx.api) or ctx.default_return_type
 
@@ -143,7 +167,7 @@ class EnvHooks(Hooks):
         records = self._models.view_type(model, addon_name, ctx.api)
         if not isinstance(records, Instance):
             return self._of_no_known_model(ctx.default_return_type)
-        if self._models.extended_outside(model, addon_name, ctx.api.path, ctx.context.line):
+        if self._models.extended_outside(model, addon_name, ctx.api, ctx.context.line):
             return AnyType(TypeOfAny.special_form)
         return UnionType([records, NoneType()]) if optional else records
 
@@ -237,6 +261,37 @@ class EnvHooks(Hooks):
         api.fail(message, xml_id, code=ODOO_XMLID)
         return None
 
+    def xml_id_command(self, ctx: MethodSigContext) -> FunctionLike:
+        """``Command.set(["account.tag_x", tag.id])``: the XML ids of data to load.
+
+        Odoo's loader of chart template data (``_load_data``) replaces the XML ids of a
+        command by the ids of their records, and the data an addon returns for it
+        (``_get_demo_data``, tests of templates) names records by XML id: Odoo 19
+        declares ``Collection[int]``. A literal list takes strings that name records:
+        a bare name (``"ir_attachment_bank_statement_1"``, which the data itself may
+        create, as a key of the dicts ``_load_data`` loads) and a ``module.name`` that
+        the data files of the addon's closure create. Another string stays an error.
+        """
+        signature = ctx.default_signature
+        given = ctx.args[0][0] if ctx.args and len(ctx.args[0]) == 1 else None
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if not isinstance(signature, CallableType) or addon_name is None:
+            return signature
+        if not isinstance(given, (ListExpr, TupleExpr, SetExpr)) or not signature.arg_types:
+            return signature
+        strings = [item.value for item in given.items if isinstance(item, StrExpr)]
+        ids = self.registry.xml_ids(addon_name)
+        if not strings or not all(
+            BARE_XML_ID.fullmatch(name) or ("." in name and name in ids) for name in strings
+        ):
+            return signature
+        declared = get_proper_type(signature.arg_types[0])
+        if not isinstance(declared, Instance) or len(declared.args) != 1:
+            return signature
+        text = type_checker(ctx.api).named_type("builtins.str")
+        widened = declared.copy_modified(args=[UnionType([declared.args[0], text])])
+        return signature.copy_modified(arg_types=[widened, *signature.arg_types[1:]])
+
     def named_record(self, model: str, ctx: AttributeContext) -> Type:
         """``env.website`` (Odoo 20): records of the model an attribute is named after.
 
@@ -254,7 +309,7 @@ class EnvHooks(Hooks):
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
         if ctx.is_lvalue or addon_name is None:
             return ctx.default_attr_type
-        if self._models.extended_outside(model, addon_name, ctx.api.path, ctx.context.line):
+        if self._models.extended_outside(model, addon_name, ctx.api, ctx.context.line):
             return AnyType(TypeOfAny.special_form)
         resolved = self._models.env_model(model, addon_name, ctx.api)
         return resolved if isinstance(resolved, Instance) else ctx.default_attr_type

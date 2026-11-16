@@ -103,6 +103,11 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   of `hasattr(records, "x")` of a name their class lacks.
 - `records._fields["name"]` is the class of that field on Odoo 19 and 20 (`Float` has
   `get_digits()`); a `Selection` with literal keys is `Any` there.
+- A module that is not on the addons path (Odoo Enterprise's `accountant`), named by a
+  test about installed modules (`"accountant" not in modules._installed()`), may
+  extend any model: the records are `Any` where it runs.
+- A `NamedTuple` annotated with field classes (Odoo 19's `Procurement`) takes and gives
+  `Any` for those items.
 
 ### Checks
 
@@ -112,7 +117,10 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   (mypy made it `list[object]`, or asked for an annotation); a union of unrelated values
   in a container without an annotation reads as `Any`; a container of an empty display
   (`next(rows, {})`) takes any key; `zip()` / `enumerate()` of such displays give `Any`
-  items; `filter(None, ...)` takes values that may be `False`.
+  items; `filter(None, ...)` takes values that may be `False`; `Counter()`,
+  `OrderedDict()` and `defaultdict(lambda: {...})` need no annotation.
+- `Command.set([...])` takes the XML ids of data that a loader replaces (a bare name, a
+  `module.name` the closure's data creates): Odoo 19 and 20 declare `Collection[int]`.
 
 - Every check also runs where `self` is a type variable: in an unannotated `create` /
   `copy` override (typed `(self: Self) -> Self`), under `-> Self` and `self: T`.

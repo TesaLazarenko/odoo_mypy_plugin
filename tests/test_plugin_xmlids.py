@@ -140,3 +140,33 @@ def test_ref_of_no_known_model_keeps_odoo_s_type_when_asked_to(run_mypy: RunMypy
 
     (message,) = result.messages("models.py")
     assert message.startswith('8: note: Revealed type is "odoo.orm.models.BaseModel')
+
+
+@pytest.mark.odoo(19, 20)
+def test_command_set_takes_the_xml_ids_of_data_to_load(run_mypy: RunMypy) -> None:
+    """The chart template loader replaces XML ids in commands; Odoo 19 declares ints."""
+    result = run_mypy(
+        {
+            "t_base": T_BASE,
+            "t_use": {
+                "depends": ["t_base"],
+                "data": {"data.xml": '<odoo><record id="own" model="t.thing"/></odoo>'},
+                "models.py": """
+                from odoo import Command, models
+
+                class Thing(models.Model):
+                    _inherit = "t.thing"
+
+                    def data(self) -> list:
+                        return [
+                            Command.set(["t_base.thing_one", "own", self.id]),
+                            Command.set(["t_base.no_such_id"]),
+                        ]
+                """,
+            },
+        },
+        check=["t_use"],
+    )
+
+    (message,) = result.messages("t_use/models.py")
+    assert message.startswith('10: error: List item 0 has incompatible type "str"')

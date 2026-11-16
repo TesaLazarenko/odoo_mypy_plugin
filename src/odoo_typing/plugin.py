@@ -75,6 +75,7 @@ from mypy.nodes import (
     ImportAll,
     ImportFrom,
     MypyFile,
+    TypeAlias,
     TypeInfo,
     Var,
 )
@@ -95,8 +96,10 @@ from mypy.types import (
     CallableType,
     FunctionLike,
     Instance,
+    TupleType,
     Type,
     TypeOfAny,
+    TypeType,
     get_proper_type,
 )
 from mypy.util import correct_relative_import
@@ -161,6 +164,7 @@ from odoo_typing.methods import (
     identity_factory,
     is_browse,
     is_command_id_method,
+    is_command_set,
     is_create,
     is_self_method,
     keep_receiver,
@@ -632,7 +636,12 @@ class OdooPlugin(Plugin):
         self._prepare_rebound()
         if fullname == FILTER:
             return falsy_filter_signature
-        return wrapper_signature if fullname == TRIGGER_FULLNAME else None
+        if fullname == TRIGGER_FULLNAME:
+            return wrapper_signature
+        found = self._hooks.function_signature
+        if fullname not in found:
+            found[fullname] = self._field_tuple_hook(fullname)
+        return found[fullname]
 
     def get_method_signature_hook(
         self, fullname: str
@@ -844,6 +853,8 @@ class OdooPlugin(Plugin):
             return partial(create_signature, profile.base_model, untyped=profile.untyped_fields)
         if is_command_id_method(fullname):
             return partial(command_id_signature, profile.new_id)
+        if is_command_set(fullname):
+            return self._env.xml_id_command
         if is_browse(fullname):
             return partial(browse_signature, profile.base_model)
         if is_term_list_method(fullname):
@@ -856,6 +867,8 @@ class OdooPlugin(Plugin):
             widen = partial(self._domains.widen_signature, None)
         if fullname.rpartition(".")[2] == "filtered":
             return partial(self._recordsets.filtered_signature, widen)
+        if widen is None:
+            return self._field_tuple_hook(fullname)  # ``env["stock.rule"].Procurement(...)``
         return widen
 
     def _declared_signature(self, fullname: str, method: bool) -> Type | None:
@@ -904,6 +917,48 @@ class OdooPlugin(Plugin):
         given = get_proper_type(declared.ret_type) if isinstance(declared, CallableType) else None
         return isinstance(given, Instance) and given.type in info.mro[1:-1]
 
+    def _field_tuple_hook(
+        self, fullname: str
+    ) -> Callable[[FunctionSigContext | MethodSigContext], FunctionLike] | None:
+        """The signature hook of a ``NamedTuple`` annotated with field classes, if it is one."""
+        if not self._field_tuple(fullname):
+            return None
+        return partial(_field_tuple_signature, self._models.profile.field_base)
+
+    def _field_tuple(self, fullname: str, item: str | None = None) -> bool:
+        """Whether a name is a ``NamedTuple`` that Odoo annotates with field classes.
+
+        Odoo 19 declares ``class Procurement(NamedTuple): product_id: fields.Many2one``:
+        the field class stands for its value, which the tuple holds, and every
+        ``Procurement(self.product_id, ...)`` was an ``arg-type`` error (records are no
+        ``Many2one``). Such a tuple takes and gives values of any type there (``Any``).
+        The name may be the class, an alias of it (``Procurement = Procurement`` in a
+        model), or with ``item`` the class of an attribute read.
+        """
+        symbol = (
+            lookup_fully_qualified(fullname, self._modules, raise_on_missing=False)
+            if self._modules and "." in fullname
+            else None
+        )
+        node = symbol.node if symbol is not None else None
+        if isinstance(node, Var):  # ``Procurement = Procurement`` in a model's body
+            node = _class_of(node.type)
+        if isinstance(node, TypeAlias):
+            target = get_proper_type(node.target)
+            node = target.partial_fallback.type if isinstance(target, TupleType) else None
+            node = target.type if isinstance(target, Instance) else node
+        if not isinstance(node, TypeInfo) or node.tuple_type is None:
+            return False
+        field_base = self._models.profile.field_base
+        names = node.metadata.get("namedtuple", {}).get("fields") or []
+        for name, value in zip(names, node.tuple_type.items, strict=False):
+            proper = get_proper_type(value)
+            if item is not None and name != item:
+                continue
+            if isinstance(proper, Instance) and proper.type.has_base(field_base):
+                return True
+        return False
+
     def _declared_records(self, fullname: str) -> bool:
         """Whether an attribute or property is declared as ``BaseModel``: records of no model."""
         symbol = (
@@ -936,6 +991,8 @@ class OdooPlugin(Plugin):
         """Resolve record-typed attributes of model classes from the reading addon."""
         profile = self._models.profile
         registry = self._models.registry
+        if self._field_tuple(fullname.rpartition(".")[0], fullname.rpartition(".")[2]):
+            return _any_attribute  # ``procurement.product_id`` (Odoo 19+)
         if fullname in profile.env_records:
             return partial(self._env.record, profile.env_records[fullname])
         if fullname == f"{profile.request_class}.env":
@@ -994,6 +1051,35 @@ def _signature_then(
 
 def _default_signature(ctx: MethodSigContext) -> FunctionLike:
     return ctx.default_signature
+
+
+def _class_of(typ: Type | None) -> TypeInfo | None:
+    """The class a variable holds (``type[X]``, or the constructor of ``X``)."""
+    proper = get_proper_type(typ)
+    if isinstance(proper, TypeType):
+        proper = get_proper_type(proper.item)
+        return proper.type if isinstance(proper, Instance) else None
+    if isinstance(proper, FunctionLike) and proper.is_type_obj():
+        return proper.type_object()
+    return None
+
+
+def _field_tuple_signature(
+    field_base: str, ctx: FunctionSigContext | MethodSigContext
+) -> FunctionLike:
+    """A ``NamedTuple`` annotated with field classes takes values of any type for them."""
+    signature = ctx.default_signature
+    arguments = [
+        AnyType(TypeOfAny.special_form) if _is_field_object(item, field_base) else item
+        for item in signature.arg_types
+    ]
+    return signature.copy_modified(arg_types=arguments)
+
+
+def _is_field_object(typ: Type, field_base: str) -> bool:
+    """An instance of a field class (``Many2one``, ``Char``)."""
+    proper = get_proper_type(typ)
+    return isinstance(proper, Instance) and proper.type.has_base(field_base)
 
 
 def _default_attribute(ctx: AttributeContext) -> Type:
@@ -1062,17 +1148,23 @@ class _HookCache:
         default_factory=dict
     )
     attribute: dict[str, Callable[[AttributeContext], Type] | None] = field(default_factory=dict)
+    function_signature: dict[str, Callable[[FunctionSigContext], FunctionLike] | None] = field(
+        default_factory=dict
+    )
 
     def forget_declared(self) -> None:
         """Forget the hooks that depend on mypy's symbol tables, not only on the name.
 
         The method, function and signature hooks look at the declared signature
-        (``odoo.domain.*`` and ``DomainType`` parameters); the class and attribute hooks
-        depend on the registry and the profile alone.
+        (``odoo.domain.*`` and ``DomainType`` parameters), the attribute hooks at the
+        ``NamedTuple`` classes annotated with field classes; the class hooks depend on
+        the registry and the profile alone.
         """
         self.method.clear()
         self.function.clear()
         self.signature.clear()
+        self.function_signature.clear()
+        self.attribute.clear()
 
 
 def plugin(version: str) -> type[OdooPlugin]:

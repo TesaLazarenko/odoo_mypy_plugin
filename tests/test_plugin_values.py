@@ -231,3 +231,37 @@ def test_a_field_of_fields_by_name_is_of_its_field_class(
     expected = {17: '"Any"', 18: '"odoo.fields.Field[Any]"'}.get(names.version, '.Float"')
     assert message.startswith("13: note: Revealed type is ")
     assert message.endswith(expected)
+
+
+FIELD_TUPLE = """
+from typing import NamedTuple
+
+from odoo import fields, models
+
+
+class Procurement(NamedTuple):
+    product_id: fields.Many2one
+    name: fields.Char
+    values: dict
+
+
+class Thing(models.Model):
+    _name = "t.thing"
+
+    Procurement = Procurement
+    name = fields.Char()
+    partner_id = fields.Many2one("res.partner")
+
+    def procure(self) -> None:
+        made = self.env["t.thing"].Procurement(self.partner_id, self.name, {})
+        made.product_id.name
+        Procurement(self.partner_id, "x", 1)
+"""
+
+
+def test_a_tuple_annotated_with_field_classes_holds_their_values(run_mypy: RunMypy) -> None:
+    """Odoo 19's ``Procurement`` declares ``product_id: fields.Many2one`` for records."""
+    result = run_mypy({"my_mod": {"models.py": FIELD_TUPLE}})
+
+    (message,) = result.messages("models.py")
+    assert message.startswith('23: error: Argument 3 to "Procurement" has incompatible type')

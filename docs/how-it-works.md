@@ -225,6 +225,13 @@ once it can be.
   functions mypy has not reached yet change; in the function being checked, only the
   variables whose first binding it has not checked (`Var.type` is still `None`).
 
+- **Tests about installed modules** (`odoo_typing.module_tests`): where the env hooks
+  type records, the function mypy checks (`checker.scope.top_level_function()`) is
+  read once for its `if` tests that hold `"ir.module.module"` or `"installed"` and
+  the modules they name; a line those tests decide gives records of a model that a
+  named addon outside the dependencies extends as `Any`. mypy's own tree of the
+  function is used, so no file is parsed again.
+
 - **Records as the addon sees them** for what `self` gives: the method hooks of the
   `-> Self` methods, `__iter__`, `__getitem__` and the set operators of a model class
   map a class of the model that the reading addon's view extends to that view

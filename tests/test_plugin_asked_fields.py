@@ -192,6 +192,15 @@ class TestThing(TransactionCase):
         if self.env["ir.module.module"]._get("t_extra").state != "installed":
             self.skipTest("t_extra is not installed")
         self.env["t.thing"].extra_method()
+
+    def test_of_an_addon_off_the_path(self) -> None:
+        if "enterprise_only" not in self.env["ir.module.module"]._installed():
+            self.skipTest("enterprise_only is not installed")
+        self.env["t.thing"].anything_it_adds()
+
+    def test_not_about_modules(self) -> None:
+        if self.env["t.thing"].name == "t_extra":
+            self.env["t.thing"].extra_method()
 """
 
 
@@ -216,4 +225,7 @@ def test_records_on_lines_of_an_addon_outside_the_dependencies_are_any(
     assert result.messages("t_use/models.py") == [
         '27: error: "Thing" has no attribute "extra_method"  [attr-defined]',
     ]
-    assert result.messages("tests/test_thing.py") == []
+    # The test of a name is no test about modules.
+    assert result.messages("tests/test_thing.py") == [
+        '17: error: "Thing" has no attribute "extra_method"  [attr-defined]',
+    ]

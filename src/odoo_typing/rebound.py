@@ -71,6 +71,7 @@ from mypy.nodes import (
     GeneratorExpr,
     IfStmt,
     IntExpr,
+    LambdaExpr,
     ListComprehension,
     ListExpr,
     MatchStmt,
@@ -80,6 +81,7 @@ from mypy.nodes import (
     OperatorAssignmentStmt,
     OpExpr,
     OverloadedFuncDef,
+    RefExpr,
     SetComprehension,
     SetExpr,
     StarExpr,
@@ -108,6 +110,10 @@ FALSE = "builtins.False"
 # Displays: a variable bound to one with displays inside is declared ``Any``.
 DISPLAYS = (ListExpr, DictExpr, SetExpr, TupleExpr)
 EMPTY_CALLS = frozenset({"builtins.list", "builtins.dict", "builtins.set"})
+# Containers mypy has no partial type for: ``Counter()`` alone "needs an annotation".
+UNINFERRED_CALLS = frozenset(
+    {"collections.Counter", "collections.OrderedDict", "collections.deque"}
+)
 # Functions and methods whose last argument is the value they give when nothing is
 # found: ``next(iterator, False)``, ``getattr(record, name, False)``, ``d.get(key, False)``.
 DEFAULT_ARGUMENTS = {"builtins.next": 2, "builtins.getattr": 3}
@@ -194,12 +200,31 @@ def _structured(bindings: list[Binding]) -> bool:
         if bound is None:
             continue
         for value in _values(bound):
+            if _is_call_of(value, UNINFERRED_CALLS):
+                return True
             inner = list(_descendants(value))
             if any(_is_empty(node) for node in inner):
                 return True
             if isinstance(value, DISPLAYS) and any(map(_holds_dicts, _children(value))):
                 return True
+            if isinstance(value, CallExpr) and any(map(_makes_dicts, value.args)):
+                return True  # ``defaultdict(lambda: {"lines": ...})``
     return False
+
+
+def _is_call_of(node: Expression, fullnames: frozenset[str]) -> bool:
+    """A call without arguments of one of some classes (``Counter()``)."""
+    return (
+        isinstance(node, CallExpr)
+        and not node.args
+        and isinstance(node.callee, RefExpr)
+        and node.callee.fullname in fullnames
+    )
+
+
+def _makes_dicts(node: Expression) -> bool:
+    """A ``lambda`` that gives a dict display: the factory of a ``defaultdict`` of dicts."""
+    return isinstance(node, LambdaExpr) and isinstance(node.expr(), DictExpr)
 
 
 def _holds_dicts(node: Expression) -> bool:
@@ -219,15 +244,10 @@ def _is_int(value: Expression | None) -> bool:
 
 
 def _is_empty(node: Expression) -> bool:
-    """``[]``, ``{}``, ``set()``, ``list()``, ``dict()``."""
+    """``[]``, ``{}``, ``set()``, ``list()``, ``dict()``, ``OrderedDict()``..."""
     if isinstance(node, (ListExpr, DictExpr, SetExpr)):
         return not node.items
-    return (
-        isinstance(node, CallExpr)
-        and not node.args
-        and isinstance(node.callee, NameExpr)
-        and node.callee.fullname in EMPTY_CALLS
-    )
+    return _is_call_of(node, EMPTY_CALLS | UNINFERRED_CALLS)
 
 
 def _descendants(node: Expression) -> Iterator[Expression]:

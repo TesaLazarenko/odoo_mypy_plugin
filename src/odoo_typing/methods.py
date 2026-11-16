@@ -164,6 +164,12 @@ def is_command_id_method(fullname: str) -> bool:
     return name in COMMAND_ID_METHODS and owner.startswith("odoo.") and owner.endswith(".Command")
 
 
+def is_command_set(fullname: str) -> bool:
+    """Whether a method is ``Command.set`` of Odoo."""
+    owner, _, name = fullname.rpartition(".")
+    return name == "set" and owner.startswith("odoo.") and owner.endswith(".Command")
+
+
 def command_id_signature(new_id: str, ctx: MethodSigContext) -> FunctionLike:
     """``Command.link(record.id)``: the ``id`` may also be a ``NewId`` (Odoo 17, 18).
 

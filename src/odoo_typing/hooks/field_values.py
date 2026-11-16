@@ -18,6 +18,7 @@ from mypy.types import (
     LiteralType,
     NoneType,
     ProperType,
+    TupleType,
     Type,
     TypeOfAny,
     UnionType,
@@ -55,6 +56,16 @@ class FieldValueHooks(Hooks):
         signature = ctx.default_signature
         if not isinstance(descriptor, Instance) or not isinstance(signature, CallableType):
             return signature
+        holder = get_proper_type(record_type(ctx))
+        if isinstance(holder, TupleType) or (
+            isinstance(holder, Instance) and holder.type.tuple_type is not None
+        ):
+            # A field class annotating a ``NamedTuple`` item (Odoo 19's ``Procurement``)
+            # stands for the value it holds: no descriptor of records there.
+            anything = AnyType(TypeOfAny.special_form)
+            return signature.copy_modified(
+                arg_types=[anything] * len(signature.arg_types), ret_type=anything
+            )
         mro = descriptor.type.mro
         relational = self._profile.relational_base
         base = next((item for item in mro if item.fullname == relational), None)

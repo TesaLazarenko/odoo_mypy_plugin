@@ -230,6 +230,11 @@ adds is no unknown attribute (`self.env.company.sale_automatic_invoice`,
 - in the block of `hasattr(records, "name")` of a name their class lacks: the records
   are `Any` there (`if hasattr(ResPartner, "check_vat"): ResPartner.fix_eu_vat_number()`).
 
+A test names a module where Odoo's API takes one: `_get("sale")`,
+`ensure_installed("sale")`, `"sale" in modules._installed()`, a `("name", "=", "sale")`
+term. A module that is not on the addons path (Odoo Enterprise's `accountant`) may
+extend any model: all records are `Any` where such a test decides the line.
+
 ## Field definitions and field names: `odoo-field-ref`
 
 `odoo-field-ref` covers the names that Odoo resolves when it loads the registry:
@@ -784,6 +789,15 @@ With real recordset types, some plain mypy codes appear more often:
   of a display or such a variable give its items as `Any` where they were the join.
 - `filter(None, [prefix, record.name])` takes values that may be `False`: `None` as the
   function drops every falsy item.
+- `Command.set(["account.tag_x", "own_record_1", tag.id])` (Odoo 19, 20 declare
+  `Collection[int]`) takes the XML ids of data that a loader such as the chart
+  template's `_load_data` replaces: a bare name, which the data itself may create, and a
+  `module.name` the data files of the closure create. Another string stays an error.
+- A `NamedTuple` that Odoo annotates with field classes (Odoo 19's
+  `Procurement(product_id: fields.Many2one, name: fields.Char, ...)`) takes and gives
+  `Any` for those items: the field class stands for its value.
+- `Counter()`, `OrderedDict()` and `defaultdict(lambda: {...})` bound to a variable are
+  typed in an `Any` context too, as the displays above.
 - `records._fields["price_unit"]` is the class of that field (`Float`, with
   `get_digits()`), not the `Field` Odoo declares (Odoo 19, 20; in 17 and 18 any
   attribute of a field reads). A `Selection` field with a literal selection there is
