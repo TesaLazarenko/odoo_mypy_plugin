@@ -158,6 +158,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   (`Unsupported operand types for >= ("timedelta" and "object")`).
 - `create()` takes any iterable of values (`create({...} for i in range(3))`), which
   Odoo reads once.
+- A `Selection` read where its keys are expected as string literals reads as those keys:
+  `float_round(..., rounding_method=self.rounding_method)` of Odoo 19+, which declares
+  `rounding_method: Literal["UP", "DOWN", "HALF-UP", ...]`.
 - A container of records without an annotation takes records of no model too
   (`isinstance(value, models.BaseModel)` before `result[line.id] = value`); one of
   tuples of ids takes lists of them, and back (`records._ids`, `records.ids`).

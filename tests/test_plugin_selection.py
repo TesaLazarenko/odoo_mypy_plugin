@@ -184,3 +184,42 @@ def test_ondelete_of_many2one(run_mypy: RunMypy) -> None:
         '10: error: ondelete="casacde" is not a policy of a Many2one field; did you mean '
         '"cascade"?  [odoo-field-ref]',
     ]
+
+
+EXPECTED_KEYS = """
+from typing import Literal
+
+from odoo import fields, models
+
+Method = Literal["UP", "DOWN", "HALF-UP"]
+
+def round_it(value: float, method: Method = "HALF-UP") -> float:
+    return value
+
+class Rounding(models.Model):
+    _name = "t.rounding"
+
+    method = fields.Selection([("UP", "Up"), ("DOWN", "Down")], required=True)
+    optional = fields.Selection([("UP", "Up"), ("HALF-UP", "Nearest")])
+    other = fields.Selection([("UP", "Up"), ("ODD", "Odd")], required=True)
+
+    def check(self) -> None:
+        round_it(1.0, self.method)
+        round_it(1.0, method=self.optional)
+        round_it(1.0, self.other)
+        kept = self.method
+        reveal_type(kept)
+"""
+
+
+def test_a_selection_reads_as_its_keys_where_they_are_expected(run_mypy: RunMypy) -> None:
+    """``float_round(..., rounding_method=self.rounding_method)`` with the keys of the field."""
+    messages = run_mypy({"my_mod": {"models.py": EXPECTED_KEYS}}).messages("models.py")
+
+    assert [message.split(";")[0] for message in messages] == [
+        # The field may be empty: its keys fit, ``False`` does not.
+        '20: error: Argument "method" to "round_it" has incompatible type '
+        "\"Literal['UP', 'HALF-UP', False]\"",
+        '21: error: Argument 2 to "round_it" has incompatible type "str"',  # "ODD"
+        '23: note: Revealed type is "str"',
+    ], messages

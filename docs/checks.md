@@ -521,6 +521,12 @@ creates.
   `Selection`, but the value is a record.
 - With `literal_selection = true`, a `Selection` field with literal keys reads as
   `Literal["draft"] | ... | Literal[False]` (see [configuration](configuration.md#options)).
+  Without it, a `Selection` read where a union of string literals that holds every key
+  of the field is expected reads as those keys: Odoo 19+ declares
+  `float_round(..., rounding_method: Literal["UP", "DOWN", "HALF-UP", ...])`, and
+  `rounding_method=self.rounding_method` (keys `UP`, `DOWN`, `HALF-UP`) fits it, where
+  `str` fitted no overload. `False` stays where the field may be empty (and is
+  reported); a key the literals lack keeps the value `str`.
 
 ## Annotated helpers: `odoo.values` and `odoo.model`
 

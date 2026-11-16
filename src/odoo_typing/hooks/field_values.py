@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TypeGuard
+
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import Context, Expression, MemberExpr, TypeInfo, Var
 from mypy.plugin import (
@@ -71,7 +73,9 @@ class FieldValueHooks(Hooks):
         base = next((item for item in mro if item.fullname == relational), None)
         if base is None:
             found = self._value_get(descriptor, signature, ctx)
-            return self._required_value(found, ctx) if self._settings.required_values else found
+            if self._settings.required_values:
+                found = self._required_value(found, ctx)
+            return self._expected_keys(found, ctx)
         records = record_type(ctx)
         if isinstance(records, NoneType):
             # Model.field: the field (Odoo 19 declares ``records: BaseModel``, not None).
@@ -112,6 +116,41 @@ class FieldValueHooks(Hooks):
         if len(kept) == len(value.items) or self._stored(member, ctx.api):
             return signature
         return signature.copy_modified(ret_type=make_simplified_union(kept))
+
+    def _expected_keys(self, signature: FunctionLike, ctx: MethodSigContext) -> FunctionLike:
+        """A ``Selection`` read where literal strings that hold its keys are expected.
+
+        ``float_round(amount, precision_rounding=..., rounding_method=self.rounding_method)``:
+        Odoo 19+ declares ``rounding_method: Literal["UP", "DOWN", "HALF-UP", ...]``, and the
+        field's keys are ``UP``, ``DOWN``, ``HALF-UP``. Read as ``str`` (without
+        ``literal_selection``), the value fitted no overload. Where the expression's type
+        context is a union of string literals that holds every key of the field, the value
+        reads as its keys (and ``False`` where the field may be empty, which is then
+        reported); elsewhere it stays ``str``.
+        """
+        if self._settings.literal_selection or not isinstance(signature, CallableType):
+            return signature
+        expected = type_checker(ctx.api).expr_checker.type_context[-1]
+        accepted = _string_literals(expected)
+        records = record_type(ctx)
+        if not accepted or not isinstance(records, Instance):
+            return signature
+        info = self._read_field(records, ctx)
+        if info is None or not info.selection or "selection" in info.dynamic:
+            return signature
+        if not set(info.selection) <= accepted:
+            return signature
+        value = get_proper_type(signature.ret_type)
+        items = [
+            get_proper_type(item)
+            for item in (value.items if isinstance(value, UnionType) else [value])
+        ]
+        string = next((item for item in items if _is_str(item)), None)
+        if string is None:
+            return signature
+        keys = [LiteralType(key, string) for key in info.selection]
+        kept = [item for item in items if item is not string]
+        return signature.copy_modified(ret_type=make_simplified_union([*keys, *kept]))
 
     def display_name(self, ctx: AttributeContext) -> Type:
         """``required_values``: ``display_name`` (annotated on ``BaseModel``) without ``False``."""
@@ -373,3 +412,21 @@ def falsy_filter_signature(ctx: FunctionSigContext) -> FunctionLike:
     items = UnionType.make_union([iterable.args[0], false])
     widened = iterable.copy_modified(args=[items])
     return signature.copy_modified(arg_types=[signature.arg_types[0], widened])
+
+
+def _string_literals(expected: Type | None) -> frozenset[str]:
+    """The string literals a type context is a union of (empty if it holds anything else)."""
+    proper = get_proper_type(expected) if expected is not None else None
+    items = proper.items if isinstance(proper, UnionType) else [proper]
+    found: set[str] = set()
+    for item in items:
+        literal = get_proper_type(item)
+        if isinstance(literal, LiteralType) and isinstance(literal.value, str):
+            found.add(literal.value)
+        elif not isinstance(literal, NoneType):
+            return frozenset()
+    return frozenset(found)
+
+
+def _is_str(typ: ProperType) -> TypeGuard[Instance]:
+    return isinstance(typ, Instance) and typ.type.fullname == "builtins.str"
