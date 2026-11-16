@@ -191,6 +191,10 @@ class LocalValues:
         events = self._events.get(_key(name), [])
         return [event.value for event in events if isinstance(event, _Binding)]
 
+    def changes(self, name: NameExpr) -> list[Change]:
+        """The in-place changes of a variable in the function (``x[k] = v``, ``x.update()``)."""
+        return [event for event in self._events.get(_key(name), []) if isinstance(event, Change)]
+
     def bindings_before(self, name: NameExpr, line: int) -> list[Expression | None] | None:
         """The values of the bindings of a variable before a line (``None`` items: unknown).
 

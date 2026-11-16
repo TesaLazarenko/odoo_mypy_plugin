@@ -200,8 +200,10 @@ once it can be.
   (`dict_items[str, object]` gives `dict_items[str, Any]`); `Var.is_inferred` of the
   variable the container is read from tells an inferred type from a declared one, and
   the function's bindings (`LocalValues`) tell a local dict display, whose value types
-  mypy has recorded. For such a local dict the signature hook of `__setitem__` takes
-  any value.
+  mypy has recorded. For such a local dict the signature hooks of `__setitem__`,
+  `update` and `setdefault` take any value; so do they for a dict the function builds
+  by string-keyed displays and changes under string keys (`LocalValues.changes`), and
+  they widen `int` values to `float` in a container without an annotation.
 
 - **An exception in the plugin.** mypy calls `get_additional_deps` and
   `report_config_data` outside the context in which it reports the crash of a hook: an

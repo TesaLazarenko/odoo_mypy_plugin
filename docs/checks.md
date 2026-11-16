@@ -718,22 +718,38 @@ With real recordset types, some plain mypy codes appear more often:
 - `assignment` between two classes of the same model (`AccountMoveLine` of two addons):
   use another variable name, or annotate it.
 - `assignment` and then `attr-defined` where a variable is reused: `partner = False`
-  then a record, one loop variable over two models. mypy's `allow_redefinition = true`
-  (with `local_partial_types = true`) lets such a variable take the new type; on the
-  37 core addons of the benchmark's `big` profile it takes the plugin-only errors from
-  1983 to 1780.
+  then a record, `products = []` then records, one loop variable over two models. mypy
+  takes a variable's type from its first value after the plugin's hooks have run, so
+  only mypy can widen it: `allow_redefinition = true` (with `local_partial_types = true`)
+  lets such a variable take the new type. On the six core addons of the benchmark's
+  `default` profile (Odoo 18) it takes the errors from 592 to 545 and the plugin-only
+  ones from 175 to 156, but it adds 50 errors of its own (unions where a variable is
+  assigned in branches, `local_partial_types` on class attributes such as
+  `_table = None`): turn it on knowingly.
 - A dict or a list of mixed values (`values = {"partner": partner, "amount": 0.0,
-  "lines": []}`): mypy types it by joining the values, `dict[str, object]` or a union,
-  and every use of a value was an error (`"object" has no attribute "append"`). The
-  plugin reads such a value as `Any`: `values["lines"]`, `.get()`, `.pop()`,
-  `.setdefault()`, `.items()`, `.values()`, `rows[0]` and `for row in rows`, when the
-  value type is `object` and the variable has no annotation, or when the variable is a
-  local one whose only value is a dict display of values of different types (then
-  `values[key] = x` takes any value too). A declared `dict[str, object]` stays as
-  declared; values of one type keep it. What mypy reports at the display itself stays:
-  `Need type annotation` when it holds an empty list next to a union, and a list of
-  such dicts passed to a function that declares `list[dict]`: annotate the variable
-  (`values: dict[str, Any] = {...}`).
+  "lines": []}`): mypy types it by joining the values (`dict[str, object]`, a protocol
+  they all satisfy such as `Container[Any]`, or a union), and every use of a value was an
+  error (`"object" has no attribute "append"`). The plugin reads such a value as `Any`:
+  `values["lines"]`, `.get()`, `.pop()`, `.setdefault()`, `.items()`, `.values()`,
+  `rows[0]` and `for row in rows`, when the value type is `object` or a protocol of the
+  standard library and the variable has no annotation, or when the variable is a local
+  one whose only value is a dict display of values of different types (then
+  `values[key] = x` takes any value too).
+- A **record dict**: a local variable built only by dict displays with string keys
+  (`context = {"default_move_type": "out_invoice"}`, also `{}`) that the function changes
+  under string keys (`context.update({"default_partner_id": partner.id})`,
+  `vals["name"] = name`). mypy takes its value type from the first display (or the first
+  change of `{}`), so every change with a value of another type was an error. Its values
+  read as `Any` and its changes take any value. A dict changed under keys that are not
+  literals (`totals[line.id] = 0.0`) is a mapping and keeps its value type.
+- A container without an annotation whose values are `int` takes a `float` too:
+  `totals = defaultdict(lambda: 0)`, then `totals[key] += line.balance`.
+- What mypy reports at the display itself stays: `Need type annotation` when it holds an
+  empty list next to a union, a list of such dicts passed to a function that declares
+  `list[dict]`, a second display assigned to the same variable, and a plain variable
+  started at `0` and increased by a `float` (`total = 0`, `total += line.amount`):
+  annotate the variable (`values: dict[str, Any] = {...}`, `total = 0.0`), or let mypy
+  widen it with `allow_redefinition = true` (with `local_partial_types = true`).
 
 ## Not yet supported
 
