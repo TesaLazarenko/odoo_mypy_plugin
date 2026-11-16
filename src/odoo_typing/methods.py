@@ -209,6 +209,10 @@ def browse_signature(base_model: str, ctx: MethodSigContext) -> FunctionLike:
     records. So ``None`` and ``False`` fit, and so does one id of any kind the iterable
     may hold: on Odoo 18 ``record.id`` is ``int | NewId``, which a list of ids may hold
     but the id alone may not (a ``NewId`` alone is falsy: no records, no error).
+
+    For the same reason ``browse(request and request.pricelist.id)`` takes the operands of
+    ``and`` before the last one: only their falsy values get there (mypy takes a
+    ``Request`` for one that may be falsy).
     """
     signature = ctx.default_signature
     receiver = get_proper_type(ctx.type)
@@ -230,9 +234,24 @@ def browse_signature(base_model: str, ctx: MethodSigContext) -> FunctionLike:
     if len(held) != 1:
         return signature
     false = LiteralType(False, ctx.api.named_generic_type("builtins.bool", []))
+    falsy = _falsy_operands(ctx.args[0][0], ctx) if ctx.args and len(ctx.args[0]) == 1 else []
     arg_types = [*signature.arg_types]
-    arg_types[0] = make_simplified_union([*declared.items, held[0], NoneType(), false])
+    arg_types[0] = make_simplified_union([*declared.items, held[0], NoneType(), false, *falsy])
     return signature.copy_modified(arg_types=arg_types)
+
+
+def _falsy_operands(argument: Expression, ctx: MethodSigContext) -> list[Type]:
+    """The types of the operands of ``a and b and c`` but the last: only falsy ones get through."""
+    # ``a and b and c`` is ``(a and b) and c``: its left operand gets through when falsy.
+    operands: list[Expression] = []
+    while isinstance(argument, OpExpr) and argument.op == "and":
+        operands.append(argument.left)
+        argument = argument.right
+    checker = ctx.api
+    if not operands or not isinstance(checker, TypeChecker):
+        return []
+    with checker.msg.filter_errors(), checker.local_type_map:
+        return [checker.get_expression_type(operand) for operand in operands]
 
 
 def type_checker_modules(ctx: MethodSigContext) -> dict[str, MypyFile]:

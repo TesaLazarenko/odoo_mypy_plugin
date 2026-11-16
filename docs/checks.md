@@ -769,7 +769,9 @@ With real recordset types, some plain mypy codes appear more often:
   pass `record.ids` / `record._origin.id`, or check `isinstance(record.id, int)`.
   `Command.link` / `update` / `delete` / `unlink` and `browse` take one as Odoo does;
   `browse` also takes `None` and `False` (`browse(context.get("active_id"))`), which
-  give no records.
+  give no records, and the operands of an `and` chain before the last one, which reach
+  it only when they are falsy: `browse(request and hasattr(request, "pricelist") and
+  request.pricelist.id)` on Odoo 20, which declares `request: Request`.
 - `assignment` between two classes of the same model (`AccountMoveLine` of two addons):
   use another variable name, or annotate it.
 - A **variable that the function binds more than once** (`products = []` then

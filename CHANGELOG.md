@@ -158,6 +158,8 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   (`Unsupported operand types for >= ("timedelta" and "object")`).
 - `create()` takes any iterable of values (`create({...} for i in range(3))`), which
   Odoo reads once.
+- `browse()` takes the operands of an `and` chain before the last one, which reach it
+  only when they are falsy: `browse(request and request.pricelist.id)` on Odoo 20.
 - `Many2one`, `Integer`, `Many2oneReference`, `Float` and `Monetary` values take the empty
   string a string condition gives (`model.mapped_partner_id = model.match_label and
   partner.id`), which Odoo converts as any falsy value.

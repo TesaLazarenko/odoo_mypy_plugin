@@ -734,6 +734,9 @@ def test_browse_takes_what_odoo_takes(run_mypy: RunMypy) -> None:
                         partners.browse([1, 2])
                         reveal_type(partners.browse(self.id))
                         partners.browse(1.5)
+                        # Only a falsy ``self`` (no record) gets through: no records.
+                        partners.browse(self and self.partner_id.id)
+                        partners.browse(self and 1.5)
                 """
             }
         }
@@ -741,7 +744,8 @@ def test_browse_takes_what_odoo_takes(run_mypy: RunMypy) -> None:
 
     messages = result.messages("models.py")
     assert messages[0].startswith("15: note: Revealed type is ")
-    assert len(messages) == 2, messages
+    assert len(messages) == 3, messages
     assert messages[1].startswith(
         '16: error: Argument 1 to "browse" of "BaseModel" has incompatible type "float"'
     )
+    assert messages[2].startswith('19: error: Argument 1 to "browse" of "BaseModel"'), messages
