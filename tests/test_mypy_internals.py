@@ -17,6 +17,7 @@ from pathlib import Path
 import mypy.build
 import mypy.checker
 import pytest
+from mypy.binder import ConditionalTypeBinder
 from mypy.checker import CheckerScope, TypeChecker
 from mypy.checkexpr import ExpressionChecker
 from mypy.errors import Errors
@@ -55,6 +56,11 @@ METHODS: list[tuple[object, str, str]] = [
     (ExpressionChecker, "method_fullname", "plugin.py (_method_fullname: names of hooks)"),
     (TypeInfo, "get_method", "plugin.py (_declared_signature)"),
     (LambdaExpr, "expr", "hooks/domains.py"),
+    (TypeChecker, "hasattr_type_maps", "hooks/asked_fields.py"),
+    (TypeChecker, "has_valid_attribute", "hooks/asked_fields.py"),
+    (TypeChecker, "add_any_attribute_to_type", "hooks/asked_fields.py"),
+    (TypeChecker, "store_type", "hooks/asked_fields.py"),
+    (ConditionalTypeBinder, "put", "hooks/asked_fields.py (from_assignment=False)"),
 ]
 ATTRIBUTES: list[tuple[object, str, str]] = [
     (TypeChecker, "scope", "hooks/models.py, hooks/field_definitions.py"),
@@ -63,6 +69,7 @@ ATTRIBUTES: list[tuple[object, str, str]] = [
     (TypeChecker, "local_type_map", "methods.py (a context manager)"),
     (TypeChecker, "tree", "hooks/models.py"),
     (TypeChecker, "errors", "hooks/models.py"),
+    (TypeChecker, "binder", "hooks/asked_fields.py"),
     (MypyFile, "plugin_deps", "hooks/models.py"),
     (SemanticAnalyzer, "cur_mod_id", "hooks/annotations.py"),
     (Errors, "ignored_files", "hooks/models.py"),

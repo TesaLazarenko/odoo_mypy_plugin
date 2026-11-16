@@ -182,6 +182,16 @@ once it can be.
   module does not load all the comodel's classes), so the result has every extension
   the reader sees. `Model.field` (read on the class) is the field itself.
 
+- **`__contains__`** of records: `"f" in records` asks whether a field is there. mypy
+  narrows `hasattr(records, "f")` by giving the type an extra attribute and has no hook
+  for narrowing, so the method hook of `__contains__` does what mypy's `hasattr` does
+  (`TypeChecker.hasattr_type_maps`) and puts the narrowed type of `records` into
+  mypy's binder, and into the type recorded for the operand, which mypy narrows the
+  right side of `in` from. The class is not given `__getattr__`: mypy would then take
+  records for any protocol. The model asked is remembered for the function being
+  checked: `env["model"]` and the records kept on a test case take the attribute after
+  the question.
+
 - **An exception in the plugin.** mypy calls `get_additional_deps` and
   `report_config_data` outside the context in which it reports the crash of a hook: an
   exception there ends mypy with an INTERNAL ERROR that points at mypy's issue tracker,

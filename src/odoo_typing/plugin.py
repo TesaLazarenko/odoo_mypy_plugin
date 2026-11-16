@@ -118,6 +118,7 @@ from odoo_typing.hooks.annotations import (
     values_get,
     values_get_signature,
 )
+from odoo_typing.hooks.asked_fields import AskedFieldHooks
 from odoo_typing.hooks.built_classes import inherit_built_class
 from odoo_typing.hooks.class_attributes import define_through_cls, readable_on_class
 from odoo_typing.hooks.comparisons import COMPARISON_HOOKS, ComparisonHooks
@@ -187,6 +188,7 @@ __version__ = records.source_digest()
 DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
 ENV = "env"
 GETATTR = "__getattr__"
+CONTAINS = "__contains__"
 # Methods whose first argument is ``vals`` (``create``: also a list of them;
 # ``copy``: its ``default``).
 VALS_METHODS = frozenset({"create", "write", "copy"})
@@ -236,6 +238,7 @@ class OdooPlugin(Plugin):
         self._comparisons = ComparisonHooks(models)
         self._fields = FieldDefinitionHooks(models, self._domains, self._env)
         self._values = FieldValueHooks(models)
+        self._asked = AskedFieldHooks(models)
         annotations = AnnotationHooks(models)
         self._type_hooks: dict[str, Callable[[AnalyzeTypeContext], Type]] = {
             name: partial(annotations.annotated, name) for name in ANNOTATED_NAMES
@@ -249,7 +252,7 @@ class OdooPlugin(Plugin):
             self._classes.after_class_body, _no_result, "the class hook of a model"
         )
         self._kept_record = fail_soft(
-            self._values.kept_record, _default_attribute, "the hook of a record kept on a class"
+            self._kept_records, _default_attribute, "the hook of a record kept on a class"
         )
         self._every_class = fail_soft(_every_class, _no_result, "the hook of every class")
         self._rewritten: dict[str, MypyFile] = {}  # module -> the tree rewritten last
@@ -604,11 +607,19 @@ class OdooPlugin(Plugin):
                 kept = self._keeps_record(fullname)
                 if kept is None:
                     return None  # asked again once mypy has inferred the attribute's type
-                hook = self._values.kept_record if kept else None
+                hook = self._kept_records if kept else None
             if hook is None and self._hook_gives_own_base(fullname):
                 hook = _any_attribute
             found[fullname] = _soft(hook, _default_attribute, f"the hook of {fullname}")
         return found[fullname]
+
+    def _kept_records(self, ctx: AttributeContext) -> Type:
+        """Records kept on a class that is no model, with the fields their function asked for."""
+        return self._asked.with_asked(self._values.kept_record(ctx), ctx)
+
+    def _env_records(self, ctx: MethodContext) -> Type:
+        """``env["model"]``, with the fields the function asked the model for."""
+        return self._asked.with_asked(self._env.getitem(ctx), ctx)
 
     def _keeps_record(self, fullname: str) -> bool | None:
         """Whether an attribute of a class that is no model holds records of a model.
@@ -666,7 +677,7 @@ class OdooPlugin(Plugin):
         if fullname == DICT_GET:
             return values_get
         if fullname == profile.env_getitem:
-            return self._env.getitem
+            return self._env_records
         if fullname == f"{profile.environment}.ref":
             return self._env.ref
         name = fullname.rpartition(".")[2]
@@ -680,6 +691,8 @@ class OdooPlugin(Plugin):
             return partial(self._recordsets.read_result, name)
         if fullname in COMPARISON_HOOKS:
             return self._comparisons.selection_keys
+        if name == CONTAINS:
+            return self._asked.contains  # ``"f" in records``
         if name == "fetch":
             return partial(
                 _checked, partial(self._recordsets.check_field_names, name, "field_names")

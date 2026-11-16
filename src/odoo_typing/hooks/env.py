@@ -130,16 +130,40 @@ class EnvHooks(Hooks):
         """
         xml_id = call_argument(ctx, "xml_id", 0)
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
-        if not isinstance(xml_id, StrExpr) or addon_name is None:
+        if addon_name is None:
             return ctx.default_return_type
+        if not isinstance(xml_id, StrExpr):  # an id made at run time
+            return self._of_no_known_model(ctx.default_return_type)
         optional = is_false(call_argument(ctx, "raise_if_not_found", 1))
         model = self._xml_id_model(xml_id, addon_name, optional, ctx.api)
         if model is None:
-            return ctx.default_return_type
+            return self._of_no_known_model(ctx.default_return_type)
         records = self._models.view_type(model, addon_name, ctx.api)
         if not isinstance(records, Instance):
-            return ctx.default_return_type
+            return self._of_no_known_model(ctx.default_return_type)
         return UnionType([records, NoneType()]) if optional else records
+
+    def _of_no_known_model(self, declared: Type) -> Type:
+        """Records whose model the data files do not say: ``Any`` where Odoo says ``BaseModel``.
+
+        Odoo 19 declares ``ref`` as ``BaseModel`` (``| None``): records, but of no
+        model, so reading any field of them was an unknown attribute. They are records
+        of some model that is not known here; ``None`` stays in the type. As for
+        ``env[name]`` of a name made at run time, ``dynamic_env = "base"`` keeps
+        ``BaseModel``.
+        """
+        if self._settings.dynamic_env != "any":
+            return declared
+        proper = get_proper_type(declared)
+        items = proper.items if isinstance(proper, UnionType) else [proper]
+        base = self._profile.base_model
+        mapped = [
+            AnyType(TypeOfAny.special_form)
+            if isinstance(item, Instance) and item.type.fullname == base
+            else item
+            for item in map(get_proper_type, items)
+        ]
+        return UnionType.make_union(mapped) if isinstance(proper, UnionType) else mapped[0]
 
     def xml_id_argument(self, method: str, ctx: MethodContext) -> Type:
         """``user.has_group("base.group_user")``, ``_for_xml_id("sale.action_orders")``.

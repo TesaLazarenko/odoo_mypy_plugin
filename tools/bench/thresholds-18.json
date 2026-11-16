@@ -1,8 +1,8 @@
 {
-  "*": 158,
+  "*": 157,
   "arg-type": 26,
   "assignment": 24,
-  "attr-defined": 15,
+  "attr-defined": 14,
   "call-arg": 1,
   "call-overload": 2,
   "dict-item": 6,

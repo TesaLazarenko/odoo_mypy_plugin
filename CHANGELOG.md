@@ -33,7 +33,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   positional arguments of its own. A name of `odoo.fields` that is no field class
   (`Domain(...)` in a class body) is no field.
 - `env.ref("module.name")` is the record's model, from the XML ids of data files (also
-  the ids `_update_xmlids` gives, whose model the data does not say).
+  the ids `_update_xmlids` gives, whose model the data does not say). The record of an
+  id whose model is not known (also an id made at run time) is `Any`, not Odoo 19's
+  `BaseModel`, of which every field was an unknown attribute.
 - `odoo.http.request` has the attributes addons set at run time (`request.website`,
   `.lang`, `.is_frontend`, `.website_routing`...), typed `Any`.
 - `mapped("a.b")`, `grouped("a")` and `read([...])` / `search_read` return real types.
@@ -101,6 +103,10 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   (`if "payment_provider_id" in lines._fields:`), and in a function that passes the
   addon's name to a call (`cls.ensure_installed("sale")`). `"f" in env["model"]` guards
   a field like `"f" in records._fields`.
+- A field asked for is read without an error: `if "phone_sanitized" in partner:` (or
+  `in partner._fields`) gives `partner` the attribute, as mypy does for `hasattr`; a
+  question about the model (`"f" in self.env["model"]`) also covers the records of that
+  model the function types after it (`env[...]`, the attributes of a test case).
 - Fewer false errors: a key that only an addon outside the closure adds to a selection
   (`selection_add`) in domains and vals; `vals_ignore_keys` names (`x_*`) in domains,
   `mapped`, `read`, orders and `@api.depends`; `default_x=False` in a context; assigning

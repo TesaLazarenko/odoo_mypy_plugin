@@ -192,6 +192,15 @@ or `hasattr(record, "x_flag")`. There the name is not reported as an unknown key
 `vals`, a domain field, or a field of `mapped()` / `filtered()` / `sorted()` /
 `grouped()` / `read()` (whatever the records are).
 
+**Reading** such a field needs the question to be about the records that are read:
+`if "phone_sanitized" in partner:` (or `in partner._fields`) gives `partner` the
+attribute from there on, in the block the question is in, as mypy does for
+`hasattr(partner, "phone_sanitized")`; its type is not known. A question about the
+model (`"f" in self.env["model"]`, `"f" in records._fields`) also covers the records of
+that model which the function gets from `env[...]` or from the attributes of a test
+case after it. A variable that got its records before the question keeps its type: ask
+the variable itself. A field the model has keeps its type.
+
 Code written **for an addon outside the dependencies** also uses that addon's models.
 A model is not reported (and its records are `Any`):
 
@@ -439,8 +448,10 @@ Its sub-code `odoo-xmlid-depends` is an id that only an addon outside the closur
 creates.
 
 - The result is the record's model as the addon sees it: `env.ref("base.main_company")`
-  is a `res.company` record. An id given by `_update_xmlids` does not say its model:
-  `env.ref` keeps its declared type there.
+  is a `res.company` record. An id given by `_update_xmlids` does not say its model,
+  nor does an id made at run time (`env.ref(f"account.{company.id}_tax")`): the record
+  is `Any` there (Odoo 19 and 20 declare `BaseModel`, records of no model, whose every
+  field would be an unknown attribute; `dynamic_env = "base"` keeps that).
 - With `raise_if_not_found=False` the result is `| None`, and the check is off (the code
   expects the id may be missing). So is a line under
   `if env.ref("sale.x", raise_if_not_found=False):` for every id of `sale`.

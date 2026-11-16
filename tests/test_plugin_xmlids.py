@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import OdooNames, RunMypy
 
 T_BASE = {
@@ -79,8 +80,63 @@ def test_env_ref_types_and_checks_xml_ids(run_mypy: RunMypy, names: OdooNames) -
         '12: error: XML id "t_other.other_thing" is created by addon "t_other", which is not '
         'in the dependencies of "t_use"  [odoo-xmlid-depends]',
         '13: error: XML id "thing_one" has no module ("module.name")  [odoo-xmlid]',
-        # _update_xmlids does not say the model: env.ref keeps its declared type.
-        '19: note: Revealed type is "'
-        + ("odoo.orm.models.BaseModel" if names.version >= 19 else "Any")
-        + '"',
+        # _update_xmlids does not say the model: records of no known model (Odoo 19+
+        # declares ``BaseModel``, whose fields would all be unknown attributes).
+        '19: note: Revealed type is "Any"',
     ]
+
+
+@pytest.mark.odoo(19, 20)
+def test_ref_of_an_id_the_data_does_not_create_is_no_model_at_all(run_mypy: RunMypy) -> None:
+    """Odoo 19 declares ``BaseModel | None``: records of no model, whose fields are errors."""
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    def action(self) -> None:
+                        record = self.env.ref("other_addon.record", raise_if_not_found=False)
+                        if not record:
+                            return
+                        reveal_type(record)
+                        record.name
+                        reveal_type(self.env.ref(f"my_mod.{self.id}_thing"))
+                        made = self.env.ref(f"my_mod.{self.id}_thing", raise_if_not_found=False)
+                        reveal_type(made)
+                """
+            }
+        }
+    )
+
+    assert result.messages("models.py") == [
+        '11: note: Revealed type is "Any"',
+        '13: note: Revealed type is "Any"',  # an id made at run time
+        '15: note: Revealed type is "Any | None"',
+    ]
+
+
+@pytest.mark.odoo(19, 20)
+def test_ref_of_no_known_model_keeps_odoo_s_type_when_asked_to(run_mypy: RunMypy) -> None:
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    def action(self) -> None:
+                        reveal_type(self.env.ref(f"my_mod.{self.id}_thing"))
+                """
+            }
+        },
+        options='dynamic_env = "base"\n',
+    )
+
+    (message,) = result.messages("models.py")
+    assert message.startswith('8: note: Revealed type is "odoo.orm.models.BaseModel')

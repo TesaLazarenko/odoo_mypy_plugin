@@ -114,7 +114,9 @@ that entry.
 
 **`dynamic_env = "base"`** keeps plain mypy's `BaseModel` for `env[name]` when `name` is
 not a literal (or a `Final` / `Literal` str): every field read on it is then an
-`attr-defined` error. The default `"any"` leaves such code unchecked.
+`attr-defined` error. The default `"any"` leaves such code unchecked. The same goes for
+`env.ref(...)` of an id whose model is not known (made at run time, or given by
+`_update_xmlids`), which Odoo 19 and 20 declare as `BaseModel`.
 
 **`vals_ignore_keys`** lists glob patterns (case-sensitive) of `vals` keys that are not
 reported as unknown fields. The default `["x_*"]` covers fields created in the database
