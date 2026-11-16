@@ -142,7 +142,9 @@ from odoo_typing.hooks.env import (
     XML_ID_METHODS,
     EnvHooks,
     add_request_attributes,
+    context_class,
     env_cursor,
+    has_context_parameter,
     present_env,
     request_env,
     test_cursor,
@@ -672,7 +674,11 @@ class OdooPlugin(Plugin):
             return wrapper_signature
         found = self._hooks.function_signature
         if fullname not in found:
-            found[fullname] = self._field_tuple_hook(fullname) or self._registered_hook(fullname)
+            hook = self._field_tuple_hook(fullname) or self._registered_hook(fullname)
+            context = self._context_hook(fullname, method=False)
+            found[fullname] = (
+                partial(_signature_then, hook, context) if hook and context else hook or context
+            )
         return found[fullname]
 
     def get_method_signature_hook(
@@ -904,11 +910,17 @@ class OdooPlugin(Plugin):
         if widen is not None:
             return widen
         # ``env["stock.rule"].Procurement(...)``, ``random.Random().sample(records, 2)``
-        found = self._field_tuple_hook(fullname) or self._registered_hook(fullname)
-        dispatch = self._dispatch_hook(fullname)
-        if found is not None and dispatch is not None:
-            return partial(_signature_then, found, dispatch)
-        return found or dispatch
+        found: Callable[[MethodSigContext], FunctionLike] | None = self._field_tuple_hook(
+            fullname
+        ) or self._registered_hook(fullname)
+        chained: list[Callable[[MethodSigContext], FunctionLike] | None] = [
+            self._dispatch_hook(fullname),
+            self._context_hook(fullname, method=True),
+        ]
+        for then in chained:
+            if then is not None:
+                found = partial(_signature_then, found, then) if found is not None else then
+        return found
 
     def _dispatch_hook(self, fullname: str) -> Callable[[MethodSigContext], FunctionLike] | None:
         """A method of a model class whose parameter takes records of the models it tests.
@@ -951,7 +963,12 @@ class OdooPlugin(Plugin):
         return partial(records_signature, self._registered, base_model)
 
     def _declared_signature(self, fullname: str, method: bool) -> Type | None:
-        """The declared type of the method or function a hook is asked for, if mypy has it.
+        """The declared type of the method or function a hook is asked for, if mypy has it."""
+        found = self._declared_function(fullname, method)
+        return found.type if found is not None else None
+
+    def _declared_function(self, fullname: str, method: bool) -> FuncDef | None:
+        """The method or function a hook is asked for, if mypy has it.
 
         mypy names a method's hooks after the receiver's class (``addon.SaleOrder.search``),
         so the method is looked up in that class's MRO.
@@ -970,7 +987,25 @@ class OdooPlugin(Plugin):
             found = node.node if node is not None else None
         if isinstance(found, Decorator):
             found = found.func
-        return found.type if isinstance(found, FuncDef) else None
+        return found if isinstance(found, FuncDef) else None
+
+    def _context_hook(
+        self, fullname: str, method: bool
+    ) -> Callable[[MethodSigContext | FunctionSigContext], FunctionLike] | None:
+        """A function or method Odoo declares with a ``dict[str, ...]`` parameter (Odoo 20).
+
+        See :meth:`EnvHooks.context_signature`: it takes ``env.context``, a ``frozendict``.
+        """
+        if not self._modules or "." not in fullname:
+            return None
+        function = self._declared_function(fullname, method)
+        if function is None or not has_context_parameter(function.type):
+            return None
+        owner = function.info.fullname if method and function.info else function.fullname
+        if not self._declared_by_odoo(owner):
+            return None
+        context = context_class(self._models.profile.environment, self._modules)
+        return partial(self._env.context_signature, context) if context is not None else None
 
     def _hook_gives_own_base(self, fullname: str) -> bool:
         """Whether a name is read through a ``__getattr__`` declared to return a base class.

@@ -158,6 +158,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   (`Unsupported operand types for >= ("timedelta" and "object")`).
 - `create()` takes any iterable of values (`create({...} for i in range(3))`), which
   Odoo reads once.
+- Odoo 20: the parameters that Odoo annotates `dict[str, ...]` take `env.context`, a
+  `frozendict`, which is no `dict`: `clean_context(self.env.context)`,
+  `with_context(self.env.context)`.
 - `browse()` takes the operands of an `and` chain before the last one, which reach it
   only when they are falsy: `browse(request and request.pricelist.id)` on Odoo 20.
 - `Many2one`, `Integer`, `Many2oneReference`, `Float` and `Monetary` values take the empty

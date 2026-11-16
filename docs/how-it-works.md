@@ -117,7 +117,11 @@ once it can be.
   relational field. A class without bases whose `__new__` returns another class's
   object (Odoo 20's `frozendict`; read from the source, since mypy drops the function
   bodies of modules whose errors it does not show) gets that class as its base, and a
-  class with `__getattr__ = <method>` that method as its hook.
+  class with `__getattr__ = <method>` that method as its hook. The signature hooks of
+  the functions and methods Odoo declares with a `dict[str, ...]` parameter add the
+  class `Environment.context` is declared with, where it is no `dict` (`context_class`),
+  to that parameter in addon files: Odoo 20 passes `self.env.context` to
+  `clean_context(context: dict[str, Any])` itself.
 
 - **`get_customize_class_mro_hook`** gives each model class the MRO of its registry
   class, computed by the registry. It is never copied from a base class, so it does not

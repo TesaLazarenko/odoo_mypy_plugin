@@ -23,6 +23,7 @@ from mypy.plugin import (
     AttributeContext,
     CheckerPluginInterface,
     ClassDefContext,
+    FunctionSigContext,
     MethodContext,
     MethodSigContext,
 )
@@ -32,6 +33,7 @@ from mypy.types import (
     FunctionLike,
     Instance,
     NoneType,
+    ProperType,
     Type,
     TypeOfAny,
     TypeType,
@@ -53,13 +55,16 @@ from odoo_typing.references import did_you_mean
 from odoo_typing.xmlids import ODOO_XMLID, ODOO_XMLID_DEPENDS, automatic_model
 
 __all__ = [
+    "CONTEXT",
     "GROUPS",
     "REQUEST_ATTRIBUTES",
     "XML_ID_METHODS",
     "EnvHooks",
     "XmlIdUse",
     "add_request_attributes",
+    "context_class",
     "env_cursor",
+    "has_context_parameter",
     "present_env",
     "request_env",
     "type_request",
@@ -67,6 +72,8 @@ __all__ = [
 
 
 EXECUTE: Final = "execute"  # what a cursor class has (see env_cursor)
+CONTEXT: Final = "context"
+DICT: Final = "builtins.dict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +112,38 @@ QUALIFIED_XML_ID: Final = re.compile(r"[A-Za-z_]\w*\.[A-Za-z_]\w*")
 
 class EnvHooks(Hooks):
     """Type what an ``Environment`` gives, as the addon of the checked file sees it."""
+
+    def context_signature(
+        self, context: TypeInfo, ctx: MethodSigContext | FunctionSigContext
+    ) -> FunctionLike:
+        """A ``dict[str, ...]`` parameter that Odoo declares takes ``env.context`` (Odoo 20).
+
+        Odoo 20 declares ``Environment.context: frozendict``, which is no ``dict``, and
+        still annotates ``clean_context(context: dict[str, Any])`` and
+        ``with_context(ctx: dict[str, Any] | None)``, to which its own code passes
+        ``self.env.context``: every such call was an ``arg-type`` error. The parameters
+        of the functions and methods Odoo declares take the context's class too, in addon
+        files (``context_class``).
+        """
+        signature = ctx.default_signature
+        if (
+            not isinstance(signature, CallableType)
+            or self.registry.addon_name_for_path(ctx.api.path) is None
+        ):
+            return signature
+        checker = type_checker(ctx.api)
+        anything = AnyType(TypeOfAny.special_form)
+        args: list[Type] = [checker.named_type("builtins.str"), anything]
+        held = Instance(context, args[: len(context.defn.type_vars)])
+        widened = [
+            UnionType.make_union([*_items(arg), held])
+            if any(_string_dict(item) for item in _items(arg))
+            else arg
+            for arg in signature.arg_types
+        ]
+        if all(new is old for new, old in zip(widened, signature.arg_types, strict=True)):
+            return signature
+        return signature.copy_modified(arg_types=widened)
 
     def getitem(self, ctx: MethodContext) -> Type:
         """``env["model.name"]``: the model's records as the addon sees them."""
@@ -495,3 +534,43 @@ def add_request_attributes(ctx: ClassDefContext) -> None:
         var._fullname = f"{info.fullname}.{name}"  # pylint: disable=protected-access
         var.is_ready = True
         info.names[name] = SymbolTableNode(MDEF, var, plugin_generated=True)
+
+
+def context_class(environment: str, modules: dict[str, MypyFile]) -> TypeInfo | None:
+    """The class ``Environment.context`` is declared with, where it is no ``dict`` (Odoo 20).
+
+    Odoo 20 declares ``context: frozendict``, whose ``__new__`` builds a
+    ``MappingProxyType`` (:mod:`odoo_typing.hooks.built_classes`); Odoo 19 derives it from
+    ``dict``.
+    """
+    found = lookup_fully_qualified(environment, modules, raise_on_missing=False)
+    info = found.node if found is not None else None
+    symbol = info.get(CONTEXT) if isinstance(info, TypeInfo) else None
+    variable = symbol.node if symbol is not None else None
+    declared = get_proper_type(variable.type) if isinstance(variable, Var) else None
+    if not isinstance(declared, Instance) or declared.type.has_base(DICT):
+        return None
+    return declared.type
+
+
+def has_context_parameter(signature: Type | None) -> bool:
+    """Whether a declared signature has a parameter of a ``dict`` with ``str`` keys."""
+    if not isinstance(signature, CallableType):
+        return False
+    return any(_string_dict(item) for arg in signature.arg_types for item in _items(arg))
+
+
+def _items(typ: Type) -> list[ProperType]:
+    proper = get_proper_type(typ)
+    return (
+        [get_proper_type(item) for item in proper.items]
+        if isinstance(proper, UnionType)
+        else [proper]
+    )
+
+
+def _string_dict(typ: ProperType) -> bool:
+    if not isinstance(typ, Instance) or typ.type.fullname != DICT or len(typ.args) != 2:
+        return False
+    key = get_proper_type(typ.args[0])
+    return isinstance(key, Instance) and key.type.fullname == "builtins.str"

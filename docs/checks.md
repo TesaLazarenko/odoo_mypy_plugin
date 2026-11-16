@@ -87,7 +87,10 @@ plugin:
   `**context`). Odoo 20 declares it as `frozendict`, a class whose `__new__` returns a
   `MappingProxyType` and that has no method of its own, so every
   `env.context.get(...)` was `"frozendict" has no attribute "get"`. A class without
-  bases whose `__new__` builds another class's object has that class as its base.
+  bases whose `__new__` builds another class's object has that class as its base. The
+  parameters that Odoo annotates `dict[str, ...]` take it too, as Odoo's own code passes
+  it there: `clean_context(self.env.context)`, `with_context(self.env.context)`. A
+  function of your addon annotated with `dict` still reports it.
 - **Controllers**: `odoo.http.request` is a `Request` and `request.env` an
   `Environment`, so `request.env["res.partner"]` is checked like `self.env`, in every
   module, also one without model classes (a controller helper) and on warm runs. (Odoo

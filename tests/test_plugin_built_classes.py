@@ -107,3 +107,36 @@ def test_context_of_odoo_20_is_a_mapping(run_mypy: RunMypy) -> None:
     ]
     assert len(messages) == 4, messages
     assert 'has no attribute "missing"' in messages[3]
+
+
+@pytest.mark.odoo(20)
+def test_odoo_20_parameters_annotated_dict_take_the_context(run_mypy: RunMypy) -> None:
+    """``clean_context(self.env.context)``, ``with_context(self.env.context)`` (Odoo 20)."""
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import models
+                from odoo.tools import clean_context
+
+                def own(context: dict[str, object]) -> None:
+                    pass
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    def action(self) -> None:
+                        self.with_context(clean_context(self.env.context))
+                        self.with_context(self.env.context)
+                        self.with_context(1)
+                        own(self.env.context)
+                """
+            }
+        }
+    )
+
+    # Only Odoo's own annotations take it: a function of the addon is its author's word.
+    assert [message.split(";")[0] for message in result.messages("models.py")] == [
+        '14: error: Argument 1 to "with_context" of "BaseModel" has incompatible type "int"',
+        '15: error: Argument 1 to "own" has incompatible type "frozendict[Any, Any]"',
+    ]
