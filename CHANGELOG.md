@@ -84,8 +84,35 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - A field delegated through `_inherits` is required when the parent's field is, as in
   Odoo; `create_date` and `write_date` read without `| Literal[False]`
   (`required_values`).
+- A local variable that its function binds more than once has the type of each value
+  where it is bound (`rebound_variables`, on by default): `products = []` then records,
+  `proposal = company` then `proposal = False`, `total = 0` then `total += line.amount`,
+  one loop variable over two models were `assignment` errors and then unknown
+  attributes, since mypy takes a variable's type from its first value. Where branches
+  that gave it values of different types meet it is `Any`. A variable that may be
+  given `False` keeps it as `Literal[False]`, so `if partner:` leaves the records
+  rather than `Literal[True]`.
+- What `self`'s `-> Self` methods give (`with_context`, `filtered`, `sudo`...),
+  iterating, indexing and the set operators of records are the addon's records of the
+  model: `self` of an earlier class did not fit a dict keyed by them or `concat()`, and
+  `self.with_context(...).later_method()` was an unknown attribute.
+- Records of a model that an addon outside the dependencies extends are `Any` where
+  that addon runs: under a test about installed modules that names it (also ended by
+  `self.skipTest(...)`, also through a name bound to a search of
+  `ir.module.module`), under the guard of a field no dependency has, and in the block
+  of `hasattr(records, "x")` of a name their class lacks.
+- `records._fields["name"]` is the class of that field on Odoo 19 and 20 (`Float` has
+  `get_digits()`); a `Selection` with literal keys is `Any` there.
 
 ### Checks
+
+- Data built from displays is not typed from its first values: a variable bound to a
+  display of dicts or to a value with an empty display inside (`[{...}, {...}]`,
+  `{"lines": []}`, `dict((k, []) for k in keys)`) is `list[Any]` / `dict[Any, Any]`
+  (mypy made it `list[object]`, or asked for an annotation); a union of unrelated values
+  in a container without an annotation reads as `Any`; a container of an empty display
+  (`next(rows, {})`) takes any key; `zip()` / `enumerate()` of such displays give `Any`
+  items; `filter(None, ...)` takes values that may be `False`.
 
 - Every check also runs where `self` is a type variable: in an unannotated `create` /
   `copy` override (typed `(self: Self) -> Self`), under `-> Self` and `self: T`.

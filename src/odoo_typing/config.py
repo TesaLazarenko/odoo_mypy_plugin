@@ -57,6 +57,7 @@ OPTIONS = (
     "vals_ignore_keys",
     "literal_selection",
     "required_values",
+    "rebound_variables",
     "scan_cache_dir",
 )
 # Options that are lists; in an INI file, entries separated by commas or newlines.
@@ -94,6 +95,9 @@ class Settings:
         required_values: Read a required field (``required=True``, as the merged
             definitions of the model leave it) and ``display_name`` without
             ``| Literal[False]`` (the default; ``False``: as Odoo declares them).
+        rebound_variables: Give a local variable that its function binds more than
+            once the type of each value at its binding (the default; ``False``: the
+            type of its first value, as mypy infers it), see :mod:`odoo_typing.rebound`.
         scan_cache_dir: Where addon scans are kept for every project and mypy cache
             (:class:`odoo_typing.scan_store.ScanStore`); ``None``: only in mypy's cache.
     """
@@ -106,6 +110,7 @@ class Settings:
     vals_ignore_keys: tuple[str, ...] = DEFAULT_VALS_IGNORE_KEYS
     literal_selection: bool = False
     required_values: bool = True
+    rebound_variables: bool = True
     scan_cache_dir: Path | None = None
 
     def option_data(self) -> list[str]:
@@ -116,6 +121,7 @@ class Settings:
             f"vals_ignore_keys={','.join(self.vals_ignore_keys)}",
             f"literal_selection={self.literal_selection}",
             f"required_values={self.required_values}",
+            f"rebound_variables={self.rebound_variables}",
         ]
 
     @property
@@ -156,6 +162,7 @@ def load_settings(
         ),
         literal_selection=_flag("literal_selection", table.get("literal_selection", False)),
         required_values=_flag("required_values", table.get("required_values", True)),
+        rebound_variables=_flag("rebound_variables", table.get("rebound_variables", True)),
         scan_cache_dir=_scan_cache_dir(table, base_dir),
     )
 

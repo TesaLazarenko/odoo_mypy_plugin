@@ -99,6 +99,8 @@ class EnvHooks(Hooks):
         if self.registry.view_class(model, addon_name) is None:
             outside = self._models.unknown_model(model, addon_name, ctx.context, ctx.api)
             return outside or ctx.default_return_type
+        if self._models.extended_outside(model, addon_name, ctx.api.path, ctx.context.line):
+            return AnyType(TypeOfAny.special_form)
         return self._models.env_model(model, addon_name, ctx.api) or ctx.default_return_type
 
     def _records_of_name(self, ctx: MethodContext) -> Type | None:
@@ -141,6 +143,8 @@ class EnvHooks(Hooks):
         records = self._models.view_type(model, addon_name, ctx.api)
         if not isinstance(records, Instance):
             return self._of_no_known_model(ctx.default_return_type)
+        if self._models.extended_outside(model, addon_name, ctx.api.path, ctx.context.line):
+            return AnyType(TypeOfAny.special_form)
         return UnionType([records, NoneType()]) if optional else records
 
     def _of_no_known_model(self, declared: Type) -> Type:
@@ -250,6 +254,8 @@ class EnvHooks(Hooks):
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
         if ctx.is_lvalue or addon_name is None:
             return ctx.default_attr_type
+        if self._models.extended_outside(model, addon_name, ctx.api.path, ctx.context.line):
+            return AnyType(TypeOfAny.special_form)
         resolved = self._models.env_model(model, addon_name, ctx.api)
         return resolved if isinstance(resolved, Instance) else ctx.default_attr_type
 

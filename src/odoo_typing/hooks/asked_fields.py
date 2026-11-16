@@ -28,14 +28,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from mypy.nodes import ComparisonExpr, Expression, FuncItem, MemberExpr, StrExpr
-from mypy.plugin import AttributeContext, MethodContext
-from mypy.types import Instance, NoneType, ProperType, Type, UnionType, get_proper_type
+from mypy.plugin import AttributeContext, FunctionContext, MethodContext
+from mypy.types import (
+    AnyType,
+    Instance,
+    NoneType,
+    ProperType,
+    Type,
+    TypeOfAny,
+    UnionType,
+    get_proper_type,
+)
 
 from odoo_typing.classes import receiver_type
 from odoo_typing.hooks.models import Hooks, Models
 from odoo_typing.hooks.nodes import type_checker
 
-__all__ = ["AskedFieldHooks"]
+__all__ = ["HASATTR", "AskedFieldHooks"]
+
+HASATTR = "builtins.hasattr"
 
 FIELDS = "_fields"
 
@@ -90,6 +101,29 @@ class AskedFieldHooks(Hooks):
             self._asked = []
         if function is not None:
             self._asked += [_Asked(model, key.value, comparison.line) for model in models]
+        return ctx.default_return_type
+
+    def has_attribute(self, ctx: FunctionContext) -> Type:
+        """``hasattr(records, "f")`` of a name their class lacks: ``Any`` in the block.
+
+        The question is whether an addon outside the dependencies is installed
+        (``hasattr(ResPartner, "check_vat")``: ``base_vat``); the block then uses what
+        that addon adds, the asked name and others (``ResPartner.fix_eu_vat_number()``).
+        mypy narrows the records in the block to the type it recorded for them, when
+        that type has the attribute: recorded as a union of ``Any`` alone, they are
+        ``Any`` in the block, as records of a guarded model are.
+        """
+        if len(ctx.args) != 2 or len(ctx.args[0]) != 1 or len(ctx.args[1]) != 1:
+            return ctx.default_return_type
+        records, name = ctx.args[0][0], ctx.args[1][0]
+        asked = ctx.arg_types[0][0]
+        if not isinstance(name, StrExpr) or not self._record_models(asked):
+            return ctx.default_return_type
+        checker = type_checker(ctx.api)
+        if not checker.has_valid_attribute(asked, name.value):
+            # A union of ``Any`` alone: mypy's ``hasattr`` narrowing keeps a type that has
+            # the attribute (``Any`` itself it leaves alone), the block reads it as ``Any``.
+            checker.store_type(records, UnionType([AnyType(TypeOfAny.special_form)]))
         return ctx.default_return_type
 
     def _record_models(self, typ: Type | None) -> list[str]:

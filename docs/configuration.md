@@ -54,6 +54,7 @@ dynamic_env = "any"
 vals_ignore_keys = ["x_*"]
 literal_selection = false
 required_values = true
+rebound_variables = true
 scan_cache_dir = "~/.cache/odoo-typing/scans"
 ```
 
@@ -73,6 +74,7 @@ contains them.
 | `vals_ignore_keys` | `["x_*"]` | Glob patterns of `vals` keys never reported as unknown fields |
 | `literal_selection` | `false` | Read `Selection` fields as `Literal[<keys>] \| Literal[False]` |
 | `required_values` | `true` | Read required fields and `display_name` without `\| Literal[False]` |
+| `rebound_variables` | `true` | A local variable bound more than once has the type of each value at its binding |
 | `scan_cache_dir` | `~/.cache/odoo-typing/scans` | Addon scans shared by every project, a subdirectory per interpreter; `""` keeps them in mypy's cache |
 
 **`odoo_version`** is the single source of truth for the version: the plugin picks the
@@ -139,6 +141,18 @@ arm of an `if` an error; the same holds for the items of a list or dict that is 
 in several statements. Odoo does read `False` for a required field of a new record
 (`new()`, a form's onchange) before the value is set: `required_values = false` reads
 these fields as Odoo declares them, for code that must handle such records.
+
+**`rebound_variables`** (on by default) gives a local variable without an annotation
+that its function binds more than once (`products = []` then records,
+`proposal = company` then `proposal = False`, `total = 0` then `total += line.amount`,
+one loop variable over two models) the type of each value where it is bound; where
+branches that gave it values of different types meet it is `Any`. A variable that a
+binding may give `False` keeps it as `Literal[False]`, so `if partner:` leaves the
+records. mypy itself takes a variable's type from its first value and reports every
+later value of another type. `rebound_variables = false` keeps mypy's inference; mypy's
+own `allow_redefinition = true` (with `local_partial_types = true`) widens such a
+variable to a union instead, which reports `Literal[True]` items where a variable is
+records or `False`. See [rebound variables](checks.md#plain-mypy-errors-you-will-see-more-often).
 
 **`literal_selection = true`** reads a `Selection` field whose keys are literal
 (including the `selection_add` of the addon's view) as

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conftest import RunMypy
+from conftest import OdooNames, RunMypy
 
 T_BASE = """
 from odoo import fields, models
@@ -202,3 +202,32 @@ def test_required_values_read_without_false(run_mypy: RunMypy) -> None:
         "str | Literal[False]",  # a variable with several values; no error for the rest
         "list[str]",
     ]
+
+
+FIELD_OBJECTS = """
+from odoo import fields, models
+
+class Thing(models.Model):
+    _name = "t.thing"
+
+    amount = fields.Float(digits=(16, 2))
+    state = fields.Selection([("a", "A")])
+
+    def describe(self) -> None:
+        self._fields["amount"].get_digits(self.env)
+        self._fields["state"].selection
+        reveal_type(self._fields["amount"])
+"""
+
+
+def test_a_field_of_fields_by_name_is_of_its_field_class(
+    run_mypy: RunMypy, names: OdooNames
+) -> None:
+    result = run_mypy({"my_mod": {"models.py": FIELD_OBJECTS}})
+
+    (message,) = result.messages("models.py")
+    # Odoo 17 leaves ``_fields`` untyped; in 18 ``Field`` has a dynamic base (any
+    # attribute reads), the declared class stays.
+    expected = {17: '"Any"', 18: '"odoo.fields.Field[Any]"'}.get(names.version, '.Float"')
+    assert message.startswith("13: note: Revealed type is ")
+    assert message.endswith(expected)

@@ -214,6 +214,22 @@ A model is not reported (and its records are `Any`):
   `if not ...: return` before the line). A name inside a domain or a comparison
   anywhere else (`("type", "=", "sale")`) does not count.
 
+Records of a model that such an addon **extends** are `Any` where it runs, so what it
+adds is no unknown attribute (`self.env.company.sale_automatic_invoice`,
+`self.env.ref("payment.payment_provider_transfer")._transfer_ensure_pending_msg_is_set()`):
+
+- under the test of an `if` about installed modules that names the addon, or that ends
+  the function (`return`, `raise`, `self.skipTest(...)`) before the line:
+  `if self.env["ir.module.module"]._get("sale").state == "installed":`,
+  `if ..._get("payment_custom").state != "installed": self.skipTest(...)`, also through
+  a name bound once (`module = self.env["ir.module.module"].search([("name", "=",
+  "l10n_eu_oss")])`, then `if module:`); a test that holds neither `"ir.module.module"`
+  nor `"installed"` names no addon;
+- under the guard of a field that no model of the dependencies has
+  (`if "payment_state_before_switch" not in self.env["account.move"]._fields: return`);
+- in the block of `hasattr(records, "name")` of a name their class lacks: the records
+  are `Any` there (`if hasattr(ResPartner, "check_vat"): ResPartner.fix_eu_vat_number()`).
+
 ## Field definitions and field names: `odoo-field-ref`
 
 `odoo-field-ref` covers the names that Odoo resolves when it loads the registry:
@@ -717,15 +733,22 @@ With real recordset types, some plain mypy codes appear more often:
   give no records.
 - `assignment` between two classes of the same model (`AccountMoveLine` of two addons):
   use another variable name, or annotate it.
-- `assignment` and then `attr-defined` where a variable is reused: `partner = False`
-  then a record, `products = []` then records, one loop variable over two models. mypy
-  takes a variable's type from its first value after the plugin's hooks have run, so
-  only mypy can widen it: `allow_redefinition = true` (with `local_partial_types = true`)
-  lets such a variable take the new type. On the six core addons of the benchmark's
-  `default` profile (Odoo 18) it takes the errors from 592 to 545 and the plugin-only
-  ones from 175 to 156, but it adds 50 errors of its own (unions where a variable is
-  assigned in branches, `local_partial_types` on class attributes such as
-  `_table = None`): turn it on knowingly.
+- A **variable that the function binds more than once** (`products = []` then
+  records, `proposal = lead.company_id` then `proposal = False`, `total = 0` then
+  `total += line.balance`, one loop variable over two models, a wizard then the invoice
+  it made) takes the type of each value where it is bound (`rebound_variables`, on by
+  default): mypy takes a variable's type from its first value, and every later value
+  of another type was an `assignment` error, then an `attr-defined` one. After each
+  binding the variable has that value's type, so reads, calls and field checks see the
+  records, `False` or numbers it holds; where branches that gave it values of different
+  types meet (after an `if`, at the head of a loop) it is `Any`. `x = None` stays a
+  placeholder that a later value replaces, as mypy takes it.
+- **Records or `False`**: a variable that a binding may give `False`
+  (`partner = line.partner_id if line else False`, `so_line = lines and lines[-1] or
+  False`, `next((m for m in members if ...), False)`) keeps that `False` as
+  `Literal[False]`, also when it is bound once: `if partner:` then leaves the records.
+  mypy widened it to `bool`, and `if partner:` left `Literal[True]`, whose attributes
+  were errors. Where branches meet, the variable is the union of their values.
 - A dict or a list of mixed values (`values = {"partner": partner, "amount": 0.0,
   "lines": []}`): mypy types it by joining the values (`dict[str, object]`, a protocol
   they all satisfy such as `Container[Any]`, or a union), and every use of a value was an
@@ -744,12 +767,28 @@ With real recordset types, some plain mypy codes appear more often:
   literals (`totals[line.id] = 0.0`) is a mapping and keeps its value type.
 - A container without an annotation whose values are `int` takes a `float` too:
   `totals = defaultdict(lambda: 0)`, then `totals[key] += line.balance`.
-- What mypy reports at the display itself stays: `Need type annotation` when it holds an
-  empty list next to a union, a list of such dicts passed to a function that declares
-  `list[dict]`, a second display assigned to the same variable, and a plain variable
-  started at `0` and increased by a `float` (`total = 0`, `total += line.amount`):
-  annotate the variable (`values: dict[str, Any] = {...}`, `total = 0.0`), or let mypy
-  widen it with `allow_redefinition = true` (with `local_partial_types = true`).
+- A value that holds unrelated types joined into a union
+  (`{"move_ids": moves.ids, "envs": [env0, env1], "journal_id": journal.id}` holds
+  `list[int] | list[Environment] | int | NewId`) is read as `Any` too, in a container
+  without an annotation (also an attribute: `self.data["envs"]`). A value's own union
+  (`str | Literal[False]`, `int | NewId`, records or `None`) keeps its type.
+- A container typed from an empty display (`dict[Never, Never]` of
+  `next(rows, {})`) takes any key and holds `Any`, and so does one that mypy completed
+  with a literal key.
+- A **display of dicts, or a value with an empty display inside**
+  (`expected = [{"id": partner.id, "debit": 0.0}, {"id": tax.id, "x": {}}]`,
+  `vals = {"name": name, "line_ids": []}`, `dict((team, []) for team in teams)`), bound
+  to a variable, is typed as `list[Any]` / `dict[Any, Any]`: mypy typed it from its items
+  as `list[object]` (passed to a `list[dict]` parameter, an error) or asked for an
+  annotation. `zip()`, `enumerate()`, `sorted()`, `reversed()`, `list()` and `iter()`
+  of a display or such a variable give its items as `Any` where they were the join.
+- `filter(None, [prefix, record.name])` takes values that may be `False`: `None` as the
+  function drops every falsy item.
+- `records._fields["price_unit"]` is the class of that field (`Float`, with
+  `get_digits()`), not the `Field` Odoo declares (Odoo 19, 20; in 17 and 18 any
+  attribute of a field reads). A `Selection` field with a literal selection there is
+  `Any`: Odoo declares `selection` as a list, a method name or a callable, and the field
+  holds the list.
 
 ## Not yet supported
 
@@ -773,11 +812,11 @@ With real recordset types, some plain mypy codes appear more often:
   result) stays unannotated: calls of it keep the receiver's type, but
   `super().create(...)` through it in a later class is `Any`.
 - `self` is the class being written, so inside a class `self` sees the earlier classes
-  of its model, not later ones of the same addon (`env[...]` does see them). The classes
-  of one model are distinct types: a variable that first holds `env["x"]` (or a
-  relational field of model `x`, as in `for line in self.move_id.line_ids:` then
-  `for line in self:` in an earlier `account.move.line` class) cannot later be assigned
-  `self` of an earlier class of `x` (an `assignment` error).
+  of its model, not later ones of the same addon (`env[...]` does see them):
+  `self.later_method()` is an error. What `self`'s `-> Self` methods give
+  (`self.with_context(...)`, `self.filtered(...)`), iterating it (`for line in self`),
+  indexing it and the set operators (`self - other`) are the addon's records of the
+  model, which have them.
 - Only the [guard forms](#optional-dependencies-guards) listed above are detected (a
   helper of another class or addon, or a flag assigned more than once, is not).
 - `env[name]` with a name only known at run time is `Any` (option `dynamic_env`), so

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import Context, Expression, MemberExpr, TypeInfo, Var
-from mypy.plugin import AttributeContext, CheckerPluginInterface, MethodSigContext
+from mypy.plugin import (
+    AttributeContext,
+    CheckerPluginInterface,
+    FunctionSigContext,
+    MethodSigContext,
+)
 from mypy.types import (
     AnyType,
     CallableType,
@@ -33,7 +38,9 @@ from odoo_typing.references import resolve_path
 from odoo_typing.scanner import FieldInfo
 from odoo_typing.vals import RECORDS, VALUE_TYPES, stored, value_type_named
 
-__all__ = ["FieldValueHooks"]
+__all__ = ["FILTER", "FieldValueHooks", "falsy_filter_signature"]
+
+FILTER = "builtins.filter"
 
 # Field classes whose reading ``_value_get`` types (``Image`` is a ``Binary``).
 VALUE_KINDS = frozenset({"Binary", "Reference", "Selection"})
@@ -333,3 +340,24 @@ def _class_value_get(
         items.append(instance_of(node.node))
     value = items[0] if len(items) == 1 else UnionType(items)
     return signature.copy_modified(ret_type=value)
+
+
+def falsy_filter_signature(ctx: FunctionSigContext) -> FunctionLike:
+    """``filter(None, [prefix, group.name])`` drops every falsy item, ``False`` too.
+
+    typeshed's overload of a ``None`` function takes ``Iterable[T | None]``: an Odoo value
+    that may be ``False`` (``str | Literal[False]``) did not fit when ``T`` comes from
+    the context (``" ".join(filter(None, ...))``). That overload takes ``False`` too.
+    """
+    signature = ctx.default_signature
+    if len(signature.arg_types) != 2:
+        return signature
+    function, iterable = map(get_proper_type, signature.arg_types)
+    if not isinstance(function, NoneType) or not isinstance(iterable, Instance):
+        return signature
+    if len(iterable.args) != 1:
+        return signature
+    false = LiteralType(False, type_checker(ctx.api).named_type("builtins.bool"))
+    items = UnionType.make_union([iterable.args[0], false])
+    widened = iterable.copy_modified(args=[items])
+    return signature.copy_modified(arg_types=[signature.arg_types[0], widened])

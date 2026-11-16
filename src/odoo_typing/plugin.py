@@ -65,6 +65,8 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import TypeVar
 
+from mypy.checker import TypeChecker
+from mypy.checker_state import checker_state
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import (
     Decorator,
@@ -118,7 +120,7 @@ from odoo_typing.hooks.annotations import (
     values_get,
     values_get_signature,
 )
-from odoo_typing.hooks.asked_fields import AskedFieldHooks
+from odoo_typing.hooks.asked_fields import HASATTR, AskedFieldHooks
 from odoo_typing.hooks.built_classes import inherit_built_class
 from odoo_typing.hooks.class_attributes import define_through_cls, readable_on_class
 from odoo_typing.hooks.comparisons import COMPARISON_HOOKS, ComparisonHooks
@@ -138,8 +140,9 @@ from odoo_typing.hooks.env import (
     type_request,
 )
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
-from odoo_typing.hooks.field_values import FieldValueHooks
+from odoo_typing.hooks.field_values import FILTER, FieldValueHooks, falsy_filter_signature
 from odoo_typing.hooks.mixed_values import (
+    MIXED_CALLS,
     MIXED_ITERATIONS,
     MIXED_READS,
     MIXED_WRITES,
@@ -150,6 +153,7 @@ from odoo_typing.hooks.models import ODOO_MODEL, ODOO_MODEL_DEPENDS, Models
 from odoo_typing.hooks.recordsets import RecordsetHooks
 from odoo_typing.hooks.vals import ValsHooks
 from odoo_typing.methods import (
+    SELF_METHODS,
     browse_signature,
     command_id_signature,
     create_signature,
@@ -163,6 +167,7 @@ from odoo_typing.methods import (
 )
 from odoo_typing.odoo_version import profile_mismatch_warning, version_mismatch_warning
 from odoo_typing.package_names import Bound, bind_in, bound_on_package, import_into
+from odoo_typing.rebound import ReboundVariables
 from odoo_typing.records import RecordStore, load_index
 from odoo_typing.references import RECORD_PATH_METHODS
 from odoo_typing.registry import Registry
@@ -195,6 +200,14 @@ DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
 ENV = "env"
 GETATTR = "__getattr__"
 CONTAINS = "__contains__"
+ITERATE = "__iter__"
+# ``records._fields[name]``: a dict (Odoo 17-19) or a ``MappingProxyType`` (Odoo 20).
+MAPPING_ITEMS = frozenset({"builtins.dict.__getitem__", "types.MappingProxyType.__getitem__"})
+# What iterating, indexing and the set operators of records give is the addon's view too:
+# ``for line in self``, ``self[0]``, ``self - other``.
+OWN_VIEW_DUNDERS = frozenset(
+    {ITERATE, "__getitem__", "__or__", "__and__", "__sub__", "__add__", "__reversed__"}
+)
 # Methods whose first argument is ``vals`` (``create``: also a list of them;
 # ``copy``: its ``default``).
 VALS_METHODS = frozenset({"create", "write", "copy"})
@@ -246,6 +259,7 @@ class OdooPlugin(Plugin):
         self._values = FieldValueHooks(models)
         self._asked = AskedFieldHooks(models)
         self._mixed = MixedValueHooks(models)
+        self._rebound = ReboundVariables()
         annotations = AnnotationHooks(models)
         self._type_hooks: dict[str, Callable[[AnalyzeTypeContext], Type]] = {
             name: partial(annotations.annotated, name) for name in ANNOTATED_NAMES
@@ -433,6 +447,31 @@ class OdooPlugin(Plugin):
             report_internal_error(exc, f"binding the names of the package {package}")
             self._package_tree = tree
 
+    def _prepare_rebound(self) -> None:
+        """Declare the rebound variables of the addon module being checked (odoo_typing.rebound).
+
+        Asked from every hook lookup of type checking, the first moment the plugin takes
+        part in checking a module (for a model, its first field): one dict lookup once
+        the tree is done. Modules outside the addons are left as mypy infers them.
+        """
+        checker = checker_state.type_checker
+        if not isinstance(checker, TypeChecker):
+            return
+        tree = checker.tree
+        if self._rebound.prepared(tree):
+            return
+        try:
+            outside = self._models.registry.addons.addon_for_module(tree.fullname) is None
+            if outside or not self._models.settings.rebound_variables:
+                self._rebound.skip(tree)
+            else:
+                self._rebound.prepare(tree, checker.named_type("builtins.bool"))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            if os.environ.get(RAISE_VARIABLE):
+                raise
+            report_internal_error(exc, f"declaring the rebound variables of {tree.fullname}")
+            self._rebound.skip(tree)
+
     def _package_names(self, module: str) -> Bound:
         """The names Odoo binds on a module, if it is the ``odoo`` namespace package."""
         odoo = self._models.settings.odoo_path
@@ -520,6 +559,7 @@ class OdooPlugin(Plugin):
         is when an attribute defined through ``cls`` stops being instance-only
         (:mod:`odoo_typing.hooks.class_attributes`).
         """
+        self._prepare_rebound()
         class_name, _, name = fullname.rpartition(".")
         if not self._modules:
             return None
@@ -542,20 +582,38 @@ class OdooPlugin(Plugin):
         """Type ``env[...]`` and recordset methods; check vals, domains and field paths."""
         if self._package is not None:
             self._bind_package_names()
+        self._prepare_rebound()
         found = self._hooks.method
         if fullname not in found:
             self._type_request()
+            method = self._method_fullname(fullname)
             found[fullname] = _soft(
-                self._find_method_hook(self._method_fullname(fullname)),
+                self._with_own_view(method, self._find_method_hook(method)),
                 _default_return,
                 f"the hook of {fullname}()",
             )
         return found[fullname]
 
+    def _with_own_view(
+        self, fullname: str, hook: Callable[[MethodContext], Type] | None
+    ) -> Callable[[MethodContext], Type] | None:
+        """A ``-> Self`` method or iteration of a model class: records as the addon sees them.
+
+        See :meth:`RecordsetHooks.own_view`; the class of the receiver is in the hook's
+        name, so other classes keep their hook.
+        """
+        owner, _, name = fullname.rpartition(".")
+        if name not in SELF_METHODS and name not in OWN_VIEW_DUNDERS:
+            return hook
+        if not owner or self._models.registry.contribution(owner) is None:
+            return hook
+        return partial(self._recordsets.own_view, hook)
+
     def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
         """Bind relational field constructors to their comodel; see through decorators."""
         if self._package is not None:
             self._bind_package_names()
+        self._prepare_rebound()
         found = self._hooks.function
         if fullname not in found:
             self._type_request()
@@ -567,13 +625,20 @@ class OdooPlugin(Plugin):
     def get_function_signature_hook(
         self, fullname: str
     ) -> Callable[[FunctionSigContext], FunctionLike] | None:
-        """Make the wrapper of checked domain expressions an identity (odoo_typing.annotations)."""
+        """Make the wrapper of checked domain expressions an identity (odoo_typing.annotations).
+
+        ``filter(None, ...)`` takes values that may be ``False``.
+        """
+        self._prepare_rebound()
+        if fullname == FILTER:
+            return falsy_filter_signature
         return wrapper_signature if fullname == TRIGGER_FULLNAME else None
 
     def get_method_signature_hook(
         self, fullname: str
     ) -> Callable[[MethodSigContext], FunctionLike] | None:
         """Type reading a relational field; check assigned values; let ``create`` take a dict."""
+        self._prepare_rebound()
         found = self._hooks.signature
         if fullname not in found:
             self._type_request()
@@ -606,6 +671,7 @@ class OdooPlugin(Plugin):
         """Resolve record-typed attributes of model classes from the reading addon."""
         if self._package is not None:
             self._bind_package_names()
+        self._prepare_rebound()
         found = self._hooks.attribute
         if fullname not in found:
             self._type_request()
@@ -688,6 +754,8 @@ class OdooPlugin(Plugin):
         profile = self._models.profile
         if fullname == DICT_GET:
             return self._dict_get
+        if fullname in MAPPING_ITEMS:
+            return partial(_first_of, (self._recordsets.declared_field, self._mixed.read))
         if fullname in MIXED_READS:
             return self._mixed.read
         if fullname in MIXED_ITERATIONS:
@@ -744,6 +812,10 @@ class OdooPlugin(Plugin):
             return partial(fields.decorator_fields, profile.field_decorators[fullname], factory)
         if fullname == TRIGGER_FULLNAME:
             return self._domains.wrapped
+        if fullname in MIXED_CALLS:
+            return self._mixed.called
+        if fullname == HASATTR:
+            return self._asked.has_attribute
         if factory is None:
             parameters = domain_parameters(self._declared_signature(fullname, method=False))
             if parameters:
@@ -762,9 +834,11 @@ class OdooPlugin(Plugin):
         if fullname.endswith(".__set__"):
             return self._vals.field_set
         if fullname == DICT_GET:
-            return values_get_signature
+            return partial(_signature_then, values_get_signature, self._mixed.read_signature)
         if fullname in MIXED_WRITES:
             return self._mixed.write
+        if fullname in MIXED_READS:
+            return self._mixed.read_signature
         profile = self._models.profile
         if is_create(fullname):
             return partial(create_signature, profile.base_model, untyped=profile.untyped_fields)
@@ -895,6 +969,27 @@ def _soft(
 
 def _default_return(ctx: MethodContext | FunctionContext) -> Type:
     return ctx.default_return_type
+
+
+def _first_of(hooks: tuple[Callable[[MethodContext], Type], ...], ctx: MethodContext) -> Type:
+    """The first hook of a method that gives another type than mypy's."""
+    for hook in hooks:
+        found = hook(ctx)
+        if found is not ctx.default_return_type:
+            return found
+    return ctx.default_return_type
+
+
+def _signature_then(
+    first: Callable[[MethodSigContext], FunctionLike],
+    then: Callable[[MethodSigContext], FunctionLike],
+    ctx: MethodSigContext,
+) -> FunctionLike:
+    """Two signature hooks of one method, the second given what the first made."""
+    signature = first(ctx)
+    if not isinstance(signature, CallableType):
+        return signature
+    return then(MethodSigContext(ctx.type, ctx.args, signature, ctx.context, ctx.api))
 
 
 def _default_signature(ctx: MethodSigContext) -> FunctionLike:

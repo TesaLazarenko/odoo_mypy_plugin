@@ -99,6 +99,8 @@ class Models:
         self.settings = settings
         self.profile = profile
         self.registry = registry
+        # extended_outside(), by file, line and model (a file's lines are asked often).
+        self._outside_lines: dict[tuple[str, int, str], bool] = {}
 
     def view_type(self, model: str, addon_name: str, api: CheckerPluginInterface) -> ViewType:
         """The type of ``env[model]`` as seen from an addon.
@@ -221,6 +223,39 @@ class Models:
         if any(not registry.has_field_named(name, addon_name) for name in guarded):
             return True
         return bool(outside) and not registry.call_strings(path, line).isdisjoint(outside)
+
+    def extended_outside(self, model: str, addon_name: str, path: str, line: int) -> bool:
+        """Whether a line runs only with an addon outside the dependencies that extends a model.
+
+        The function names the addon in the test of an ``if`` that decides the line
+        (:func:`~odoo_typing.guards.deciding_strings`:
+        ``if modules._get("sale").state == "installed":``,
+        ``if ..._get("payment_custom").state != "installed": self.skipTest(...)``), or
+        the line is under the guard of a field no model of the dependencies has
+        (``if hasattr(self, "website_id"):``). The records there have what that addon
+        adds (``company.sale_automatic_invoice``), whose classes the addon does not
+        see: they are ``Any``, as records of a guarded model are.
+        """
+        key = (path, line, model)
+        if key not in self._outside_lines:
+            self._outside_lines[key] = self._extended_outside(model, addon_name, path, line)
+        return self._outside_lines[key]
+
+    def _extended_outside(self, model: str, addon_name: str, path: str, line: int) -> bool:
+        registry = self.registry
+        if any(
+            not registry.has_field_named(name, addon_name)
+            for name in registry.guarded_fields(path, line)
+        ):
+            return True
+        addons = registry.addons
+        closure = addons.closure(addon_name)
+        named = [
+            name
+            for name in registry.deciding_strings(path, line)
+            if name in addons.addons and name not in closure
+        ]
+        return any(model in registry.addon_models(name) for name in named)
 
     def comodel_at_use_site(
         self, comodel: Instance, owner: TypeInfo | None, api: CheckerPluginInterface

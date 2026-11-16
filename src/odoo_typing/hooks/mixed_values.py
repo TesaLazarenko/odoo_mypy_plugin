@@ -48,18 +48,21 @@ from mypy.nodes import (
     StrExpr,
     Var,
 )
-from mypy.plugin import MethodContext, MethodSigContext
-from mypy.subtypes import is_same_type
+from mypy.plugin import FunctionContext, MethodContext, MethodSigContext
+from mypy.subtypes import is_same_type, is_subtype
 from mypy.types import (
     AnyType,
     CallableType,
     FunctionLike,
     Instance,
+    LiteralType,
+    NoneType,
     ProperType,
     TupleType,
     Type,
     TypeOfAny,
     TypeType,
+    UninhabitedType,
     UnionType,
     get_proper_type,
 )
@@ -69,7 +72,7 @@ from odoo_typing.hooks.models import Hooks
 from odoo_typing.hooks.nodes import type_checker
 from odoo_typing.local_values import Change
 
-__all__ = ["MIXED_ITERATIONS", "MIXED_READS", "MIXED_WRITES", "MixedValueHooks"]
+__all__ = ["MIXED_CALLS", "MIXED_ITERATIONS", "MIXED_READS", "MIXED_WRITES", "MixedValueHooks"]
 
 DICT = "builtins.dict"
 LIST = "builtins.list"
@@ -89,6 +92,11 @@ MIXED_WRITES = frozenset(
     for container in CONTAINERS
     for method in ("__setitem__", "update", "setdefault")
 )
+# Calls whose result carries the items of an iterable they are given: ``zip(a, rows)``,
+# ``enumerate(rows)``.
+MIXED_CALLS = frozenset(
+    f"builtins.{name}" for name in ("zip", "enumerate", "reversed", "sorted", "list", "iter")
+)
 INT = "builtins.int"
 FLOAT = "builtins.float"
 # The modules of the protocols mypy joins unrelated values into (``Container[Any]``).
@@ -106,11 +114,52 @@ class MixedValueHooks(Hooks):
         """``for row in rows``: mypy asks for ``__iter__`` at the iterated expression itself."""
         return self._read(ctx.context if isinstance(ctx.context, Expression) else None, ctx)
 
+    def called(self, ctx: FunctionContext) -> Type:
+        """``zip(messages, [{...}, {...}])``, ``enumerate(rows)``: the items, not their join."""
+        joined: list[ProperType] = []
+        for argument, typ in zip(
+            (item for group in ctx.args for item in group),
+            (item for group in ctx.arg_types for item in group),
+            strict=True,
+        ):
+            if self._is_inferred(argument, ctx):
+                found = _join_in(get_proper_type(typ), self._profile.new_id)
+                joined += [found] if found is not None else []
+        if not joined:
+            return ctx.default_return_type
+        return _unknown(get_proper_type(ctx.default_return_type), joined)
+
     def _read(self, receiver: Expression | None, ctx: MethodContext) -> Type:
         joined = self._joined(ctx.type, receiver, ctx)
         if not joined:
             return ctx.default_return_type
-        return _unknown(get_proper_type(ctx.default_return_type), joined)
+        result = get_proper_type(_unknown(get_proper_type(ctx.default_return_type), joined))
+        if isinstance(result, UnionType) and all(
+            isinstance(get_proper_type(item), (AnyType, NoneType)) for item in result.items
+        ):
+            # ``values.get("rows")``: an unknown value, not one that may be ``None``.
+            return AnyType(TypeOfAny.special_form)
+        return result
+
+    def read_signature(self, ctx: MethodSigContext) -> FunctionLike:
+        """``rows[key]``, ``rows.get(key)`` of a container typed from an empty display.
+
+        Its ``Never`` key and value types (``{}``) are unknown: the key may be anything
+        (:func:`_is_unknown`).
+        """
+        signature = ctx.default_signature
+        if not isinstance(signature, CallableType):
+            return signature
+        joined: list[ProperType] = [
+            item
+            for item in self._joined(ctx.type, _receiver(ctx.context), ctx)
+            if _is_unknown(item)
+        ]
+        if not joined:
+            return signature
+        arguments = [_unknown(get_proper_type(item), joined) for item in signature.arg_types]
+        result = _unknown(get_proper_type(signature.ret_type), joined)
+        return signature.copy_modified(arg_types=arguments, ret_type=result)
 
     def write(self, ctx: MethodSigContext) -> FunctionLike:
         """``values[key] = x``, ``.update()``, ``.setdefault()`` of a container of joined values.
@@ -152,6 +201,12 @@ class MixedValueHooks(Hooks):
         arguments = [get_proper_type(item) for item in container.args]
         if not arguments or not self._is_inferred(receiver, ctx):
             return []
+        # ``next(rows, {})``, ``x if rows else {}``: an empty display's ``dict[Never,
+        # Never]`` takes any key and holds unknown values; so does a container that mypy
+        # completed with a literal key (``by_parent[False]``, rebound.py keeps ``False``).
+        empty: list[ProperType] = [item for item in arguments if _is_unknown(item)]
+        if empty:
+            return empty
         value = arguments[-1]
         if isinstance(receiver, NameExpr) and container.type.has_base(DICT):
             if self._is_record_dict(receiver, ctx):
@@ -159,7 +214,8 @@ class MixedValueHooks(Hooks):
             if _is_join(value) and self._of_mixed_display(receiver, ctx):
                 return [value]
         # ``rows = [[record, [], True]]`` is a ``list[list[object]]``: the object inside.
-        found = next(filter(None, map(_join_in, arguments)), None)
+        new_id = self._profile.new_id
+        found = next(filter(None, (_join_in(item, new_id) for item in arguments)), None)
         return [found] if found is not None else []
 
     def _is_record_dict(self, name: NameExpr, ctx: MethodContext | MethodSigContext) -> bool:
@@ -172,7 +228,9 @@ class MixedValueHooks(Hooks):
             return False
         return any(map(_is_named_change, local.changes(name)))
 
-    def _is_inferred(self, expression: Expression, ctx: MethodContext | MethodSigContext) -> bool:
+    def _is_inferred(
+        self, expression: Expression, ctx: MethodContext | MethodSigContext | FunctionContext
+    ) -> bool:
         """Whether the variable a container is read from has no annotation.
 
         ``rows`` for ``rows[0]["x"]`` and for ``rows.items()``.
@@ -210,6 +268,11 @@ class MixedValueHooks(Hooks):
         if len(known) != len(types) or len(known) < 2:
             return False
         return any(not is_same_type(item, known[0]) for item in known[1:])
+
+
+def _is_unknown(typ: ProperType) -> bool:
+    """A type argument that no value gave: ``Never`` of ``{}``, a literal mypy kept."""
+    return isinstance(typ, (UninhabitedType, LiteralType))
 
 
 def _receiver(context: object) -> Expression | None:
@@ -262,17 +325,44 @@ def _is_joined_protocol(typ: ProperType) -> bool:
     return typ.type.is_protocol and typ.type.module_name in STANDARD
 
 
-def _join_in(typ: ProperType) -> ProperType | None:
+def _join_in(typ: ProperType, new_id: str) -> ProperType | None:
     """The join among a type and the arguments of its classes, unions and tuples."""
     if isinstance(typ, Instance):
         if _is_joined_protocol(typ):
             return typ
         items = list(typ.args)
-    elif isinstance(typ, (UnionType, TupleType)):
+    elif isinstance(typ, UnionType):
+        if _is_joined_union(typ, new_id):
+            return typ
+        items = list(typ.items)
+    elif isinstance(typ, TupleType):
         items = list(typ.items)
     else:
         return None
-    return next(filter(None, (_join_in(get_proper_type(item)) for item in items)), None)
+    found = (_join_in(get_proper_type(item), new_id) for item in items)
+    return next(filter(None, found), None)
+
+
+def _is_joined_union(typ: UnionType, new_id: str) -> bool:
+    """Whether a union is mypy's join of unrelated values, not a type of one value.
+
+    mypy joins values with a union among them into a union of all:
+    ``{"move_ids": moves.ids, "envs": [env0, env1], "journal_id": journal.id}`` holds
+    ``list[int] | list[Environment] | int | NewId``. A value's own union has one type
+    besides ``None``, literals (``str | Literal[False]``, records or ``False``) and
+    ``NewId`` (``record.id``), or types of which one is a subtype of the other.
+    """
+    kept = [
+        item
+        for item in map(get_proper_type, typ.items)
+        if not isinstance(item, (NoneType, LiteralType, AnyType))
+        and not (isinstance(item, Instance) and item.type.fullname == new_id)
+    ]
+    return any(
+        not is_subtype(first, second) and not is_subtype(second, first)
+        for index, first in enumerate(kept)
+        for second in kept[index + 1 :]
+    )
 
 
 def _unknown(typ: ProperType, joined: list[ProperType]) -> Type:

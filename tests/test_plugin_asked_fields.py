@@ -130,3 +130,90 @@ def test_records_a_test_case_keeps_take_the_field_their_model_was_asked_for(
         '11: error: "Thing" has no attribute "extra"  [attr-defined]',
         '23: error: "Thing" has no attribute "extra"  [attr-defined]',
     ]
+
+
+GUARDED_BASE = {
+    "models.py": """
+    from odoo import fields, models
+
+    class Thing(models.Model):
+        _name = "t.thing"
+
+        name = fields.Char()
+    """,
+}
+GUARDED_EXTRA = {
+    "depends": ["t_base"],
+    "models.py": """
+    from odoo import fields, models
+
+    class Thing(models.Model):
+        _inherit = "t.thing"
+
+        extra_field = fields.Char()
+
+        def extra_method(self) -> None:
+            pass
+    """,
+}
+GUARDED_USE = """
+from odoo import models
+
+class Thing(models.Model):
+    _inherit = "t.thing"
+
+    def named_in_an_if(self) -> None:
+        if self.env["ir.module.module"]._get("t_extra").state == "installed":
+            self.env["t.thing"].extra_method()
+
+    def ended_before(self) -> None:
+        if self.env["ir.module.module"]._get("t_extra").state != "installed":
+            return
+        self.env["t.thing"].extra_method()
+
+    def by_a_name(self) -> None:
+        module = self.env["ir.module.module"].search([("name", "=", "t_extra")])
+        if module:
+            self.env["t.thing"].extra_method()
+
+    def by_hasattr(self) -> None:
+        thing = self.env["t.thing"]
+        if hasattr(thing, "extra_field"):
+            thing.extra_method()
+
+    def not_guarded(self) -> None:
+        self.env["t.thing"].extra_method()
+"""
+GUARDED_TEST = """
+from odoo.tests import TransactionCase
+
+class TestThing(TransactionCase):
+    def test_skipped(self) -> None:
+        if self.env["ir.module.module"]._get("t_extra").state != "installed":
+            self.skipTest("t_extra is not installed")
+        self.env["t.thing"].extra_method()
+"""
+
+
+def test_records_on_lines_of_an_addon_outside_the_dependencies_are_any(
+    run_mypy: RunMypy,
+) -> None:
+    """Records of a model that an addon outside the dependencies extends, where it runs."""
+    result = run_mypy(
+        {
+            "t_base": GUARDED_BASE,
+            "t_extra": GUARDED_EXTRA,
+            "t_use": {
+                "depends": ["t_base"],
+                "models.py": GUARDED_USE,
+                "tests/__init__.py": "from . import test_thing\n",
+                "tests/test_thing.py": GUARDED_TEST,
+            },
+        },
+        check=["t_use"],
+    )
+
+    assert result.messages("t_use/models.py") == [
+        '27: error: "Thing" has no attribute "extra_method"  [attr-defined]',
+    ]
+    assert result.messages("tests/test_thing.py") == []

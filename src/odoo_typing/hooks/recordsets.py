@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 
+from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import (
     Expression,
+    IndexExpr,
     ListExpr,
     MemberExpr,
     NameExpr,
@@ -13,6 +15,7 @@ from mypy.nodes import (
     StrExpr,
     TempNode,
     TupleExpr,
+    TypeInfo,
 )
 from mypy.plugin import MethodContext, MethodSigContext
 from mypy.types import (
@@ -32,7 +35,9 @@ from mypy.types import (
 # isort: split
 # After mypy.types: these modules import each other at import time.
 from mypy.checker import TypeChecker
+from mypy.subtypes import is_subtype
 from mypy.typeops import make_simplified_union
+from mypy.typevars import fill_typevars_with_any
 
 from odoo_typing.classes import receiver_type
 from odoo_typing.hooks.models import Hooks
@@ -59,6 +64,11 @@ from odoo_typing.scanner import FieldInfo
 from odoo_typing.vals import RELATIONAL_CLASSES
 
 __all__ = ["RecordsetHooks"]
+
+ITERATOR = "typing.Iterator"
+FIELDS = "_fields"
+# The module that names every field class of Odoo (``odoo.fields.Float``).
+FIELDS_MODULE = "odoo.fields"
 
 
 class RecordsetHooks(Hooks):
@@ -370,6 +380,90 @@ class RecordsetHooks(Hooks):
         ):
             return ctx.default_return_type
         return type_checker(ctx.api).named_generic_type("typing.Iterator", [receiver])
+
+    def declared_field(self, ctx: MethodContext) -> Type:
+        """``records._fields["price_unit"]``: the class of that field, not ``Field``.
+
+        Odoo declares ``_fields`` as a dict of ``Field``: what a field class has
+        (``Float.get_digits()``, ``Selection._description_selection()``) was an unknown
+        attribute of the base class. A literal name of a field of the model gives that
+        field's class, as the merged definitions of the model leave it.
+        """
+        default = ctx.default_return_type
+        declared = get_proper_type(default)
+        if not isinstance(declared, Instance) or declared.type.fallback_to_any:
+            return default  # Odoo 17, 18: ``Field`` has a dynamic base, any attribute reads
+        index = ctx.context
+        if not isinstance(index, IndexExpr) or not isinstance(index.index, StrExpr):
+            return default
+        base = index.base
+        if not isinstance(base, MemberExpr) or base.name != FIELDS:
+            return default
+        records = receiver_type(type_checker(ctx.api).lookup_type_or_none(base.expr))
+        model = self._models.model_of(records.type) if isinstance(records, Instance) else None
+        reader = self.registry.addon_name_for_path(ctx.api.path)
+        if model is None or reader is None:
+            return default
+        info = self.registry.fields(model, reader).get(index.index.value)
+        if info is None:
+            return default
+        name = info.field_type if "." in info.field_type else f"{FIELDS_MODULE}.{info.field_type}"
+        checker = type_checker(ctx.api)
+        found = lookup_fully_qualified(name, checker.modules, raise_on_missing=False)
+        node = found.node if found is not None else None
+        if not isinstance(node, TypeInfo):
+            return default
+        field = fill_typevars_with_any(node)
+        if not is_subtype(field, default):
+            return default
+        if info.selection is not None or info.selection_method is not None:
+            # Odoo declares ``selection`` as a list, a method name or a callable, and a
+            # field of literal keys holds the list: ``dict(field.selection)`` was an
+            # error. What the field holds is not in its class.
+            return AnyType(TypeOfAny.special_form)
+        return field
+
+    def own_view(self, hook: Callable[[MethodContext], Type] | None, ctx: MethodContext) -> Type:
+        """Records of a class of the reading addon's model as the addon sees the model.
+
+        ``self`` in a method is the class that defines it; the addon's records of the
+        model (``env["account.move"]``, a field's comodel) are its last class, which an
+        addon with several classes of the model (``account.move`` in two files) defines
+        later. At run time both are the registry class. ``self.filtered(...)``,
+        ``self.with_context(...)`` and ``for line in self`` gave the defining class:
+        a method of a later class of the addon was an unknown attribute, and such
+        records did not fit a dict keyed by the addon's records or ``concat()`` of them.
+        What a ``-> Self`` method returns and what iterating gives is the addon's view
+        when that view extends the receiver's class.
+        """
+        result = hook(ctx) if hook is not None else ctx.default_return_type
+        reader = self.registry.addon_name_for_path(ctx.api.path)
+        if reader is None:
+            return result
+        return self._viewed(get_proper_type(result), reader, ctx, outer=True)
+
+    def _viewed(self, typ: Type, reader: str, ctx: MethodContext, outer: bool) -> Type:
+        proper = get_proper_type(typ)
+        if isinstance(proper, UnionType):
+            items = [self._viewed(item, reader, ctx, outer) for item in proper.items]
+            return UnionType.make_union(items, proper.line, proper.column)
+        if not isinstance(proper, Instance):
+            return typ
+        model = self._models.model_of(proper.type)
+        if model is None:
+            if outer and proper.type.fullname == ITERATOR and len(proper.args) == 1:
+                return proper.copy_modified(
+                    args=[self._viewed(proper.args[0], reader, ctx, outer=False)]
+                )
+            return typ
+        view = self._models.view_type(model, reader, ctx.api)
+        if (
+            isinstance(view, Instance)
+            and view.type is not proper.type
+            and view.type.has_base(proper.type.fullname)
+        ):
+            return view
+        return typ
 
 
 def _any_result(item: Type, anything: Type) -> Type:

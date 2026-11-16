@@ -309,7 +309,7 @@ class Order(models.Model):
         domain.insert(0, ("date", "!=", False))
         domain.extend([("state", "=", "draft"), ("line_ids", "in", ids)])
         domain += [("partner_id", "=", 1)]
-        domain = domain + [("date", "=", False)]
+        widened = domain + [("date", "=", False)]
         if flag:
             domain.insert(0, "|")
         domain.append(("nmae", "=", 1))

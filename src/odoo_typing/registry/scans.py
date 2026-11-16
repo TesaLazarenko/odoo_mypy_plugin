@@ -17,7 +17,15 @@ from typing import Protocol
 from odoo_typing.addons import Addon, AddonIndex, LoadKey
 from odoo_typing.config import Settings
 from odoo_typing.frozen import frozen
-from odoo_typing.guards import Guard, call_strings, guarded_fields, is_guarded, model_guards
+from odoo_typing.guards import (
+    MODULE_TEST_MARKS,
+    DecidingStrings,
+    Guard,
+    call_strings,
+    guarded_fields,
+    is_guarded,
+    model_guards,
+)
 from odoo_typing.node_index import index_nodes
 from odoo_typing.records import Record
 from odoo_typing.references import KNOWN_CLASSES
@@ -134,6 +142,8 @@ class ScannedAddons:
         self._unreached: dict[Path, _UnreachedFile] = {}  # files the addon scans miss
         # The file parsed last for call_strings(): its path, stamp and tree.
         self._parsed: tuple[Path, Stamp | None, ast.AST | None] | None = None
+        # deciding_strings(), by file: its stamp and the index of its tree.
+        self._deciding: dict[Path, tuple[Stamp | None, DecidingStrings | None]] = {}
         self._xml_ids: dict[str, Mapping[str, str]] = {}  # of a closure (_ClosureIds)
         self._own_xml_ids: dict[str, Mapping[str, str]] = {}  # of one addon's data files
         self._misnamed: set[str] = set()  # addons warned about by misnamed()
@@ -172,6 +182,10 @@ class ScannedAddons:
         if self._sources.inputs_changed():
             return True  # a module outside the addons that a field class was traced into
         return not all(unchanged(stamps) for _, stamps in self._scan_results.values())
+
+    def addon_models(self, addon_name: str) -> frozenset[str]:
+        """The models an addon's classes define or extend (the addon is scanned)."""
+        return frozenset(self._models_of(addon_name))
 
     def _models_of(self, addon_name: str) -> dict[str, list[Contribution]]:
         """Scan an addon once; return its contributions by model name."""
@@ -381,12 +395,32 @@ class ScannedAddons:
         guards = scan.guards if scan is not None else self._unreached_file(resolved).found.guards
         return guarded_fields(guards, line)
 
+    def deciding_strings(self, path: str | Path, line: int) -> frozenset[str]:
+        """The strings of the tests about modules that decide a line of a source file runs.
+
+        See :class:`~odoo_typing.guards.DecidingStrings`, built once per version of a file.
+        """
+        resolved = self.addons.real_path(path)
+        current = stamp(resolved)
+        kept = self._deciding.get(resolved)
+        if kept is None or kept[0] != current:
+            # Most files ask nothing about modules: their text tells, without a parse.
+            tree = self._parsed_tree(path) if _asks_modules(resolved) else None
+            kept = (current, DecidingStrings(tree) if tree is not None else None)
+            self._deciding[resolved] = kept
+        return kept[1](line) if kept[1] is not None else frozenset()
+
     def call_strings(self, path: str | Path, line: int) -> frozenset[str]:
         """The strings the function around a line of a source file passes to calls.
 
         Asked where an error would be reported, so the file is parsed for it (and kept
         while the questions are about the same version of the same file).
         """
+        tree = self._parsed_tree(path)
+        return call_strings(tree, line) if tree is not None else frozenset()
+
+    def _parsed_tree(self, path: str | Path) -> ast.AST | None:
+        """A source file's tree, kept while the questions are about its same version."""
         resolved = self.addons.real_path(path)
         current = stamp(resolved)
         if self._parsed is None or self._parsed[:2] != (resolved, current):
@@ -395,8 +429,7 @@ class ScannedAddons:
             except SourceError:
                 tree = None
             self._parsed = (resolved, current, tree)
-        tree = self._parsed[2]
-        return call_strings(tree, line) if tree is not None else frozenset()
+        return self._parsed[2]
 
     def source_stamp(self, path: str | Path) -> Stamp | None:
         """A source file's stamp as the answers about it were read (scan or own parse)."""
@@ -574,3 +607,12 @@ def _warn_misnamed(module: str, addon: Addon) -> None:
         f"analyzed twice, and the plugin adds no dependencies for them: {hint}",
         file=sys.stderr,
     )
+
+
+def _asks_modules(path: Path) -> bool:
+    """Whether a source file holds a mark of a test about installed modules."""
+    try:
+        text = path.read_bytes()
+    except OSError:
+        return False
+    return any(mark.encode() in text for mark in MODULE_TEST_MARKS)

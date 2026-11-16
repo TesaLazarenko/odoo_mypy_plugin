@@ -46,6 +46,7 @@ defines the model to a call (``self.ensure_installed("sale")``,
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final, TypeAlias
@@ -53,6 +54,8 @@ from typing import Final, TypeAlias
 from odoo_typing.node_index import NodeIndex
 
 __all__ = [
+    "MODULE_TEST_MARKS",
+    "DecidingStrings",
     "Guard",
     "call_strings",
     "field_guard",
@@ -66,6 +69,10 @@ TERMINATORS: Final = (ast.Return, ast.Raise, ast.Continue, ast.Break)
 REGISTRY_ATTRIBUTES: Final = frozenset({"registry", "pool", "models"})
 BLOCK_FIELDS: Final = ("body", "orelse", "finalbody")
 FIELD_PREFIX: Final = "field:"
+# A test that holds one of these asks which modules are installed.
+MODULE_TEST_MARKS: Final = frozenset({"ir.module.module", "installed"})
+# ``self.skipTest(...)`` ends a test like ``return`` (unittest raises ``SkipTest``).
+SKIP_TEST: Final = "skipTest"
 
 
 def _statement_blocks(index: NodeIndex) -> list[list[ast.stmt]]:
@@ -162,25 +169,118 @@ def call_strings(tree: ast.AST, line: int) -> frozenset[str]:
         return frozenset()
     innermost = max(functions, key=lambda node: node.lineno)
     found: set[str] = set()
+    flags = _flag_values(innermost)
     for node in ast.walk(innermost):
         if isinstance(node, ast.Call):
             arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
             found.update(name for name in map(_string, arguments) if name is not None)
         elif isinstance(node, ast.If) and _decides(node, line):
+            # ``module = modules.search([("name", "=", "sale")]); if module:``: the
+            # strings of the value of a name the test reads, if it is bound once.
+            parts = [node.test, *(flags[name.id] for name in _names(node.test) if name.id in flags)]
             found.update(
                 part.value
-                for part in ast.walk(node.test)
+                for test in parts
+                for part in ast.walk(test)
                 if isinstance(part, ast.Constant) and isinstance(part.value, str)
             )
     return frozenset(found)
 
 
+class DecidingStrings:
+    """The strings of the tests about installed modules that decide a line runs.
+
+    The test of an ``if`` that holds the line or ends the function before it, with the
+    values of the names it reads that the function binds once, when it asks about
+    modules (it holds ``"ir.module.module"`` or ``"installed"``):
+    ``if modules._get("sale").state == "installed":``, ``if not module: return`` after
+    ``module = self.env["ir.module.module"].search([("name", "=", "sale")])``. A string
+    of another test or call (``journal.type == "sale"``, ``mapped("sale_id")``) is a
+    value, not an addon.
+
+    Built once per tree: the functions and, in each, its tests about modules; a line
+    then needs a look at the tests of the function around it.
+    """
+
+    def __init__(self, tree: ast.AST) -> None:
+        self._functions = [
+            (node.lineno, node.end_lineno or node.lineno, node)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        self._tests: dict[int, list[tuple[ast.If, frozenset[str]]]] = {}
+
+    def __call__(self, line: int) -> frozenset[str]:
+        """The strings of the tests about modules that decide a line runs."""
+        around = [item for item in self._functions if item[0] <= line <= item[1]]
+        if not around:
+            return frozenset()
+        innermost = max(around, key=lambda item: item[0])[2]
+        found: set[str] = set()
+        for test, strings in self._module_tests(innermost):
+            if _decides(test, line):
+                found |= strings
+        return frozenset(found)
+
+    def _module_tests(self, function: ast.AST) -> list[tuple[ast.If, frozenset[str]]]:
+        key = id(function)
+        if key not in self._tests:
+            flags = _flag_values(function)
+            tests: list[tuple[ast.If, frozenset[str]]] = []
+            for node in ast.walk(function):
+                if not isinstance(node, ast.If):
+                    continue
+                parts = [node.test, *(flags[n.id] for n in _names(node.test) if n.id in flags)]
+                strings = frozenset(
+                    part.value
+                    for test in parts
+                    for part in ast.walk(test)
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                )
+                if not strings.isdisjoint(MODULE_TEST_MARKS):
+                    tests.append((node, strings))
+            self._tests[key] = tests
+        return self._tests[key]
+
+
 def _decides(test: ast.If, line: int) -> bool:
-    """Whether an ``if`` decides that a line runs: the line is in it, or it ends before."""
+    """Whether an ``if`` decides that a line runs: the line is in it, or it ends before.
+
+    ``self.skipTest(...)`` ends a test as ``return`` does (it raises ``SkipTest``).
+    """
     last = test.body[-1]
     if test.body[0].lineno <= line <= (last.end_lineno or last.lineno):
         return True
-    return isinstance(last, TERMINATORS) and (last.end_lineno or last.lineno) < line
+    return _ends(last) and (last.end_lineno or last.lineno) < line
+
+
+def _ends(statement: ast.stmt) -> bool:
+    """``return``, ``raise``, ``continue``, ``break``, or a call of ``skipTest``."""
+    if isinstance(statement, TERMINATORS):
+        return True
+    call = statement.value if isinstance(statement, ast.Expr) else None
+    return (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == SKIP_TEST
+    )
+
+
+def _flag_values(function: ast.AST) -> dict[str, ast.expr]:
+    """The names a function binds once (``name = value``), with their values."""
+    bound = [
+        (node.targets[0].id, node.value)
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    ]
+    counts = Counter(name for name, _ in bound)
+    return {name: value for name, value in bound if counts[name] == 1}
+
+
+def _names(test: ast.expr) -> Iterator[ast.Name]:
+    return (node for node in ast.walk(test) if isinstance(node, ast.Name))
 
 
 def model_guards(nodes: Iterable[ast.AST] | NodeIndex) -> tuple[Guard, ...]:

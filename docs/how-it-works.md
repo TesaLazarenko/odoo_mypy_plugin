@@ -203,7 +203,32 @@ once it can be.
   mypy has recorded. For such a local dict the signature hooks of `__setitem__`,
   `update` and `setdefault` take any value; so do they for a dict the function builds
   by string-keyed displays and changes under string keys (`LocalValues.changes`), and
-  they widen `int` values to `float` in a container without an annotation.
+  they widen `int` values to `float` in a container without an annotation. A union of
+  unrelated values counts as a join, and a container of `Never` (`{}`) or of a literal
+  takes any key through the signature hooks of the reads. The function hooks of `zip`,
+  `enumerate` and the like map the join of a display argument to `Any`, and the
+  signature hook of `filter` takes `False` in the `None` overload.
+
+- **Rebound variables** (`odoo_typing.rebound`). mypy types a local variable from its
+  first value, after the hooks of that value have run, and no hook runs at a plain
+  name or a literal (`last = False`, then `last = line`). The first lookup of a hook
+  while mypy checks a module of an addon (`checker_state.type_checker`; for a model,
+  its first field) declares the local variables without an annotation that a function
+  binds more than once `Any`, and makes their first binding a plain assignment
+  (`NameExpr.is_inferred_def`): `ConditionalTypeBinder.assign_type` then narrows an
+  inferred `Any` variable to the type of each value, and joins differing values to
+  `Any`. A variable that may be given `False` is declared `Any | Literal[False]`: the
+  declared type is the context of each value, in which mypy types `False` as a literal
+  it keeps (it widens `False` to `bool` otherwise), and branches meet as a union. A
+  variable bound to a display of dicts, or to a value with an empty display inside, is
+  declared `Any` too, so the display is typed in that context (`list[Any]`). Only
+  functions mypy has not reached yet change; in the function being checked, only the
+  variables whose first binding it has not checked (`Var.type` is still `None`).
+
+- **Records as the addon sees them** for what `self` gives: the method hooks of the
+  `-> Self` methods, `__iter__`, `__getitem__` and the set operators of a model class
+  map a class of the model that the reading addon's view extends to that view
+  (`Models.view_type`); a type variable (`Self` of an override) is left alone.
 
 - **An exception in the plugin.** mypy calls `get_additional_deps` and
   `report_config_data` outside the context in which it reports the crash of a hook: an

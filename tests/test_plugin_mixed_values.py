@@ -59,7 +59,8 @@ def test_values_of_a_dict_of_mixed_values_are_not_their_join(run_mypy: RunMypy) 
     result = run_mypy({"my_mod": {"models.py": MODELS}})
 
     messages = result.messages("models.py")
-    assert messages[0] == '21: note: Revealed type is "dict[str, object]"'
+    # A display with an empty list inside is typed in an ``Any`` context (rebound.py).
+    assert messages[0] == '21: note: Revealed type is "dict[Any, Any]"'
     assert messages[1:] == [
         '36: error: "str" has no attribute "missing"  [attr-defined]',
         '37: error: Incompatible types in assignment (expression has type "int", target has '
@@ -165,3 +166,39 @@ def test_record_dicts_joins_and_numbers_of_containers(run_mypy: RunMypy) -> None
     assert '"str" has no attribute "missing"' in messages[1]
     assert 'expression has type "str", target has type "float"' in messages[2]
     assert 'expression has type "float", target has type "int"' in messages[3]
+
+
+DATA = """
+from odoo import fields, models
+
+class Thing(models.Model):
+    _name = "t.thing"
+
+    name = fields.Char()
+    code = fields.Char()
+
+    def data(self) -> None:
+        label = " ".join(filter(None, [self.code, self.name]))
+        first = next((row for row in self.read(["name"]) if row["name"]), {})
+        first["name"]
+        expected = [{"id": self.id, "amount": 0.0}, {"id": self.id, "rows": {}}]
+        self.check(expected)
+        for thing, row in zip(self, [{"a": self, "b": 1}, {"a": 1.5}]):
+            len(row)
+        by_team = dict((thing.id, []) for thing in self)
+        by_team[self.id].append(self)
+        reveal_type(" ".join(filter(None, [1])))
+
+    def check(self, rows: list[dict]) -> None:
+        pass
+"""
+
+
+def test_data_built_from_displays_is_not_typed_from_its_first_values(run_mypy: RunMypy) -> None:
+    result = run_mypy({"my_mod": {"models.py": DATA}})
+
+    # Only the last line is wrong: ``filter(None, ...)`` still takes no ``int`` for a str.
+    assert [message.split(";")[0] for message in result.messages("models.py")] == [
+        '20: note: Revealed type is "str"',
+        '20: error: List item 0 has incompatible type "Literal[1]"',
+    ]
