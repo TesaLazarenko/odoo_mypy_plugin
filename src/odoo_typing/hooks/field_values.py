@@ -94,8 +94,8 @@ class FieldValueHooks(Hooks):
 
         Odoo reads ``False`` for a required field of a new record or of a form whose
         value is not set yet; code that reads saved records does not see it. A value
-        that goes into a variable with several values keeps the declared type (see
-        :meth:`_stored`).
+        that types a variable whose later values are checked against it keeps the
+        declared type (see :meth:`_stored`).
         """
         member = ctx.context
         records = record_type(ctx)
@@ -121,12 +121,13 @@ class FieldValueHooks(Hooks):
         return make_simplified_union([item for item in value.items if not _is_false(item)])
 
     def _stored(self, expression: Context, api: CheckerPluginInterface) -> bool:
-        """Whether a value read goes into a variable that gets several values.
+        """Whether a value read types a variable that later values are checked against.
 
         mypy takes a variable's type from its first value: ``date = move.date`` (a
         required field) would make ``date = line.date`` (one that is not) an error in
         the other arm of an ``if``, and ``rows.append((tag.display_name, ...))`` would
-        make ``rows = [(False, ...)]`` one. There the field keeps the type Odoo declares.
+        make ``rows.append((False, ...))`` one. There the field keeps the type Odoo
+        declares; see :meth:`LocalValues.stored` for the variables mypy does not check so.
         """
         if not isinstance(expression, Expression):
             return False

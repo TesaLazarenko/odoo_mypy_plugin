@@ -134,11 +134,17 @@ as the merged definitions of the model leave it, also a field delegated through
 their value type without `| Literal[False]`: `", ".join(records.mapped("name"))`, `Telegram(bot.token)`
 and `format_date(env, rec.date)` then type-check. On the 37 core addons of the
 benchmark's `big` profile about half of the `... | Literal[False]` errors are of required
-fields or `display_name`. A value that goes into a variable with several values keeps
-the declared type: mypy takes a variable's type from its first value, so
-`date = move.date` (required) would make `date = line.date` (not required) in the other
-arm of an `if` an error; the same holds for the items of a list or dict that is filled
-in several statements. Odoo does read `False` for a required field of a new record
+fields or `display_name`. A value that types a variable whose later values are checked
+against it keeps the declared type: mypy takes a variable's type from its first value,
+so `date = move.date` (required) would make `date = line.date` (not required) in the
+other arm of an `if` an error; the same holds for the items of a list or dict that is
+filled in several statements, and for the first item appended to an empty list that
+later gets `False` as written (`rows.append((tag.display_name, ...))`, then
+`rows.append((False, ...))`); a value of a field that may be empty appended after the
+first one is reported where it is appended. A variable that `rebound_variables` declares
+`Any` takes each value as it is, and so does one that only `+=` changes
+(`label = self.name`, then `label += " (x)"`): there the required value reads without
+`False`. Odoo does read `False` for a required field of a new record
 (`new()`, a form's onchange) before the value is set: `required_values = false` reads
 these fields as Odoo declares them, for code that must handle such records.
 

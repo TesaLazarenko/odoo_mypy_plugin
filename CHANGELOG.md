@@ -175,9 +175,11 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   in, or in an arm that returns, is not taken for its value; `match` statements are
   followed like `if`.
 - Required fields and `display_name` read without `| Literal[False]`, except where the
-  value goes into a variable that gets several values (mypy takes its type from the
-  first one); option `required_values = false` reads them as Odoo declares them (a new
-  record reads `False`).
+  value types a variable whose later values mypy checks against it (it takes the type
+  from the first one); option `required_values = false` reads them as Odoo declares them
+  (a new record reads `False`). A variable that `rebound_variables` declares `Any`, one
+  that only `+=` changes and an empty list whose later items are no `False` as written
+  are not such variables: `label = self.name` then `label += " (x)"` is `str`.
 - `env.cr` has the methods of a cursor (`execute`, `fetchall`, `dbname`): Odoo 18 declares
   it as `BaseCursor`, which has none of them.
 - A model of an addon outside the dependencies is not reported in code written for that

@@ -45,6 +45,7 @@ from mypy.nodes import (
     SymbolNode,
     TryStmt,
     TupleExpr,
+    Var,
     WhileStmt,
     WithStmt,
 )
@@ -57,6 +58,7 @@ from mypy.patterns import (
     SequencePattern,
     StarredPattern,
 )
+from mypy.types import AnyType, UnionType, get_proper_type
 
 __all__ = ["MAX_DEPTH", "Built", "Change", "LocalValues", "Path"]
 
@@ -175,14 +177,20 @@ class LocalValues:
         ``date`` is assigned again, an item of the first tuple appended to an empty
         list. A value that is typed more narrowly there makes a later one an error; the
         later values fit either way.
+
+        Not so for a variable declared ``Any`` (:mod:`odoo_typing.rebound` declares those a
+        function binds more than once): mypy narrows it to each value assigned, and no
+        later value is checked against the first. Its container's items still are, so a
+        display or an empty first value counts. Nor for a value that only in-place
+        operators change (``name = record.name``, then ``name += " (x)"``): what ``+=``
+        gives depends on the value, not on the variable.
         """
         if self._stored is None:
             found: set[int] = set()
-            several = (events for events in self._events.values() if len(events) > 1)
-            for events in several:
-                _carried(events[0], found)
-                if _is_empty(events[0]):  # ``rows = []``: the next value types it
-                    _carried(events[1], found)
+            for key, events in self._events.items():
+                typing = _typing_value(key, events)
+                if typing is not None:
+                    _carried(typing, found)
             self._stored = frozenset(found)
         return id(expression) in self._stored
 
@@ -260,6 +268,62 @@ def _is_empty(event: _Binding | Change) -> bool:
     if isinstance(value, NameExpr):
         return value.name == "None"
     return isinstance(value, CallExpr) and not value.args and isinstance(value.callee, NameExpr)
+
+
+def _typing_value(key: _Key, events: list[_Binding | Change]) -> _Binding | Change | None:
+    """The binding or change whose value types a variable that later values are checked against."""
+    if len(events) < 2:
+        return None
+    first = events[0]
+    if _is_empty(first):  # ``rows = []``: the next value types it
+        return events[1] if _gives_false(events[2:]) else None
+    if _holds_items(first):
+        return first
+    rebound = any(isinstance(event, _Binding) for event in events[1:])
+    return first if rebound and not _declared_any(key) else None
+
+
+def _gives_false(events: list[_Binding | Change]) -> bool:
+    """Whether a later value of a container is ``False`` or ``None`` as written.
+
+    ``rows = []``, ``rows.append((tag.display_name, ...))``, then
+    ``rows.append((False, ...))``: the list holds the empty value on purpose, so its
+    first item keeps the type Odoo declares. Values of fields keep their own type: a
+    field that may be empty, added after a required one, is reported where it is added.
+    """
+    pending = [
+        value
+        for event in events
+        for value in ([event.value] if isinstance(event, _Binding) else list(event.args))
+        if value is not None
+    ]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, NameExpr) and node.name in {"False", "None"}:
+            return True
+        if isinstance(node, ListExpr | TupleExpr | SetExpr):
+            pending.extend(node.items)
+        elif isinstance(node, DictExpr):
+            pending.extend(value for _, value in node.items)
+        elif isinstance(node, ConditionalExpr):
+            pending.extend((node.if_expr, node.else_expr))
+        elif isinstance(node, OpExpr) and node.op in {"and", "or"}:
+            pending.extend((node.left, node.right))
+    return False
+
+
+def _holds_items(event: _Binding | Change) -> bool:
+    """Whether a binding gives a container whose items later changes are checked against."""
+    value = event.value if isinstance(event, _Binding) else None
+    return isinstance(value, ListExpr | TupleExpr | SetExpr | DictExpr | ListComprehension)
+
+
+def _declared_any(key: _Key) -> bool:
+    """Whether a variable is declared ``Any`` (or ``Any | Literal[False]``)."""
+    declared = get_proper_type(key.type) if isinstance(key, Var) and key.type is not None else None
+    if isinstance(declared, UnionType):
+        return any(isinstance(get_proper_type(item), AnyType) for item in declared.items)
+    return isinstance(declared, AnyType)
 
 
 def _carried(event: _Binding | Change, found: set[int]) -> None:

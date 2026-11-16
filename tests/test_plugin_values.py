@@ -153,9 +153,9 @@ class Line(models.Model):
         # A variable with one value has the field's value type.
         once = self.name
         reveal_type(once)
-        # One that gets several keeps the type Odoo declares: mypy takes a variable's
-        # type from its first value, and the next one may be of a field that is not
-        # required.
+        # One that gets several takes the type of each value (odoo_typing.rebound), and
+        # where values of other types meet it is ``Any``: no value is checked against
+        # the first.
         if flag:
             text = self.name
         else:
@@ -171,6 +171,11 @@ class Line(models.Model):
         lines.append("x")
         lines.append(self.name)
         reveal_type(lines)
+        # ``+=`` does not give the variable another value type: the required value stays.
+        label = self.name
+        if flag:
+            label += " (x)"
+        reveal_type(label)
 """
 
 
@@ -199,8 +204,9 @@ def test_required_values_read_without_false(run_mypy: RunMypy) -> None:
         "datetime.date",
         "str",
         "str",  # a variable with one value
-        "str | Literal[False]",  # a variable with several values; no error for the rest
+        "Any",  # a variable with several values, where they meet; no error for the rest
         "list[str]",
+        "str",  # changed by ``+=`` only
     ]
 
 
