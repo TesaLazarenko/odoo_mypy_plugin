@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
+import importlib
+import pkgutil
 import sys
 import tomllib
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 from mypy.build import take_module_snapshot
@@ -14,6 +18,7 @@ from mypy.options import Options
 from mypy.plugin import ReportConfigContext
 from pytest_mock import MockerFixture
 
+import odoo_typing
 from odoo_typing import addons as addons_module
 from odoo_typing import plugin as plugin_module
 from odoo_typing.fingerprint import Fingerprints
@@ -209,6 +214,30 @@ def test_tested_mypy_matches_pyproject_requirement() -> None:
     low, high = TESTED_MYPY
 
     assert requirement == f"mypy>={low[0]}.{low[1]},<{high[0]}.{high[1]}"
+
+
+def test_no_dataclass_default_is_hashable_only_since_python_312() -> None:
+    # Python 3.11 dataclasses reject a default whose class has no __hash__. These classes
+    # gained one in 3.12, so such a default imports here and crashes the import on 3.11;
+    # a default of any other unhashable class already fails on every version.
+    modules = (
+        importlib.import_module(info.name)
+        for info in pkgutil.walk_packages(odoo_typing.__path__, "odoo_typing.")
+    )
+    classes = [
+        value
+        for module in modules
+        for value in vars(module).values()
+        if isinstance(value, type) and dataclasses.is_dataclass(value)
+    ]
+    rejected = [
+        f"{cls.__qualname__}.{item.name}"
+        for cls in classes
+        for item in dataclasses.fields(cls)
+        if isinstance(item.default, (MappingProxyType, slice))
+    ]
+
+    assert rejected == []
 
 
 def test_take_module_snapshot_plugin_module_carries_package_digest() -> None:

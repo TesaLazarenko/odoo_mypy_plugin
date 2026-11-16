@@ -39,8 +39,7 @@ the rewrite.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
-from types import MappingProxyType
+from dataclasses import dataclass
 from typing import Final
 
 from mypy.nodes import (
@@ -143,11 +142,8 @@ class Wrapping:
     """
 
     wrapper: SymbolNode
-    model_classes: frozenset[str] = frozenset()
-    # A factory: Python 3.11 rejects an unhashable default (mappingproxy has no hash before 3.12).
-    search_methods: Mapping[str, Mapping[str, SearchMethod]] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
+    model_classes: frozenset[str]
+    search_methods: Mapping[str, Mapping[str, SearchMethod]]
 
 
 def annotation_alias(name: str) -> AnnotationAlias | None:
