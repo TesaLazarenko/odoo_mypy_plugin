@@ -387,7 +387,7 @@ class DomainHooks(Hooks):
             fail,
             self._fields_of(addon_name, api),
             self._profile,
-            self._field_guarded(api.path),
+            self._field_guarded(api),
             type_of,
             describe,
             subdomain,

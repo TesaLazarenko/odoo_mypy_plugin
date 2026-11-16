@@ -186,8 +186,9 @@ def load_index(
 
 
 def addon_data(addon: Addon) -> list[object]:
-    """An addon as JSON: name, path, module prefix, depends."""
-    return [addon.name, str(addon.path), addon.module_prefix, list(addon.depends)]
+    """An addon as JSON: name, path, module prefix, depends, auto_install (or null)."""
+    auto_install = list(addon.auto_install) if addon.auto_install is not None else None
+    return [addon.name, str(addon.path), addon.module_prefix, list(addon.depends), auto_install]
 
 
 def _stored_index(record: Record) -> tuple[list[Addon], Stamps] | None:
@@ -204,14 +205,22 @@ def _parse_addons(value: object) -> list[Addon] | None:
         return None
     addons = []
     for item in value:
-        if not (isinstance(item, list) and len(item) == 4):
+        if not (isinstance(item, list) and len(item) == 5):
             return None
-        name, path, prefix, depends = item
+        name, path, prefix, depends, auto_install = item
         texts = isinstance(name, str) and isinstance(path, str) and isinstance(prefix, str)
         if not texts or not is_str_list(depends):
             return None
+        if auto_install is not None and not is_str_list(auto_install):
+            return None
         addons.append(
-            Addon(name=name, path=Path(path), module_prefix=prefix, depends=tuple(depends))
+            Addon(
+                name=name,
+                path=Path(path),
+                module_prefix=prefix,
+                depends=tuple(depends),
+                auto_install=tuple(auto_install) if auto_install is not None else None,
+            )
         )
     return addons
 

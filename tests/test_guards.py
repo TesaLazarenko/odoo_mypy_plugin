@@ -48,7 +48,9 @@ def test_model_guards_cover_branches_that_run_with_the_model() -> None:
         Guard("a.in", 4, 4),
         Guard("b.not", 9, 21),
         Guard("c.get", 10, 10),
+        Guard("d.or", 11, 11),  # ``or other``: evaluated when the model is there
         Guard("d.or", 13, 21),
+        Guard("e.and", 14, 14),
         Guard("e.and", 15, 15),
         Guard("f.else", 19, 19),
     }
@@ -92,8 +94,28 @@ def test_field_guards_cover_branches_that_run_with_the_field() -> None:
         Guard(field_guard("x_in"), 4, 4),
         Guard(field_guard("x_not"), 7, 12),
         Guard(field_guard("x_get"), 8, 8),
+        Guard(field_guard("x_attr"), 9, 9),
         Guard(field_guard("x_attr"), 10, 10),
         Guard("sale.order", 10, 10),
+    }
+
+
+def test_operands_of_and_after_a_guard_are_covered() -> None:
+    source = """
+    if (
+        (code := values.get("code"))
+        and "intrastat_code_id" in self._fields
+        and (record := self.env["account.intrastat.code"].search([]))
+    ):
+        domain = 1
+    found = "x_a" not in self._fields or self.x_a
+    """
+    guards = model_guards(ast.walk(ast.parse(textwrap.dedent(source))))
+
+    assert set(guards) == {
+        Guard(field_guard("intrastat_code_id"), 5, 5),
+        Guard(field_guard("intrastat_code_id"), 7, 7),
+        Guard(field_guard("x_a"), 8, 8),
     }
 
 
@@ -129,6 +151,7 @@ def test_flags_and_helper_methods_stand_for_their_tests() -> None:
     guards = model_guards(ast.walk(ast.parse(textwrap.dedent(NAMED_SOURCE))))
 
     assert set(guards) == {
+        Guard("crm.lead", 8, 8),
         Guard("crm.lead", 12, 12),
         Guard(field_guard("x_flag"), 12, 12),
         Guard("sale.order", 15, 17),

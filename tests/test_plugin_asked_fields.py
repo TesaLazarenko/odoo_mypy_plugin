@@ -201,6 +201,19 @@ class TestThing(TransactionCase):
     def test_not_about_modules(self) -> None:
         if self.env["t.thing"].name == "t_extra":
             self.env["t.thing"].extra_method()
+
+
+class TestFlagged(TransactionCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.extra_installed = "t_extra" in cls.env["ir.module.module"]._installed()
+        if cls.extra_installed:
+            cls.env["t.thing"].extra_method()
+
+    def test_flagged(self) -> None:
+        if self.extra_installed:
+            self.env["t.thing"].extra_method()
 """
 
 
@@ -229,3 +242,130 @@ def test_records_on_lines_of_an_addon_outside_the_dependencies_are_any(
     assert result.messages("tests/test_thing.py") == [
         '17: error: "Thing" has no attribute "extra_method"  [attr-defined]',
     ]
+
+
+ENSURED_TEAM = {
+    "depends": ["t_base"],
+    "models.py": """
+    from odoo import fields, models
+
+    class Team(models.Model):
+        _name = "t.team"
+
+        name = fields.Char()
+    """,
+    "data": {"data.xml": '<odoo><record id="team_one" model="t.team"/></odoo>'},
+}
+ENSURED_SALE = {
+    "depends": ["t_team"],
+    "models.py": """
+    from odoo import fields, models
+
+    class Thing(models.Model):
+        _inherit = "t.thing"
+
+        sale_field = fields.Char()
+    """,
+}
+ENSURED_TEST = """
+from odoo.tests import TransactionCase
+
+class TestThing(TransactionCase):
+    def ensure_installed(self, module_name: str) -> None:
+        pass
+
+    def test_ensured(self) -> None:
+        self.ensure_installed("t_sale")
+        self.env["t.team"].search([])
+        self.env.ref("t_team.team_one")
+        self.env["t.thing"].create({"sale_field": "x"})
+
+    def test_not_ensured(self) -> None:
+        self.env["t.team"].search([])
+        self.env.ref("t_team.team_one")
+        self.env["t.thing"].create({"sale_field": "x"})
+"""
+
+
+def test_lines_after_ensure_installed_run_with_the_addon_and_its_dependencies(
+    run_mypy: RunMypy,
+) -> None:
+    """``self.ensure_installed("t_sale")``: what ``t_sale`` sees (``t_team``'s too) is there."""
+    result = run_mypy(
+        {
+            "t_base": GUARDED_BASE,
+            "t_team": ENSURED_TEAM,
+            "t_sale": ENSURED_SALE,
+            "t_use": {
+                "depends": ["t_base"],
+                "tests/__init__.py": "from . import test_thing\n",
+                "tests/test_thing.py": ENSURED_TEST,
+            },
+        },
+        check=["t_use"],
+    )
+
+    messages = result.messages("tests/test_thing.py")
+    assert [(line.split(":")[0], line.rpartition("[")[2]) for line in messages] == [
+        ("15", "odoo-model-depends]"),
+        ("16", "odoo-xmlid-depends]"),
+        ("17", "odoo-vals-key]"),
+    ], messages
+
+
+AUTO_PAYMENT = {
+    "depends": ["t_base"],
+    "models.py": """
+    from odoo import fields, models
+
+    class Provider(models.Model):
+        _name = "t.provider"
+
+        name = fields.Char()
+    """,
+    "data": {"data.xml": '<odoo><record id="provider_one" model="t.provider"/></odoo>'},
+}
+AUTO_BRIDGE = {
+    "depends": ["t_base", "t_payment"],
+    "auto_install": ["t_base"],
+    "models.py": """
+    from odoo import fields, models
+
+    class Thing(models.Model):
+        _inherit = "t.thing"
+
+        provider_id = fields.Many2one("t.provider")
+    """,
+}
+AUTO_USE = """
+from odoo import models
+
+class Thing(models.Model):
+    _inherit = "t.thing"
+
+    def use(self) -> None:
+        self.env["t.provider"].search([])
+        self.env.ref("t_payment.provider_one")
+        self.create({"provider_id": 1, "providr_id": 1})
+        self.env["t.team"].search([])
+"""
+
+
+def test_addons_odoo_installs_with_the_closure_are_there(run_mypy: RunMypy) -> None:
+    """``auto_install: ["t_base"]``: Odoo installs ``t_bridge`` (and ``t_payment``) with it."""
+    result = run_mypy(
+        {
+            "t_base": GUARDED_BASE,
+            "t_payment": AUTO_PAYMENT,
+            "t_bridge": AUTO_BRIDGE,
+            "t_team": ENSURED_TEAM,
+            "t_use": {"depends": ["t_base"], "models.py": AUTO_USE},
+        },
+        check=["t_use"],
+    )
+
+    messages = result.messages("t_use/models.py")
+    assert [(line.split(":")[0], line.rpartition("[")[2]) for line in messages] == [
+        ("10", "odoo-vals-key]"),
+        ("11", "odoo-model-depends]"),
+    ], messages

@@ -241,12 +241,13 @@ def type_checker_modules(ctx: MethodSigContext) -> dict[str, MypyFile]:
 
 
 def create_signature(base_model: str, ctx: MethodSigContext, untyped: bool = False) -> FunctionLike:
-    """``create(vals_list: list[X])`` also accepts one ``X``, as ``model_create_multi`` does.
+    """``create(vals_list: list[X])`` also accepts one ``X`` and any iterable of them.
 
     ``BaseModel.create`` is declared with a list (Odoo 18; Odoo 19+ declares both), but
     its decorator wraps a single dict into a list at runtime, and most code passes one
-    dict. With ``untyped`` (Odoo 17, where ``vals_list`` is unannotated) the argument
-    gets Odoo 18's type, ``dict[str, Any] | list[dict[str, Any]]``. A list of
+    dict; the list is read once, so any iterable of values does (``create({...} for i
+    in ...)``). With ``untyped`` (Odoo 17, where ``vals_list`` is unannotated) the
+    argument gets Odoo 18's type: ``dict[str, Any] | Iterable[dict[str, Any]]``. A list of
     ``odoo.values.*`` is accepted too (:func:`_values_list`).
     """
     signature = ctx.default_signature
@@ -265,16 +266,25 @@ def create_signature(base_model: str, ctx: MethodSigContext, untyped: bool = Fal
         vals = ctx.api.named_generic_type(
             "builtins.list", [ctx.api.named_generic_type("builtins.dict", [text, any_type])]
         )
+    # ``create({...} for i in range(8))``: Odoo reads the list once (``_prepare_create_values``),
+    # so any iterable of values does.
     if _is_list(vals):
-        accepted = [vals.args[0], vals]  # Odoo 17 and 18
+        accepted = [vals.args[0], _iterable(vals, ctx)]  # Odoo 17 and 18
     elif isinstance(vals, UnionType) and any(_is_list(item) for item in vals.items):
-        accepted = [vals]
+        accepted = [_iterable(item, ctx) for item in vals.items]
     else:
         return signature
     if (listed := _values_list(ctx)) is not None:
         accepted.append(listed)  # list is invariant: list[values] is no list[dict[str, Any]]
     union = UnionType.make_union(accepted)
     return signature.copy_modified(arg_types=[union, *signature.arg_types[1:]])
+
+
+def _iterable(typ: Type, ctx: MethodSigContext) -> Type:
+    """``Iterable[X]`` for ``list[X]``; another type as it is."""
+    if not _is_list(typ):
+        return typ
+    return ctx.api.named_generic_type("typing.Iterable", [typ.args[0]])
 
 
 def _is_list(typ: Type) -> TypeGuard[Instance]:

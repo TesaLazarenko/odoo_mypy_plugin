@@ -37,6 +37,7 @@ type that the function does not change stay as declared.
 from __future__ import annotations
 
 from mypy.erasetype import remove_instance_last_known_values
+from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import (
     CallExpr,
     DictExpr,
@@ -46,6 +47,7 @@ from mypy.nodes import (
     MemberExpr,
     NameExpr,
     StrExpr,
+    TypeInfo,
     Var,
 )
 from mypy.plugin import FunctionContext, MethodContext, MethodSigContext
@@ -76,6 +78,7 @@ __all__ = ["MIXED_CALLS", "MIXED_ITERATIONS", "MIXED_READS", "MIXED_WRITES", "Mi
 
 DICT = "builtins.dict"
 LIST = "builtins.list"
+TUPLE = "builtins.tuple"
 OBJECT = "builtins.object"
 # mypy names a method's hook after the receiver's class: the dicts and lists of builtins
 # and collections.
@@ -165,17 +168,27 @@ class MixedValueHooks(Hooks):
         """``values[key] = x``, ``.update()``, ``.setdefault()`` of a container of joined values.
 
         A local dict of mixed values or a record dict takes any value; a container
-        without an annotation whose values are ``int`` takes a ``float`` too.
+        without an annotation whose values are ``int`` takes a ``float`` too, one of
+        records takes records of no model, and one of tuples of ids takes lists of them
+        (and back): Odoo code stores ``records._ids`` (a tuple) and ``records.ids`` (a
+        list) alike.
         """
         signature = ctx.default_signature
         receiver = _receiver(ctx.context)
         if not isinstance(signature, CallableType):
             return signature
         joined = self._joined(ctx.type, receiver, ctx)
+        container = get_proper_type(ctx.type)
         if joined:
             arguments = [_unknown(get_proper_type(item), joined) for item in signature.arg_types]
-            return signature.copy_modified(arguments)
-        container = get_proper_type(ctx.type)
+            modified = signature.copy_modified(arguments)  # ``tuple[int | NewId, ...]`` too
+            return self._sequence_slot(container, receiver, modified, ctx, same=False) or modified
+        records = self._records_slot(container, receiver, signature, ctx)
+        if records is not None:
+            return records
+        sequence = self._sequence_slot(container, receiver, signature, ctx)
+        if sequence is not None:
+            return sequence
         if (
             isinstance(container, Instance)
             and container.args
@@ -188,6 +201,66 @@ class MixedValueHooks(Hooks):
             number = type_checker(ctx.api).named_type(FLOAT)
             return signature.copy_modified([*signature.arg_types[:-1], number])
         return signature
+
+    def _sequence_slot(
+        self,
+        container: ProperType,
+        receiver: Expression | None,
+        signature: CallableType,
+        ctx: MethodSigContext,
+        same: bool = True,
+    ) -> CallableType | None:
+        """A container of ``tuple[X, ...]`` without an annotation takes ``list[X]``, and back.
+
+        ``same``: the last parameter must be the container's value type (else it is that
+        type with its joins read as ``Any``).
+        """
+        if not isinstance(container, Instance) or not container.args or receiver is None:
+            return None
+        if not signature.arg_types or not self._is_inferred(receiver, ctx):
+            return None
+        last = get_proper_type(signature.arg_types[-1])
+        if same and not is_same_type(last, get_proper_type(container.args[-1])):
+            return None
+        api = ctx.api
+        if isinstance(last, Instance) and last.type.fullname == TUPLE and last.args:
+            other = api.named_generic_type(LIST, [last.args[0]])
+        elif isinstance(last, Instance) and last.type.fullname == LIST and last.args:
+            other = api.named_generic_type(TUPLE, [last.args[0]])
+        else:
+            return None
+        either = UnionType([last, other])
+        return signature.copy_modified([*signature.arg_types[:-1], either])
+
+    def _records_slot(
+        self,
+        container: ProperType,
+        receiver: Expression | None,
+        signature: CallableType,
+        ctx: MethodSigContext,
+    ) -> CallableType | None:
+        """A container of records of a model, without an annotation, takes records of none.
+
+        ``isinstance(value, models.BaseModel)`` leaves records of no model, which Odoo
+        code stores with the records of the model they are (``result[line.id] =
+        value`` in a dict that a ``sale.order.line`` record typed first).
+        """
+        if not isinstance(container, Instance) or not container.args or receiver is None:
+            return None
+        value = get_proper_type(container.args[-1])
+        if not isinstance(value, Instance) or self._models.model_of(value.type) is None:
+            return None
+        if not signature.arg_types or not self._is_inferred(receiver, ctx):
+            return None
+        last = get_proper_type(signature.arg_types[-1])
+        if not is_same_type(last, value):
+            return None
+        checker = type_checker(ctx.api)
+        found = lookup_fully_qualified(self._profile.base_model, checker.modules)
+        if found is None or not isinstance(found.node, TypeInfo):
+            return None
+        either = UnionType([value, Instance(found.node, [])])
+        return signature.copy_modified([*signature.arg_types[:-1], either])
 
     def _joined(
         self, typ: Type, receiver: Expression | None, ctx: MethodContext | MethodSigContext

@@ -6,7 +6,8 @@ of ids, a date) is an ``arg-type`` error although the code is a correct domain. 
 of a domain have a value of any type, so the methods that add to a list of terms take any
 term: ``append``, ``insert``, ``extend``, ``+=`` and ``+`` of a list whose items are
 ``(field, operator, value)`` tuples also take such a tuple with another value, or an
-operator (``"|"``). The list keeps its type; what the terms name is checked where the
+operator (``"|"``), or Odoo's ``TRUE_LEAF`` / ``FALSE_LEAF`` (``(0, "=", 1)``). The list
+keeps its type; what the terms name is checked where the
 domain is used (:mod:`odoo_typing.hooks.domains`).
 
 The same goes for a list of the commands of a relational field: ``[Command.update(...)]``
@@ -67,7 +68,9 @@ def term_list_signature(ctx: MethodSigContext) -> FunctionLike:
     added: Type
     if _is_term(item):
         term = item.copy_modified(items=[item.items[0], item.items[1], value])
-        added = UnionType([term, ctx.api.named_generic_type(STR, [])])
+        # Odoo's TRUE_LEAF / FALSE_LEAF, ``(1, "=", 1)`` / ``(0, "=", 1)``: a term too.
+        leaf = item.copy_modified(items=[ctx.api.named_generic_type(INT, []), item.items[1], value])
+        added = UnionType([term, leaf, ctx.api.named_generic_type(STR, [])])
     elif _is_command(item):
         added = ctx.api.named_generic_type(TUPLE, [value])  # ``(2, id)``, ``(5,)``
     else:

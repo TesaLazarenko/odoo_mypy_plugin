@@ -33,6 +33,7 @@ from odoo_typing.scanner.class_bodies import (
     inherits_pairs,
     log_access,
     model_name,
+    read_value_keys,
 )
 from odoo_typing.scanner.evaluation import UNKNOWN, assign, class_attributes
 from odoo_typing.scanner.field_classes import (
@@ -336,6 +337,7 @@ class _ImportWalker:
                 inherits=inherits_pairs(inherits),
                 log_access=log_access(attrs),
                 abstract=abstract(node, attrs),
+                value_keys=read_value_keys(node),
             )
         )
 

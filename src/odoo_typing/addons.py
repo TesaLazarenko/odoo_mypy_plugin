@@ -30,6 +30,7 @@ __all__ = [
     "literal_manifest",
     "may_be_addon",
     "read_depends",
+    "read_manifest",
     "search_manifest",
 ]
 
@@ -57,12 +58,16 @@ class Addon:
             overlay root (``odoo-typing-root``), for all addons; otherwise ``<name>``
             (the addons directory is expected to be on ``mypy_path``).
         depends: Direct dependencies, as listed in the manifest.
+        auto_install: The addons whose installation installs this one (``auto_install``
+            of the manifest: its ``depends`` for ``True``, the listed ones for a list);
+            ``None`` if Odoo never installs it by itself.
     """
 
     name: str
     path: Path
     module_prefix: str
     depends: tuple[str, ...]
+    auto_install: tuple[str, ...] | None = None
 
 
 def may_be_addon(name: str) -> bool:
@@ -141,12 +146,20 @@ def read_depends(manifest: Path) -> tuple[str, ...]:
     Returns:
         Dependency names; empty if the manifest cannot be parsed.
     """
+    return read_manifest(manifest)[0]
+
+
+def read_manifest(manifest: Path) -> tuple[tuple[str, ...], tuple[str, ...] | None]:
+    """Read the ``depends`` and ``auto_install`` of a manifest without executing it.
+
+    ``auto_install`` is what installs the addon (see :attr:`Addon.auto_install`).
+    """
     # Strict UTF-8 text on purpose (unlike Python sources): Odoo reads manifests the
     # same way (tools.file_open + ast.literal_eval), so a BOM manifest is broken there too.
     try:
         data = literal_manifest(manifest.read_text(encoding="utf-8"))
     except OSError:
-        return ()  # an unreadable file: its stamp makes the index read it again
+        return (), None  # an unreadable file: its stamp makes the index read it again
     except UNREADABLE_MANIFEST:
         data = None
     depends = data.get("depends", []) if isinstance(data, dict) else None
@@ -157,8 +170,12 @@ def read_depends(manifest: Path) -> tuple[str, ...]:
             "dict with a list); the addon is checked as if it depended on nothing",
             file=sys.stderr,
         )
-        return ()
-    return tuple(item for item in depends if isinstance(item, str))
+        return (), None
+    names = tuple(item for item in depends if isinstance(item, str))
+    trigger = data.get("auto_install", False) if isinstance(data, dict) else False
+    if isinstance(trigger, list | tuple):
+        return names, tuple(item for item in trigger if isinstance(item, str))
+    return names, names if trigger is True else None
 
 
 class AddonIndex:
@@ -190,6 +207,7 @@ class AddonIndex:
         self._prefixes: dict[str, Addon] = {}
         self._by_path: dict[Path, Addon] = {}
         self._closures: dict[str, frozenset[str]] = {}
+        self._auto_installed: dict[str, frozenset[str]] = {}
         # Both keyed by a source file's directory as mypy spells it: the plugin asks
         # about every file mypy loads, often several times, and resolve() costs syscalls.
         self._real_dirs: dict[str, Path] = {}
@@ -227,11 +245,13 @@ class AddonIndex:
                         file=sys.stderr,
                     )
                 continue
+            depends, auto_install = read_manifest(manifest)
             addon = Addon(
                 name=child.name,
                 path=child.resolve() if child.is_symlink() else real_root / child.name,
                 module_prefix=prefix_template.format(child.name),
-                depends=read_depends(manifest),
+                depends=depends,
+                auto_install=auto_install,
             )
             self._register(addon, aliases=aliases)
 
@@ -251,6 +271,28 @@ class AddonIndex:
         if name not in self._closures:
             self._closures[name] = self._compute_closure(name)
         return self._closures[name]
+
+    def auto_installed(self, name: str) -> frozenset[str]:
+        """The addons outside an addon's closure that Odoo installs with it.
+
+        Odoo's loader installs an addon whose ``auto_install`` addons are all installed
+        (``account_payment``: ``auto_install: ["account"]``; ``base_import``:
+        ``auto_install: True`` with ``depends: ["web"]``), with its own dependencies
+        (``payment``), and again for what those bring.
+        """
+        if name not in self._auto_installed:
+            closure = self.closure(name)
+            installed = set(closure)
+            pending = [addon for addon in self.addons.values() if addon.auto_install is not None]
+            while ready := [
+                addon
+                for addon in pending
+                if addon.name not in installed and installed.issuperset(addon.auto_install or ())
+            ]:
+                for addon in ready:
+                    installed |= self.closure(addon.name)
+            self._auto_installed[name] = frozenset(installed - closure)
+        return self._auto_installed[name]
 
     def _compute_closure(self, name: str) -> frozenset[str]:
         seen: set[str] = set()

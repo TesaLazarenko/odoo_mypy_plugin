@@ -16,7 +16,7 @@ own (:func:`odoo_typing.scanner.scan_file_classes`), kept for their stamps.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -29,7 +29,13 @@ from odoo_typing.records import Record, digest, parse_stamps
 from odoo_typing.registry.class_index import ClassFileIndex, module_of
 from odoo_typing.registry.fields import ModelFields, chain_log_access
 from odoo_typing.registry.scans import IndexLoader, ScanCache
-from odoo_typing.scanner import DOMAIN, Contribution, SourceError, scan_file_classes
+from odoo_typing.scanner import (
+    DOMAIN,
+    Contribution,
+    SourceError,
+    read_source,
+    scan_file_classes,
+)
 from odoo_typing.stamps import Stamp, matches
 
 __all__ = ["UNCHECKED", "AliasResolution", "AnnotatedModels", "SearchMethod", "normalized_alias"]
@@ -38,6 +44,14 @@ __all__ = ["UNCHECKED", "AliasResolution", "AnnotatedModels", "SearchMethod", "n
 # is not stored holds any value for a widget (see odoo_typing.vals).
 UNCHECKED: Final = "*"
 BINARY_CLASSES: Final = frozenset({"Binary", "Image"})
+
+
+def _holds(path: Path, text: bytes) -> bool:
+    """Whether a file's bytes hold a text (a file that cannot be read holds nothing)."""
+    try:
+        return text in read_source(path)
+    except SourceError:
+        return False
 
 
 def normalized_alias(name: str) -> str:
@@ -252,6 +266,22 @@ class AnnotatedModels(ModelFields):
             )
             self._values_models[model] = frozenset(involved)
         return self._values_fields[model]
+
+    def declares_field(self, model: str, field: str, addon_names: Collection[str]) -> bool:
+        """Whether a class of one of some addons declares a field on a model.
+
+        Asked on an error path only (a field the checking addon's view does not have):
+        only the files that name the model and hold the field's name are parsed, in
+        those addons.
+        """
+        name = field.encode()
+        for addon_name, path in self._class_files().files(model):
+            if addon_name not in addon_names or not _holds(path, name):
+                continue
+            for item in self._classes_in(addon_name, path):
+                if item.model == model and any(info.name == field for info in item.fields):
+                    return True
+        return False
 
     def selection_keys_anywhere(self, models: Iterable[str], field: str) -> frozenset[str]:
         """The keys that any addon on the addons paths gives a selection field of some models.

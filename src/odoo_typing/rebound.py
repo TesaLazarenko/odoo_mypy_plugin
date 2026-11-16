@@ -65,6 +65,7 @@ from mypy.nodes import (
     DictExpr,
     DictionaryComprehension,
     Expression,
+    ExpressionStmt,
     ForStmt,
     FuncDef,
     FuncItem,
@@ -118,6 +119,12 @@ UNINFERRED_CALLS = frozenset(
 # found: ``next(iterator, False)``, ``getattr(record, name, False)``, ``d.get(key, False)``.
 DEFAULT_ARGUMENTS = {"builtins.next": 2, "builtins.getattr": 3}
 DEFAULT_METHODS = {"get": 2}
+# The methods of a list that add an item to it.
+ADDING_METHODS = frozenset({"append", "insert"})
+# ``rows.extend(...)``: mypy completes ``rows = []`` from a list argument only.
+EXTEND = "extend"
+# Calls whose result is a list: ``rows.extend(list(...))`` completes ``rows = []``.
+LIST_CALLS = frozenset({"builtins.list", "builtins.sorted"})
 
 
 class ReboundVariables:
@@ -172,8 +179,41 @@ def rebound_names(function: FuncItem) -> dict[Var, list[Binding]]:
         for variable, bindings in collector.names.items()
         if variable not in collector.excluded
         and _is_plain(variable)
-        and (len(bindings) > 1 or _gives(bindings, FALSE) or _structured(bindings))
+        and (
+            len(bindings) > 1
+            or _gives(bindings, FALSE)
+            or _structured(bindings)
+            or (variable in collector.given_dicts and _is_empty_binding(bindings))
+        )
     }
+
+
+def _leaves_list_uninferred(method: str, arguments: list[Expression]) -> bool:
+    """``rows.append({...})`` / ``.insert(i, {...})``, or ``rows.extend(x)`` of no list."""
+    if method in ADDING_METHODS:
+        return any(isinstance(argument, DictExpr) for argument in arguments)
+    return method == EXTEND and len(arguments) == 1 and _no_list(arguments[0])
+
+
+def _no_list(node: Expression) -> bool:
+    """An argument that may be no list: a call (not ``list()``), a generator, an attribute.
+
+    mypy completes the type of ``rows = []`` from ``rows.extend(x)`` only when ``x`` is
+    a list; ``rows.extend(groups.values())`` or ``rows.extend(order.order_line)`` "needs
+    a type annotation". A local name is left to mypy (most often a list).
+    """
+    if isinstance(node, (GeneratorExpr, MemberExpr)):
+        return True
+    if not isinstance(node, CallExpr):
+        return False
+    callee = node.callee
+    return not (isinstance(callee, NameExpr) and callee.fullname in LIST_CALLS)
+
+
+def _is_empty_binding(bindings: list[Binding]) -> bool:
+    """Whether a variable's first value is an empty display (``rows = []``)."""
+    value = bindings[0][1]
+    return value is not None and _is_empty(value)
 
 
 def _declared(bindings: list[Binding], bool_type: Instance) -> Type:
@@ -382,6 +422,9 @@ class _Bindings:
         self.names: dict[Var, list[Binding]] = {}
         self.excluded: set[Var] = set()
         self.augmented: list[Expression] = []  # targets of ``x += v``, ``x -= v``...
+        # Lists the function adds dict displays to (``rows.append({...})``, ``+= [{...}]``)
+        # or extends with what is no list (``plan.extend(groups.values())``).
+        self.given_dicts: set[Var] = set()
 
     def numbers(self) -> None:
         """Count ``x += v`` as a binding of a variable whose first value is an int literal."""
@@ -406,6 +449,13 @@ class _Bindings:
             # ``x += v`` rebinds ``x`` to another type only for an immutable value:
             # ``total = 0`` then ``total += line.balance`` (a list changes in place).
             self.augmented.append(statement.lvalue)
+            if _holds_dicts(statement.rvalue):
+                self.given(statement.lvalue)
+        elif isinstance(statement, ExpressionStmt):
+            call = statement.expr if isinstance(statement.expr, CallExpr) else None
+            callee = call.callee if call is not None else None
+            if call is not None and isinstance(callee, MemberExpr):
+                self.given_by(callee, call.args)
         elif isinstance(statement, ForStmt):
             self.target(statement.index)
             self.block(statement.body)
@@ -438,6 +488,16 @@ class _Bindings:
                 self.block(body)
         elif isinstance(statement, Block):
             self.block(statement)
+
+    def given_by(self, callee: MemberExpr, arguments: list[Expression]) -> None:
+        """A call of a list method that leaves the list's items to infer (see the class)."""
+        if _leaves_list_uninferred(callee.name, arguments):
+            self.given(callee.expr)
+
+    def given(self, target: Expression) -> None:
+        """A list the function adds a dict display to."""
+        if isinstance(target, NameExpr) and target.kind == LDEF and isinstance(target.node, Var):
+            self.given_dicts.add(target.node)
 
     def target(self, target: Expression, value: Expression | None = None) -> None:
         if isinstance(target, NameExpr):

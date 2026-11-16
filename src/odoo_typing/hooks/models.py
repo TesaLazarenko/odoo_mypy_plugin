@@ -44,7 +44,7 @@ from odoo_typing.hooks.nodes import (
     type_checker,
 )
 from odoo_typing.local_values import LocalValues
-from odoo_typing.module_tests import ModuleTests
+from odoo_typing.module_tests import ClassFlags, ModuleTests
 from odoo_typing.references import near_miss
 from odoo_typing.registry import Registry
 from odoo_typing.scanner import FieldInfo
@@ -102,6 +102,7 @@ class Models:
         self.registry = registry
         # The tests about modules of the functions met (by id: FuncItem is unhashable).
         self._module_tests: dict[int, ModuleTests] = {}
+        self._class_flags: ClassFlags = {}
 
     def view_type(self, model: str, addon_name: str, api: CheckerPluginInterface) -> ViewType:
         """The type of ``env[model]`` as seen from an addon.
@@ -200,6 +201,8 @@ class Models:
         outside = self.registry.addons_outside_defining(model, addon_name)
         if self._optional_code(outside, addon_name, context.line, api.path):
             return AnyType(TypeOfAny.special_form)
+        if self.runs_with_addon(addon_name, api, context.line, outside):
+            return AnyType(TypeOfAny.special_form)  # ``self.ensure_installed("sale")``
         if outside:
             message = (
                 f'Odoo model "{model}" is defined in {not_in_dependencies(outside, addon_name)}'
@@ -244,17 +247,50 @@ class Models:
         guarded = registry.guarded_fields(api.path, line)
         if any(not registry.has_field_named(name, addon_name) for name in guarded):
             return True
+        addons = registry.addons
+        return any(
+            name not in addons.addons or model in registry.addon_models(name)
+            for name in self.running_with(addon_name, api, line)
+        )
+
+    def running_with(
+        self, addon_name: str, api: CheckerPluginInterface, line: int
+    ) -> frozenset[str]:
+        """The addons outside the closure that a line runs with, as its function tests.
+
+        A test about installed modules that decides the line names them
+        (:mod:`odoo_typing.module_tests`), or ``self.ensure_installed("sale")`` before it
+        in its block. Such an addon's own dependencies are installed too: what their
+        closure has (``sales_team.group_sale_salesman`` after ``ensure_installed("sale")``)
+        is there. A name the addons path does not have may be any addon.
+        """
         function = type_checker(api).scope.top_level_function()
         if function is None:
-            return False
+            return frozenset()
         tests = self._module_tests.get(id(function))
         if tests is None or tests.function is not function or tests.body is not function.body:
-            tests = self._module_tests[id(function)] = ModuleTests(function)
-        addons = registry.addons
-        closure = addons.closure(addon_name)
-        named = [name for name in tests.names(line) if name not in closure]
+            tests = self._module_tests[id(function)] = ModuleTests(function, self._class_flags)
+        closure = self.registry.addons.closure(addon_name)
+        return frozenset(name for name in tests.names(line) if name not in closure)
+
+    def runs_with_addon(
+        self, addon_name: str, api: CheckerPluginInterface, line: int, defining: Iterable[str]
+    ) -> bool:
+        """Whether a line runs with one of the addons that define something.
+
+        The addons it runs with are those its function tests for (:meth:`running_with`)
+        and those Odoo installs with the closure (``auto_install``), with their own
+        dependencies. An addon the addons path does not have may define what no addon
+        on it defines (``defining`` empty: an unknown model); what it depends on is not
+        known.
+        """
+        addons = self.registry.addons
+        wanted = set(defining)
+        if not wanted.isdisjoint(addons.auto_installed(addon_name)):
+            return True
         return any(
-            name not in addons.addons or model in registry.addon_models(name) for name in named
+            not wanted if name not in addons.addons else not wanted.isdisjoint(addons.closure(name))
+            for name in self.running_with(addon_name, api, line)
         )
 
     def comodel_at_use_site(
@@ -452,9 +488,35 @@ class Hooks:
     def _settings(self) -> Settings:
         return self._models.settings
 
-    def _field_guarded(self, path: str) -> Callable[[str, int], bool]:
-        """Whether a field name is guarded on a line of a file (``"f" in self._fields``)."""
-        return lambda name, line: self.registry.guarded(path, field_guard(name), line)
+    def _field_guarded(self, api: CheckerPluginInterface) -> Callable[[str, int, str], bool]:
+        """Whether a field of a model may be there on a line of a file.
+
+        The line is under a guard of the field (``"f" in self._fields``), or runs with an
+        addon outside the closure whose view of the model has it: one its function tests
+        for (:meth:`Models.running_with`: ``self.ensure_installed("account_tax_python")``
+        before ``create({"formula": ...})``), or one Odoo installs with the closure
+        (``account_payment``, ``auto_install: ["account"]``, adds ``payment_token_id``).
+        """
+        path = api.path
+        registry = self.registry
+
+        def guarded(name: str, line: int, model: str) -> bool:
+            if registry.guarded(path, field_guard(name), line):
+                return True
+            addon_name = registry.addon_name_for_path(path)
+            if addon_name is None:
+                return False
+            addons = registry.addons
+            others = self._models.running_with(addon_name, api, line)
+            if any(other not in addons.addons for other in others):
+                return True  # an addon not on the path may add any field
+            present = set(addons.auto_installed(addon_name))
+            for other in others:
+                present |= addons.closure(other)
+            present -= addons.closure(addon_name)
+            return bool(present) and registry.declares_field(model, name, present)
+
+        return guarded
 
     def _field_ignored(self, name: str, fields: Iterable[str] = ()) -> bool:
         """Whether a name that is no field is not reported: it matches ``vals_ignore_keys``.

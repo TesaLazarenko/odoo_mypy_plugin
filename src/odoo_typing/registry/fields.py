@@ -48,6 +48,18 @@ class ModelFields(ModelViews):
         # themselves took more memory than the maps it pooled).
         self._fields_pool: dict[int, list[Mapping[str, FieldInfo]]] = {}
 
+    def value_keys(self, model: str, addon_name: str) -> frozenset[str]:
+        """The keys the ``create`` / ``write`` of a model's classes read from their values.
+
+        As an addon sees the model (its view's classes): an override that pops a key
+        (``vals.pop("counterpart_account_id", None)``) takes it although it is no field.
+        Asked on an error path only (a key that is no field).
+        """
+        view = self.view_class(model, addon_name)
+        if view is None:
+            return frozenset()
+        return frozenset(key for item in view.chain for key in item.value_keys)
+
     def fields(self, model: str, addon_name: str) -> Mapping[str, FieldInfo]:
         """The fields of a model's registry class as an addon sees it (``_fields``).
 

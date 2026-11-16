@@ -107,7 +107,8 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   test about installed modules (`"accountant" not in modules._installed()`), may
   extend any model: the records are `Any` where it runs.
 - A `NamedTuple` annotated with field classes (Odoo 19's `Procurement`) takes and gives
-  `Any` for those items.
+  `Any` for those items, also through a name a later class inherits
+  (`StockRule.Procurement` in sale_stock).
 
 ### Checks
 
@@ -120,7 +121,38 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   items; `filter(None, ...)` takes values that may be `False`; `Counter()`,
   `OrderedDict()` and `defaultdict(lambda: {...})` need no annotation.
 - `Command.set([...])` takes the XML ids of data that a loader replaces (a bare name, a
-  `module.name` the closure's data creates): Odoo 19 and 20 declare `Collection[int]`.
+  `module.name` the closure's data creates, or of a module of the closure): Odoo 19 and
+  20 declare `Collection[int]`.
+- A list of domain terms takes Odoo's `TRUE_LEAF` / `FALSE_LEAF` (`(0, "=", 1)`).
+- The operands of `and` after a guard are guarded (`"f" in self._fields and
+  self.env["m"].search(...)`), those of `or` after a false test too.
+- What a line runs with is there with its dependencies: after
+  `self.ensure_installed("sale")`, under a test about installed modules (also through
+  an attribute the class binds once, `cls.document_installed = ...`), and the addons
+  Odoo installs by itself with the closure (`auto_install`: `account_payment` with
+  `account`, `base_import` with `web`). Their models, XML ids and fields are no
+  `odoo-model-depends`, `odoo-xmlid-depends` or `odoo-vals-key` errors.
+- A list that the function adds dict displays to (`rows = []`, then
+  `rows.append({...})`, `rows += [{...}]`), or extends with what may be no list
+  (`plan.extend(groups.values())`), is `list[Any]`: mypy typed it from the first dict,
+  and a later dict of another shape was an error, or it asked for an annotation.
+- Records are the classes Odoo registers `BaseModel` with (`collections.abc.Sequence`,
+  `Set`, read from Odoo's models module): `random.sample(products, 2)` is
+  `list[ProductProduct]`, a `Sequence[Product]` parameter takes products.
+- A key that a model's `create` / `write` reads from the values
+  (`vals.pop("counterpart_account_id", None)`) is no `odoo-vals-key` error.
+- `create()` takes any iterable of values (`create({...} for i in range(3))`), which
+  Odoo reads once.
+- A container of records without an annotation takes records of no model too
+  (`isinstance(value, models.BaseModel)` before `result[line.id] = value`); one of
+  tuples of ids takes lists of them, and back (`records._ids`, `records.ids`).
+- `records[key]` with a key of type `Any` is `Any`: mypy took Odoo's first overload
+  (`int | slice -> Self`), and `record[record._sequence_field]` was records.
+- `from ..tools import after_commit` in a model of an import cycle is the function, not
+  the submodule of that name (Odoo 19+): the plugin's dependency edges weigh as imports
+  inside functions, so they no longer order the cycle before real imports do.
+- `cls.cr = cls.env.cr` in a test (Odoo 18): an attribute of an Odoo class declared as
+  `Cursor` takes the cursor classes `env.cr` is (`Cursor | TestCursor`).
 
 - Every check also runs where `self` is a type variable: in an unannotated `create` /
   `copy` override (typed `(self: Self) -> Self`), under `-> Self` and `self: T`.

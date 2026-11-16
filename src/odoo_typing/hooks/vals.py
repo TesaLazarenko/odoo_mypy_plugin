@@ -102,7 +102,7 @@ class ValsHooks(Hooks):
             self._models.model_of,
             partial(self._concrete, addon_name=addon_name, api=api),
             partial(self._vals_target, addon_name=addon_name, api=api),
-            self._field_guarded(api.path),
+            self._field_guarded(api),
             partial(self._accepted_values, addon_name=addon_name, api=api),
             self._selection_elsewhere(addon_name),
             partial(self._read_type, type_checker(api)),
@@ -137,6 +137,7 @@ class ValsHooks(Hooks):
             self._fields_of(addon_name, api)(model),
             check_keys=self._concrete(model, addon_name, api),
             ignore_keys=self._settings.vals_ignore_keys,
+            taken_keys=partial(self.registry.value_keys, model, addon_name),
         )
 
     def _concrete(self, model: str, addon_name: str, api: CheckerPluginInterface) -> bool:

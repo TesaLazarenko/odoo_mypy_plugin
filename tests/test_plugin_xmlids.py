@@ -160,7 +160,7 @@ def test_command_set_takes_the_xml_ids_of_data_to_load(run_mypy: RunMypy) -> Non
                     def data(self) -> list:
                         return [
                             Command.set(["t_base.thing_one", "own", self.id]),
-                            Command.set(["t_base.no_such_id"]),
+                            Command.set(["not an XML id"]),
                         ]
                 """,
             },

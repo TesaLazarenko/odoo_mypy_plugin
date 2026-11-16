@@ -96,8 +96,8 @@ class RecordsetHooks(Hooks):
         for node in names:
             info = fields.get(node.value)
             if info is None:
-                guarded = self._field_guarded(ctx.api.path)(
-                    node.value, node.line
+                guarded = self._field_guarded(ctx.api)(
+                    node.value, node.line, model
                 ) or self._field_ignored(node.value, fields)
                 if self.registry.concrete(model, addon_name) and not guarded:
                     message = f'Odoo model "{model}" has no field "{node.value}" in {method}()'
@@ -226,12 +226,12 @@ class RecordsetHooks(Hooks):
         if not self.registry.concrete(model, addon_name):
             return
         fields = self._fields_of(addon_name, ctx.api)(model)
-        guarded = self._field_guarded(ctx.api.path)
+        guarded = self._field_guarded(ctx.api)
         for name in names:
             if (
                 fields
                 and name not in fields
-                and not guarded(name, argument.line)
+                and not guarded(name, argument.line, model)
                 and not self._field_ignored(name, fields)
             ):
                 message = f'Odoo model "{model}" has no field "{name}" in {method}(order=...)'
@@ -246,11 +246,11 @@ class RecordsetHooks(Hooks):
         if found is None:
             return
         model, fields, items = found
-        guarded = self._field_guarded(ctx.api.path)
+        guarded = self._field_guarded(ctx.api)
         for item in items:
             if (
                 item.value not in fields
-                and not guarded(item.value, item.line)
+                and not guarded(item.value, item.line, model)
                 and not self._field_ignored(item.value, fields)
             ):
                 message = f'Odoo model "{model}" has no field "{item.value}" in {method}()'
@@ -265,7 +265,7 @@ class RecordsetHooks(Hooks):
         ``read_group`` of Odoo 17-19 takes other forms (``"total:sum(amount)"``): only its
         ``groupby`` is checked.
         """
-        field_guarded = self._field_guarded(ctx.api.path)
+        field_guarded = self._field_guarded(ctx.api)
         specs = "aggregates" in ctx.callee_arg_names
         for parameter in ("groupby", "aggregates") if specs else ("groupby",):
             found = self._literal_items(parameter, ctx)
@@ -273,8 +273,10 @@ class RecordsetHooks(Hooks):
                 continue
             model, fields, items = found
 
-            def guarded(name: str, line: int, fields: Mapping[str, FieldInfo] = fields) -> bool:
-                return field_guarded(name, line) or self._field_ignored(name, fields)
+            def guarded(
+                name: str, line: int, model: str, fields: Mapping[str, FieldInfo] = fields
+            ) -> bool:
+                return field_guarded(name, line, model) or self._field_ignored(name, fields)
 
             for item in items:
                 problem = _spec_problem(method, parameter, item, model, fields, guarded, specs)
@@ -320,14 +322,14 @@ class RecordsetHooks(Hooks):
         if model is None or addon_name is None or not self.registry.concrete(model, addon_name):
             return True
         fields_of = self._fields_of(addon_name, ctx.api)
-        guarded = self._field_guarded(ctx.api.path)
+        guarded = self._field_guarded(ctx.api)
         valid = True
         for path in paths:
             found = resolve_path(path, model, fields_of, f'{method}("{argument.value}")')
             if found.problem is not None:
                 missing = found.missing
                 if missing is None or not (
-                    guarded(missing, argument.line)
+                    guarded(missing, argument.line, found.model or model)
                     or (not found.near and self._field_ignored(missing))
                 ):
                     ctx.api.fail(found.problem, argument, code=ODOO_FIELD_REF)
@@ -423,6 +425,27 @@ class RecordsetHooks(Hooks):
             return AnyType(TypeOfAny.special_form)
         return field
 
+    def item(
+        self,
+        view: Callable[[Callable[[MethodContext], Type] | None, MethodContext], Type] | None,
+        hook: Callable[[MethodContext], Type] | None,
+        ctx: MethodContext,
+    ) -> Type:
+        """``records[key]`` with a key of type ``Any`` is ``Any``.
+
+        Odoo declares ``__getitem__(int | slice) -> Self`` and ``(str) -> Any``; mypy takes
+        the first for an ``Any`` key, since it sees ``Any`` as the same result, and
+        ``record[record._sequence_field]`` (a private attribute the plugin reads as
+        ``Any``, see :mod:`odoo_typing.hooks.meta_attributes`) was records, not the value
+        of the field it names.
+        """
+        key = ctx.arg_types[0] if ctx.arg_types else []
+        if len(key) == 1 and isinstance(get_proper_type(key[0]), AnyType):
+            return AnyType(TypeOfAny.special_form)
+        if view is not None:
+            return view(hook, ctx)
+        return hook(ctx) if hook is not None else ctx.default_return_type
+
     def own_view(self, hook: Callable[[MethodContext], Type] | None, ctx: MethodContext) -> Type:
         """Records of a class of the reading addon's model as the addon sees the model.
 
@@ -483,7 +506,7 @@ def _spec_problem(
     item: StrExpr,
     model: str,
     fields: Mapping[str, FieldInfo],
-    guarded: Callable[[str, int], bool],
+    guarded: Callable[[str, int, str], bool],
     specs: bool,
 ) -> str | None:
     """Why one ``groupby`` / ``aggregates`` item of ``_read_group`` is wrong, if it is.
@@ -496,7 +519,7 @@ def _spec_problem(
     if spec is None:
         return f'"{item.value}" in {method}({parameter}=...) is not a specification'
     if spec.field not in fields:
-        if guarded(spec.field, item.line):
+        if guarded(spec.field, item.line, model):
             return None
         message = f'Odoo model "{model}" has no field "{spec.field}" in {method}({parameter}=...)'
         return message + did_you_mean(spec.field, fields)

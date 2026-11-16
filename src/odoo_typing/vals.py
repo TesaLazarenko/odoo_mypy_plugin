@@ -160,12 +160,16 @@ class ValsTarget:
         check_keys: Whether keys that are not fields are errors (not for abstract
             models: their methods run on models with more fields).
         ignore_keys: Glob patterns of keys never reported as unknown.
+        taken_keys: The keys that are no field but the model's ``create`` / ``write``
+            read from the values (an override pops them); asked for a key that is no
+            field.
     """
 
     model: str
     fields: Mapping[str, FieldInfo]
     check_keys: bool
     ignore_keys: tuple[str, ...]
+    taken_keys: Callable[[], frozenset[str]] = frozenset
 
 
 def vals_dicts(
@@ -278,7 +282,7 @@ class ValsChecker:
     model_of: Callable[[TypeInfo], str | None]
     concrete: Callable[[str], bool]
     target_for: Callable[[str], ValsTarget]
-    guarded: Callable[[str, int], bool]
+    guarded: Callable[[str, int, str], bool]
     values_of: Callable[[str], frozenset[str]]
     selection_elsewhere: Callable[[str, str], frozenset[str]] = lambda _model, _field: frozenset()
     read_type: Callable[[str], Type | None] = lambda _field_class: None
@@ -358,7 +362,7 @@ class ValsChecker:
             return
         if any(fnmatchcase(name, pattern) for pattern in target.ignore_keys):
             return
-        if self.guarded(name, node.line):
+        if self.guarded(name, node.line, target.model) or name in target.taken_keys():
             return
         message = f'Odoo model "{target.model}" has no field "{name}"{where}'
         matches = get_close_matches(name, list(target.fields), n=1, cutoff=0.6)

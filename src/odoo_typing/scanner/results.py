@@ -155,6 +155,8 @@ class Contribution:
         abstract: Whether the class is abstract: ``_abstract`` of its body, else whether
             it derives from ``AbstractModel`` rather than ``Model`` / ``TransientModel``;
             ``None`` if neither tells.
+        value_keys: The keys its ``create`` / ``write`` read from the values they are
+            given (``vals.pop("counterpart_account_id", None)``), in source order.
     """
 
     addon: str
@@ -170,6 +172,7 @@ class Contribution:
     inherits: tuple[tuple[str, str], ...] = ()
     log_access: bool | None = None
     abstract: bool | None = None
+    value_keys: tuple[str, ...] = ()
 
     @property
     def fullname(self) -> str:

@@ -22,6 +22,7 @@ __all__ = [
     "inherits_pairs",
     "log_access",
     "model_name",
+    "read_value_keys",
 ]
 
 # Bases of the classes of models that have a table (``_abstract = False``).
@@ -150,3 +151,78 @@ def abstract(node: ast.ClassDef, attrs: dict[str, object]) -> bool | None:
     if kinds & CONCRETE_BASES:
         return False
     return True if "AbstractModel" in kinds else None
+
+
+# Methods whose first parameter is the values a caller gives (``create(vals_list)``).
+VALUES_METHODS: Final = frozenset({"create", "write"})
+# Calls of a dict that read a key: ``vals.pop("k", None)``, ``vals.get("k")``.
+KEY_READS: Final = frozenset({"pop", "get", "setdefault"})
+
+
+def read_value_keys(node: ast.ClassDef) -> tuple[str, ...]:
+    """The keys the ``create`` / ``write`` of a class body read from the values given.
+
+    ``vals.pop("counterpart_account_id", None)`` in ``account.bank.statement.line``'s
+    ``create`` takes a key that is no field: the override consumes it before Odoo sees
+    the values. Read are ``vals.pop("k")`` / ``.get`` / ``.setdefault``, ``vals["k"]``,
+    ``"k" in vals`` and ``del vals["k"]`` of the first parameter, or of a name a ``for``
+    binds to its items (``for vals in vals_list:``).
+    """
+    keys: dict[str, None] = {}
+    for statement in node.body:
+        if not isinstance(statement, ast.FunctionDef) or statement.name not in VALUES_METHODS:
+            continue
+        parameters = statement.args.posonlyargs + statement.args.args
+        if len(parameters) < 2:
+            continue
+        names = {parameters[1].arg}
+        nodes = list(ast.walk(statement))
+        for item in nodes:
+            if isinstance(item, (ast.For, ast.comprehension)) and _names_of(item.iter) & names:
+                names |= _names_of(item.target)
+        for item in nodes:
+            key = _read_key(item, names)
+            if key is not None:
+                keys[key] = None
+    return tuple(keys)
+
+
+def _names_of(node: ast.expr) -> set[str]:
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return {name for item in node.elts for name in _names_of(item)}
+    return set()
+
+
+def _read_key(node: ast.AST, names: set[str]) -> str | None:
+    """The key a node reads from one of some dicts, if it reads one."""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in KEY_READS
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id in names
+        and node.args
+    ):
+        return _text(node.args[0])
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.ctx, (ast.Load, ast.Del))  # not ``vals["k"] = x``
+        and isinstance(node.value, ast.Name)
+        and node.value.id in names
+    ):
+        return _text(node.slice)
+    if (
+        isinstance(node, ast.Compare)
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], (ast.In, ast.NotIn))
+        and isinstance(node.comparators[0], ast.Name)
+        and node.comparators[0].id in names
+    ):
+        return _text(node.left)
+    return None
+
+
+def _text(node: ast.expr) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None

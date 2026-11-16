@@ -261,7 +261,25 @@ class Thing(models.Model):
 
 def test_a_tuple_annotated_with_field_classes_holds_their_values(run_mypy: RunMypy) -> None:
     """Odoo 19's ``Procurement`` declares ``product_id: fields.Many2one`` for records."""
-    result = run_mypy({"my_mod": {"models.py": FIELD_TUPLE}})
+    later = """
+    from odoo import models
 
+    class Thing(models.Model):
+        _inherit = "t.thing"
+
+        def procure_later(self) -> None:
+            self.env["t.thing"].Procurement(self.partner_id, self.name, {})
+    """
+    result = run_mypy(
+        {
+            "my_mod": {
+                "__init__.py": "from . import models, later\n",
+                "models.py": FIELD_TUPLE,
+                "later.py": later,
+            }
+        }
+    )
+
+    assert result.messages("later.py") == []  # through the class that inherits the alias
     (message,) = result.messages("models.py")
     assert message.startswith('23: error: Argument 3 to "Procurement" has incompatible type')

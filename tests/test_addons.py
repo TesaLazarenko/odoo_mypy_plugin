@@ -231,3 +231,30 @@ def test_addon_index_addon_in_two_roots_reports_the_one_not_used(
     err = capsys.readouterr().err
     assert f"addon shop of {tmp_path / 'second'} is not used" in err
     assert err.count("warning") == 1
+
+
+def test_auto_installed_addons_are_those_odoo_installs_with_a_closure(tmp_path: Path) -> None:
+    (tmp_path / "odoo" / "addons").mkdir(parents=True)
+    root = tmp_path / "addons"
+    manifests = {
+        "base": "{}",
+        "web": "{'depends': ['base']}",
+        "payment": "{'depends': ['web']}",
+        "shop": "{'depends': ['web']}",
+        "importer": "{'depends': ['web'], 'auto_install': True}",
+        "shop_payment": "{'depends': ['shop', 'payment'], 'auto_install': ['shop']}",
+        "both": "{'depends': ['shop_payment', 'importer'], 'auto_install': True}",
+        "other": "{'depends': ['shop', 'crm'], 'auto_install': True}",
+        "crm": "{'depends': ['base']}",
+    }
+    for name, manifest in manifests.items():
+        (root / name).mkdir(parents=True)
+        (root / name / "__manifest__.py").write_text(manifest)
+
+    index = AddonIndex(tmp_path / "odoo", [root])
+
+    # ``shop_payment`` brings ``payment``; ``both`` needs what two auto-installed bring.
+    assert index.auto_installed("shop") == {"importer", "shop_payment", "payment", "both"}
+    assert index.auto_installed("web") == {"importer"}
+    assert index.addons["shop_payment"].auto_install == ("shop",)
+    assert index.addons["shop"].auto_install is None

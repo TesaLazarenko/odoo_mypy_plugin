@@ -319,6 +319,7 @@ class Order(models.Model):
         pairs.append(("a", 1))
         triples = [(1, "b", "c")]
         triples.append((1, "b", 2))
+        domain.append((0, "=", 1))  # Odoo's FALSE_LEAF
 """
 
 

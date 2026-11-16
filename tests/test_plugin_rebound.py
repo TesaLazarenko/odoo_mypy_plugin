@@ -178,3 +178,36 @@ def test_self_s_records_are_the_addon_s_records_of_the_model(run_mypy: RunMypy) 
     )
 
     assert result.messages("first.py") == []
+
+
+APPENDED = """
+from odoo import fields, models
+
+class Thing(models.Model):
+    _name = "t.thing"
+
+    name = fields.Char()
+    partner_ids = fields.Many2many("res.partner")
+
+    def appended(self, ids: list[int]) -> None:
+        rows = []
+        rows.append({"name": self.name, "partner_ids": [(4, ids[0])]})
+        rows.append({"name": "x", "partner_ids": [(6, 0, ids)]})
+        rows += [{"name": "y"}]
+        rows.append({"nmae": "z"})
+        self.create(rows)
+        names = []
+        names.append(self.name)
+        reveal_type(names)
+"""
+
+
+def test_a_list_given_dict_displays_is_not_typed_from_the_first(run_mypy: RunMypy) -> None:
+    """``rows = []`` then ``rows.append({...})`` of dicts that differ: ``list[Any]``."""
+    messages = run_mypy({"my_mod": {"models.py": APPENDED}}).messages("models.py")
+
+    # The values of each dict are still checked where the list is created from.
+    assert [message.split(";")[0].split("  [")[0] for message in messages] == [
+        '15: error: Odoo model "t.thing" has no field "nmae"',
+        '19: note: Revealed type is "list[str | Literal[False]]"',
+    ], messages

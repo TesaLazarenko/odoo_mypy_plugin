@@ -240,7 +240,7 @@ class DomainChecker:
         fail: Fail,
         fields_of: FieldsOf,
         profile: OdooProfile,
-        guarded: Callable[[str, int], bool],
+        guarded: Callable[[str, int, str], bool],
         type_of: TypeOf,
         describe: Callable[[ProperType], str],
         subdomain: Callable[[Expression, str, FieldInfo, str, Mode], None],
@@ -432,7 +432,7 @@ class DomainChecker:
                 return DomainPath(tuple(steps), known=False) if steps else None
             info = fields.get(name)
             if info is None:
-                if not self.guarded(name, node.line) and not self.ignored(name, fields):
+                if not self.guarded(name, node.line, current) and not self.ignored(name, fields):
                     message = f'Odoo model "{current}" has no field "{name}" in domain'
                     self.fail(message + did_you_mean(name, fields), node, ODOO_DOMAIN)
                 return None

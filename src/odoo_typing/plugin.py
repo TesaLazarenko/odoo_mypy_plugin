@@ -140,6 +140,7 @@ from odoo_typing.hooks.env import (
     env_cursor,
     present_env,
     request_env,
+    test_cursor,
     type_request,
 )
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
@@ -154,6 +155,11 @@ from odoo_typing.hooks.mixed_values import (
 from odoo_typing.hooks.model_classes import ModelClassHooks
 from odoo_typing.hooks.models import ODOO_MODEL, ODOO_MODEL_DEPENDS, Models
 from odoo_typing.hooks.recordsets import RecordsetHooks
+from odoo_typing.hooks.registered import (
+    has_registered_parameter,
+    records_signature,
+    registered_classes,
+)
 from odoo_typing.hooks.vals import ValsHooks
 from odoo_typing.methods import (
     SELF_METHODS,
@@ -200,9 +206,17 @@ ResultT = TypeVar("ResultT")
 
 __version__ = records.source_digest()
 
-DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
+# The edges get_additional_deps adds weigh as imports inside functions (mypy.build.PRI_LOW):
+# a file relies on a model's classes where it reads records, not where it binds names.
+# Weighing as top-level imports, they ordered the import cycles they close:
+# ``account/tools/after_commit.py`` reads ``env["account.move"]``, which put it in a cycle
+# with the models, and a model's ``from ..tools import after_commit`` was analyzed before
+# the package bound the function: mypy then binds the submodule of that name (Odoo 19+).
+DEPENDENCY_PRIORITY = 20
 ENV = "env"
+CURSOR = "cr"
 GETATTR = "__getattr__"
+GETITEM = "__getitem__"
 CONTAINS = "__contains__"
 ITERATE = "__iter__"
 # ``records._fields[name]``: a dict (Odoo 17-19) or a ``MappingProxyType`` (Odoo 20).
@@ -210,7 +224,7 @@ MAPPING_ITEMS = frozenset({"builtins.dict.__getitem__", "types.MappingProxyType.
 # What iterating, indexing and the set operators of records give is the addon's view too:
 # ``for line in self``, ``self[0]``, ``self - other``.
 OWN_VIEW_DUNDERS = frozenset(
-    {ITERATE, "__getitem__", "__or__", "__and__", "__sub__", "__add__", "__reversed__"}
+    {ITERATE, GETITEM, "__or__", "__and__", "__sub__", "__add__", "__reversed__"}
 )
 # Methods whose first argument is ``vals`` (``create``: also a list of them;
 # ``copy``: its ``default``).
@@ -264,6 +278,9 @@ class OdooPlugin(Plugin):
         self._asked = AskedFieldHooks(models)
         self._mixed = MixedValueHooks(models)
         self._rebound = ReboundVariables()
+        self._rebound_tree: MypyFile | None = None  # prepared last, see _prepare_rebound
+        # The classes Odoo registers BaseModel with (``Sequence``, ``Set``), once read.
+        self._registered: frozenset[str] | None = None
         annotations = AnnotationHooks(models)
         self._type_hooks: dict[str, Callable[[AnalyzeTypeContext], Type]] = {
             name: partial(annotations.annotated, name) for name in ANNOTATED_NAMES
@@ -462,6 +479,9 @@ class OdooPlugin(Plugin):
         if not isinstance(checker, TypeChecker):
             return
         tree = checker.tree
+        if tree is self._rebound_tree:
+            return  # asked on every hook lookup: the tree of the last answer first
+        self._rebound_tree = tree
         if self._rebound.prepared(tree):
             return
         try:
@@ -576,6 +596,9 @@ class OdooPlugin(Plugin):
             variable = attribute.node if attribute is not None else None
             if isinstance(variable, Var) and self._values.keeps_record(variable):
                 return self._kept_record
+            if isinstance(variable, Var) and name == CURSOR:
+                # mypy names the class read (the test case), not the one declaring it
+                return self._cursor_hook(variable.info.fullname)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             if os.environ.get(RAISE_VARIABLE):
                 raise
@@ -609,8 +632,12 @@ class OdooPlugin(Plugin):
         owner, _, name = fullname.rpartition(".")
         if name not in SELF_METHODS and name not in OWN_VIEW_DUNDERS:
             return hook
+        if name == GETITEM and owner == self._models.profile.base_model:
+            return partial(self._recordsets.item, None, hook)
         if not owner or self._models.registry.contribution(owner) is None:
             return hook
+        if name == GETITEM:
+            return partial(self._recordsets.item, self._recordsets.own_view, hook)
         return partial(self._recordsets.own_view, hook)
 
     def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
@@ -640,7 +667,7 @@ class OdooPlugin(Plugin):
             return wrapper_signature
         found = self._hooks.function_signature
         if fullname not in found:
-            found[fullname] = self._field_tuple_hook(fullname)
+            found[fullname] = self._field_tuple_hook(fullname) or self._registered_hook(fullname)
         return found[fullname]
 
     def get_method_signature_hook(
@@ -868,8 +895,31 @@ class OdooPlugin(Plugin):
         if fullname.rpartition(".")[2] == "filtered":
             return partial(self._recordsets.filtered_signature, widen)
         if widen is None:
-            return self._field_tuple_hook(fullname)  # ``env["stock.rule"].Procurement(...)``
+            # ``env["stock.rule"].Procurement(...)``, ``random.Random().sample(records, 2)``
+            return self._field_tuple_hook(fullname) or self._registered_hook(fullname)
         return widen
+
+    def _registered_hook(
+        self, fullname: str
+    ) -> Callable[[FunctionSigContext | MethodSigContext], FunctionLike] | None:
+        """A callable with a parameter of a class Odoo registers ``BaseModel`` with.
+
+        ``random.sample(products, 2)``: see :mod:`odoo_typing.hooks.registered`.
+        """
+        if not self._modules or "." not in fullname:
+            return None
+        base_model = self._models.profile.base_model
+        if self._registered is None:
+            module = self._modules.get(base_model.rpartition(".")[0])
+            if module is None:
+                return None
+            self._registered = registered_classes(module, base_model, self._modules)
+        if not self._registered:
+            return None
+        symbol = lookup_fully_qualified(fullname, self._modules, raise_on_missing=False)
+        if symbol is None or not has_registered_parameter(symbol.node, self._registered):
+            return None
+        return partial(records_signature, self._registered, base_model)
 
     def _declared_signature(self, fullname: str, method: bool) -> Type | None:
         """The declared type of the method or function a hook is asked for, if mypy has it.
@@ -920,10 +970,21 @@ class OdooPlugin(Plugin):
     def _field_tuple_hook(
         self, fullname: str
     ) -> Callable[[FunctionSigContext | MethodSigContext], FunctionLike] | None:
-        """The signature hook of a ``NamedTuple`` annotated with field classes, if it is one."""
-        if not self._field_tuple(fullname):
-            return None
-        return partial(_field_tuple_signature, self._models.profile.field_base)
+        """The signature hook of a ``NamedTuple`` annotated with field classes, if it is one.
+
+        A merged view class of a model (``env["stock.rule"]`` where unrelated addons
+        extend it) is made in the module being checked and has no full name to look up:
+        its methods' hook looks at what the call gives.
+        """
+        field_base = self._models.profile.field_base
+        if self._field_tuple(fullname):
+            return partial(_field_tuple_signature, field_base)
+        owner = fullname.rpartition(".")[0]
+        if self._modules and "." in owner and owner not in self._modules:  # a class
+            found = lookup_fully_qualified(owner, self._modules, raise_on_missing=False)
+            if found is None and self._models.registry.addons.addon_for_module(owner):
+                return partial(_constructed_field_tuple_signature, field_base)
+        return None
 
     def _field_tuple(self, fullname: str, item: str | None = None) -> bool:
         """Whether a name is a ``NamedTuple`` that Odoo annotates with field classes.
@@ -935,11 +996,14 @@ class OdooPlugin(Plugin):
         The name may be the class, an alias of it (``Procurement = Procurement`` in a
         model), or with ``item`` the class of an attribute read.
         """
-        symbol = (
-            lookup_fully_qualified(fullname, self._modules, raise_on_missing=False)
-            if self._modules and "." in fullname
-            else None
-        )
+        if not self._modules or "." not in fullname:
+            return False
+        symbol = lookup_fully_qualified(fullname, self._modules, raise_on_missing=False)
+        if symbol is None:  # a name a class inherits (``StockRule.Procurement`` of sale_stock)
+            owner, _, name = fullname.rpartition(".")
+            found = lookup_fully_qualified(owner, self._modules, raise_on_missing=False)
+            if found is not None and isinstance(found.node, TypeInfo):
+                symbol = found.node.get(name)
         node = symbol.node if symbol is not None else None
         if isinstance(node, Var):  # ``Procurement = Procurement`` in a model's body
             node = _class_of(node.type)
@@ -987,6 +1051,13 @@ class OdooPlugin(Plugin):
             return False
         return self._models.registry.addons.addon_for_module(class_fullname) is None
 
+    def _cursor_hook(self, owner: str) -> Callable[[AttributeContext], Type] | None:
+        """``cr`` of an Odoo class but the environment (``cls.cr = cls.env.cr`` in a test)."""
+        environment = self._models.profile.environment
+        if owner == environment or not self._declared_by_odoo(owner):
+            return None
+        return partial(test_cursor, environment)
+
     def _find_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
         """Resolve record-typed attributes of model classes from the reading addon."""
         profile = self._models.profile
@@ -999,6 +1070,9 @@ class OdooPlugin(Plugin):
             return partial(request_env, profile.environment)
         if fullname == f"{profile.environment}.cr":
             return env_cursor
+        owner, _, name = fullname.rpartition(".")
+        if name == CURSOR and (hook := self._cursor_hook(owner)) is not None:
+            return hook
         if profile.untyped_fields and fullname == f"{profile.base_model}.env":
             return partial(request_env, profile.environment)  # Odoo 17: a bare property
         required = self._models.settings.required_values
@@ -1074,6 +1148,16 @@ def _field_tuple_signature(
         for item in signature.arg_types
     ]
     return signature.copy_modified(arg_types=arguments)
+
+
+def _constructed_field_tuple_signature(field_base: str, ctx: MethodSigContext) -> FunctionLike:
+    """:func:`_field_tuple_signature` for a call that constructs such a ``NamedTuple``."""
+    result = get_proper_type(ctx.default_signature.ret_type)
+    if isinstance(result, TupleType) and any(
+        _is_field_object(item, field_base) for item in result.items
+    ):
+        return _field_tuple_signature(field_base, ctx)
+    return ctx.default_signature
 
 
 def _is_field_object(typ: Type, field_base: str) -> bool:

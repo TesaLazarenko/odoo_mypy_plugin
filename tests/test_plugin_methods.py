@@ -274,7 +274,7 @@ def test_create_accepts_one_dict_or_a_list_of_dicts(run_mypy: RunMypy) -> None:
     assert len(messages) == 2
     assert messages[1].startswith('13: error: Argument 1 to "create" of "BaseModel" has')
     expected = messages[1].partition("; expected ")[2].removesuffix("  [arg-type]")
-    assert set(expected.strip('"').split(" | ")) == {"dict[str, Any]", "list[dict[str, Any]]"}
+    assert set(expected.strip('"').split(" | ")) == {"dict[str, Any]", "Iterable[dict[str, Any]]"}
 
 
 # -- [27] env.user / env.company / env.companies ---------------------------------------------

@@ -585,3 +585,35 @@ def test_field_takes_what_reading_it_gives(run_mypy: RunMypy) -> None:
         '14: error: Incompatible type for field "image" of Odoo model "t.thing" (expression has'
         ' type "int"'
     )
+
+
+TAKEN_KEYS = """
+from odoo import api, models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        for vals in vals_list:
+            counterpart = vals.pop("counterpart_id", None)
+        return super().create(vals_list)
+
+    def write(self, vals):
+        if "recompute" in vals:
+            del vals["recompute"]
+        return super().write(vals)
+
+    def check(self) -> None:
+        self.create({"counterpart_id": 1, "nmae": "x"})
+        self.write({"recompute": True})
+        self.env["t.line"].create({"counterpart_id": 1})
+"""
+
+
+def test_keys_that_create_or_write_read_are_taken(run_mypy: RunMypy) -> None:
+    """An override that pops a key from the values takes it although it is no field."""
+    assert [line.split(";")[0].split("  [")[0] for line in _messages(run_mypy, TAKEN_KEYS)] == [
+        '19: error: Odoo model "t.order" has no field "nmae"',
+        '21: error: Odoo model "t.line" has no field "counterpart_id"',
+    ]

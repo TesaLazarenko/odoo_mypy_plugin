@@ -1,22 +1,15 @@
 {
-  "*": 122,
-  "arg-type": 24,
-  "assignment": 19,
-  "attr-defined": 8,
-  "call-arg": 1,
-  "index": 9,
-  "list-item": 1,
+  "*": 67,
+  "arg-type": 12,
+  "assignment": 1,
+  "index": 7,
   "misc": 4,
   "odoo-domain": 2,
-  "odoo-model": 2,
-  "odoo-model-depends": 1,
   "odoo-selection": 2,
-  "odoo-vals-key": 3,
-  "odoo-vals-type": 29,
+  "odoo-vals-type": 28,
   "operator": 1,
   "override": 4,
   "str-format": 1,
   "type-var": 1,
-  "union-attr": 6,
-  "var-annotated": 4
+  "union-attr": 4
 }

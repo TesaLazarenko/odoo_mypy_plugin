@@ -129,7 +129,7 @@ class PathResult:
 
     Attributes:
         field: The last field, if every step resolved.
-        model: The model of the last field.
+        model: The model of the last field, or of the step that is not a field.
         problem: Why the path is wrong (a message), if it is.
         missing: The name of the step that is not a field, if that is the problem.
         near: Whether that name is a near miss of a field of its model (a typo).
@@ -173,6 +173,7 @@ def resolve_path(
         if info is None:
             message = f'Odoo model "{model}" has no field "{name}" in {argument}'
             return PathResult(
+                model=model,
                 problem=message + did_you_mean(name, fields),
                 missing=name,
                 near=near_miss(name, fields),

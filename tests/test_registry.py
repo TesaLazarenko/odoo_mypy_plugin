@@ -220,13 +220,13 @@ def test_model_tips_repeated_query_answered_from_cache(
 
 
 def test_registry_init_reads_no_manifest(tmp_path: Path, mocker: MockerFixture) -> None:
-    read_depends = mocker.spy(addons_module, "read_depends")
+    read_manifest = mocker.spy(addons_module, "read_manifest")
     registry = _registry(tmp_path, {})
-    assert read_depends.call_count == 0
+    assert read_manifest.call_count == 0
 
     registry.model_tips("res.partner", "base")
 
-    assert read_depends.call_count > 0
+    assert read_manifest.call_count > 0
 
 
 # -- sources are parsed as bytes; unparsable files are reported ([51]) ----------------------

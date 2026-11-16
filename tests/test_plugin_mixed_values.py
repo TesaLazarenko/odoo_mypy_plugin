@@ -202,3 +202,37 @@ def test_data_built_from_displays_is_not_typed_from_its_first_values(run_mypy: R
         '20: note: Revealed type is "str"',
         '20: error: List item 0 has incompatible type "Literal[1]"',
     ]
+
+
+SLOTS = """
+from odoo import models
+
+class Thing(models.Model):
+    _name = "t.thing"
+
+    def slots(self, value: object) -> None:
+        by_id = {}
+        by_id[self.id] = self
+        if isinstance(value, models.BaseModel):
+            by_id[self.id] = value
+        by_id[self.id] = 1
+        self.create({"name": str(index)} for index in range(3))
+        ids = {}
+        ids[self.id] = tuple(self.ids)
+        ids[self.id] = [1, 2]
+        ids[self.id] = "x"
+        held = {}
+        held[self.id] = self._ids[0:1]
+        held[self.id] = [1]
+"""
+
+
+def test_records_of_no_model_join_records_of_one(run_mypy: RunMypy) -> None:
+    """``isinstance(value, models.BaseModel)`` gives records a dict of records takes; ids too."""
+    messages = run_mypy({"my_mod": {"models.py": SLOTS}}).messages("models.py")
+
+    assert [message.split(":")[0] for message in messages] == ["12", "17"], messages
+    assert 'expression has type "int", target has type "Thing | BaseModel"' in messages[0]
+    # A tuple of ids and a list of them go in the same container.
+    assert 'expression has type "str", target has type "tuple[' in messages[1]
+    assert ", ...] | list[" in messages[1]

@@ -19,7 +19,9 @@ records, for each file, the lines a guard covers:
   ``env.get("m")``, also inside ``and``), and the ``else`` of one that proves it is not;
 * the rest of the block after ``if "m" not in env: return`` (``raise``, ``continue``,
   ``break``), also with ``or``;
-* the true branch of a conditional expression (``x if "m" in env else y``).
+* the true branch of a conditional expression (``x if "m" in env else y``);
+* the operands of ``and`` after a test that proves the model there (``"m" in env and
+  env["m"].search(...)``), and those of ``or`` after one that proves it is not.
 
 ``env`` is ``self.env``, ``env``, ``env.registry`` / ``self.pool`` (and ``.models`` of
 them). ``env.ref("sale.x", raise_if_not_found=False)`` in a test guards the XML ids of
@@ -223,6 +225,8 @@ def model_guards(nodes: Iterable[ast.AST] | NodeIndex) -> tuple[Guard, ...]:
         when_true, when_false = _test_models(expression.test, known)
         guards += _cover(when_true, [expression.body])
         guards += _cover(when_false, [expression.orelse])
+    for operation in index.of(ast.BoolOp):
+        guards += _operand_guards(operation, _known_at(operation.lineno, flags, helpers))
     for block in blocks:
         guards += _block_guards(block, _known_at(block[0].lineno, flags, helpers))
     return tuple(guards)
@@ -321,6 +325,20 @@ def _block_guards(block: Sequence[ast.stmt], known: _Known = NO_NAMES) -> list[G
             guards += _cover(when_false, rest)  # past the if: the test was false
         if rest and statement.orelse and isinstance(statement.orelse[-1], TERMINATORS):
             guards += _cover(when_true, rest)
+    return guards
+
+
+def _operand_guards(operation: ast.BoolOp, known: _Known) -> list[Guard]:
+    """The operands of ``and`` after a true test, of ``or`` after a false one.
+
+    ``"f" in self._fields and self.env["m"].search(...)`` evaluates the search only when
+    the field is there, as the body of ``if`` does.
+    """
+    guards: list[Guard] = []
+    for position, value in enumerate(operation.values[:-1]):
+        when_true, when_false = _test_models(value, known)
+        proven = when_true if isinstance(operation.op, ast.And) else when_false
+        guards += _cover(proven, operation.values[position + 1 :])
     return guards
 
 

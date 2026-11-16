@@ -100,6 +100,7 @@ XML_ID_METHODS: Final = {
 
 # The name of a record of the data an addon loads, without a module (``tag_x_1``).
 BARE_XML_ID: Final = re.compile(r"[A-Za-z_]\w*")
+QUALIFIED_XML_ID: Final = re.compile(r"[A-Za-z_]\w*\.[A-Za-z_]\w*")
 
 
 class EnvHooks(Hooks):
@@ -247,6 +248,10 @@ class EnvHooks(Hooks):
         if optional or self.registry.guarded(api.path, module_guard(module), xml_id.line):
             return None
         outside = self.registry.xml_id_outside(name, addon_name)
+        if outside is not None and self._models.runs_with_addon(
+            addon_name, api, xml_id.line, [outside]
+        ):
+            return None  # ``self.ensure_installed("sale")``: what ``sale`` sees is there
         if outside is not None:
             message = (
                 f'XML id "{name}" is created by addon "{outside}", which is not in the '
@@ -269,8 +274,9 @@ class EnvHooks(Hooks):
         (``_get_demo_data``, tests of templates) names records by XML id: Odoo 19
         declares ``Collection[int]``. A literal list takes strings that name records:
         a bare name (``"ir_attachment_bank_statement_1"``, which the data itself may
-        create, as a key of the dicts ``_load_data`` loads) and a ``module.name`` that
-        the data files of the addon's closure create. Another string stays an error.
+        create, as a key of the dicts ``_load_data`` loads) and a ``module.name`` of an
+        addon of its closure (the data files create it, or the data itself: a test of
+        a template gives ``"xml_id": "account.tag_x"``). Another string stays an error.
         """
         signature = ctx.default_signature
         given = ctx.args[0][0] if ctx.args and len(ctx.args[0]) == 1 else None
@@ -281,8 +287,12 @@ class EnvHooks(Hooks):
             return signature
         strings = [item.value for item in given.items if isinstance(item, StrExpr)]
         ids = self.registry.xml_ids(addon_name)
+        closure = self.registry.addons.closure(addon_name)
         if not strings or not all(
-            BARE_XML_ID.fullmatch(name) or ("." in name and name in ids) for name in strings
+            BARE_XML_ID.fullmatch(name)
+            or name in ids
+            or (QUALIFIED_XML_ID.fullmatch(name) and name.partition(".")[0] in closure)
+            for name in strings
         ):
             return signature
         declared = get_proper_type(signature.arg_types[0])
@@ -356,6 +366,39 @@ def present_env(environment: str, ctx: AttributeContext) -> Type:
     if isinstance(present, Instance) and present.type.fullname == environment:
         return present
     return ctx.default_attr_type
+
+
+def test_cursor(environment: str, ctx: AttributeContext) -> Type:
+    """``cls.cr`` of Odoo's test case (Odoo 18): the cursor classes ``env.cr`` is.
+
+    Odoo declares ``BaseCase.cr: Cursor`` and ``Environment.cr: BaseCursor``, which
+    :func:`env_cursor` reads as the cursor classes of its module (``Cursor |
+    TestCursor``): ``cls.cr = cls.env.cr`` in a test was an ``assignment`` error. An
+    attribute of an Odoo class declared with one of those classes is all of them, to
+    read and to assign, when ``Environment.cr`` is declared with their base.
+    """
+    declared = get_proper_type(ctx.default_attr_type)
+    if not isinstance(declared, Instance) or not isinstance(ctx.api, TypeChecker):
+        return ctx.default_attr_type
+    node = lookup_fully_qualified(environment, ctx.api.modules, raise_on_missing=False)
+    info = node.node if node is not None else None
+    symbol = info.get("cr") if isinstance(info, TypeInfo) else None
+    variable = symbol.node if symbol is not None else None
+    base = get_proper_type(variable.type) if isinstance(variable, Var) else None
+    if not isinstance(base, Instance) or base.type.get(EXECUTE) is not None:
+        return ctx.default_attr_type
+    if base.type not in declared.type.mro:
+        return ctx.default_attr_type
+    module = ctx.api.modules.get(base.type.module_name)
+    concrete = [
+        instance_of(item.node)
+        for item in (module.names.values() if module is not None else ())
+        if isinstance(item.node, TypeInfo)
+        and item.node is not base.type
+        and item.node.module_name == base.type.module_name
+        and base.type in item.node.mro
+    ]
+    return UnionType.make_union(concrete) if concrete else ctx.default_attr_type
 
 
 def env_cursor(ctx: AttributeContext) -> Type:

@@ -5,10 +5,14 @@ with ``sale``; so does the rest of a function after ``if ...: return`` (``raise`
 ``continue``, ``break``, ``self.skipTest(...)``). A test is about modules when it holds
 the string ``"ir.module.module"`` or ``"installed"``, also through a name the function
 binds once (``module = self.env["ir.module.module"].search([("name", "=", "sale")])``,
-then ``if module:``). It names a module where Odoo's API takes one: the argument of
+then ``if module:``), or through an attribute that the methods of its class bind once
+(``cls.has_documents = "documents" in modules._installed()`` in ``setUpClass``, then
+``if self.has_documents:``). It names a module where Odoo's API takes one: the argument of
 ``_get("sale")`` / ``ensure_installed("sale")``, the left side of ``"sale" in
 modules._installed()``, the value of a ``("name", "=", "sale")`` (``in``) term. A string
 of another test or call (``journal.type == "sale"``, ``mapped("sale_id")``) is a value.
+A statement ``self.ensure_installed("sale")`` skips the test without ``sale``: the rest of
+its block runs with it.
 
 The tests of a function are collected once, from mypy's own tree of it: nothing is
 parsed again.
@@ -21,6 +25,7 @@ from collections.abc import Iterable, Iterator
 from typing import Final
 
 from mypy.nodes import (
+    FUNC_NO_INFO,
     AssignmentStmt,
     Block,
     BreakStmt,
@@ -28,10 +33,12 @@ from mypy.nodes import (
     ComparisonExpr,
     ConditionalExpr,
     ContinueStmt,
+    Decorator,
     DictExpr,
     Expression,
     ExpressionStmt,
     ForStmt,
+    FuncDef,
     FuncItem,
     IfStmt,
     IndexExpr,
@@ -39,6 +46,7 @@ from mypy.nodes import (
     MemberExpr,
     NameExpr,
     OpExpr,
+    OverloadedFuncDef,
     RaiseStmt,
     ReturnStmt,
     SetExpr,
@@ -51,24 +59,32 @@ from mypy.nodes import (
     WithStmt,
 )
 
-__all__ = ["MODULE_TEST_MARKS", "ModuleTests"]
+__all__ = ["MODULE_TEST_MARKS", "ClassFlags", "ModuleTests"]
 
 # A test that holds one of these asks which modules are installed.
 MODULE_TEST_MARKS: Final = frozenset({"ir.module.module", "installed"})
 # ``modules._get("sale")``, ``cls.ensure_installed("sale")``, ``modules._installed()``.
-MODULE_GETTERS: Final = frozenset({"_get", "ensure_installed"})
+ENSURE_INSTALLED: Final = "ensure_installed"
+MODULE_GETTERS: Final = frozenset({"_get", ENSURE_INSTALLED})
 INSTALLED: Final = "_installed"
 # ``self.skipTest(...)`` ends a test as ``return`` does (unittest raises ``SkipTest``).
 SKIP_TEST: Final = "skipTest"
 
 
+# The attributes of ``self`` that the methods of a class bind once, by class definition:
+# read once per class (a test class has many methods), kept with the body they come from.
+ClassFlags = dict[int, tuple[Block, dict[str, Expression]]]
+
+
 class ModuleTests:
     """The tests about installed modules of one function, and the modules they name."""
 
-    def __init__(self, function: FuncItem) -> None:
+    def __init__(self, function: FuncItem, class_flags: ClassFlags | None = None) -> None:
         self.function = function
         self.body = function.body  # the daemon merges a new body into the old function
-        statements = list(_statements(function.body))
+        self._class_flags: ClassFlags = class_flags if class_flags is not None else {}
+        located = list(_located(function.body))
+        statements = [statement for _, statement in located]
         bound = [
             (target.name, statement.rvalue)
             for statement in statements
@@ -78,17 +94,50 @@ class ModuleTests:
         ]
         counts = Counter(name for name, _ in bound)
         flags = {name: value for name, value in bound if counts[name] == 1}
+        receiver = _receiver(function)
+        self._attributes: dict[str, Expression] | None = None  # read once a test needs them
         self._tests: list[tuple[Block, frozenset[str]]] = []
+        self._ensured: list[tuple[int, int, frozenset[str]]] = []
+        for block, statement in located:
+            names = frozenset(_ensured(statement))
+            if names:
+                last = block.body[-1]
+                self._ensured.append((statement.line, last.end_line or last.line, names))
         for statement in statements:
             if not isinstance(statement, IfStmt):
                 continue
             for test, block in zip(statement.expr, statement.body, strict=True):
-                parts = [test, *(flags[n.name] for n in _names(test) if n.name in flags)]
+                parts = [
+                    test,
+                    *(flags[n.name] for n in _names(test) if n.name in flags),
+                    *self._attribute_values(_own_attributes(test, receiver)),
+                ]
                 nodes = [node for part in parts for node in _expressions(part)]
                 strings = {node.value for node in nodes if isinstance(node, StrExpr)}
                 if not strings.isdisjoint(MODULE_TEST_MARKS):
                     names = frozenset(name for node in nodes for name in _module_names(node))
                     self._tests.append((block, names))
+
+    def _flags_of_class(self) -> dict[str, Expression]:
+        """The attributes the methods of the function's class bind once (kept per class)."""
+        info = self.function.info
+        if info is FUNC_NO_INFO:
+            return {}
+        body = info.defn.defs
+        kept = self._class_flags.get(id(info.defn))
+        if kept is None or kept[0] is not body:
+            kept = self._class_flags[id(info.defn)] = (body, _attribute_flags(body))
+        return kept[1]
+
+    def _attribute_values(self, members: Iterable[MemberExpr]) -> list[Expression]:
+        """The values of the attributes of ``self`` a test reads, bound once in the class."""
+        found: list[Expression] = []
+        for member in members:
+            if self._attributes is None:
+                self._attributes = self._flags_of_class()
+            if member.name in self._attributes:
+                found.append(self._attributes[member.name])
+        return found
 
     def names(self, line: int) -> frozenset[str]:
         """The modules named by the tests about modules that decide a line runs."""
@@ -96,7 +145,76 @@ class ModuleTests:
         for block, names in self._tests:
             if names and _decides(block, line):
                 found |= names
+        for first, last, names in self._ensured:
+            if first < line <= last:
+                found |= names
         return frozenset(found)
+
+
+def _attribute_flags(body: Block) -> dict[str, Expression]:
+    """The attributes of ``self`` / ``cls`` the methods of a class body bind once."""
+    bound: list[tuple[str, Expression]] = []
+    for method in _methods(body.body):
+        receiver = _receiver(method)
+        for statement in _statements(method.body):
+            if not isinstance(statement, AssignmentStmt):
+                continue
+            bound += [
+                (target.name, statement.rvalue)
+                for target in statement.lvalues
+                if isinstance(target, MemberExpr)
+                and isinstance(target.expr, NameExpr)
+                and target.expr.name == receiver
+            ]
+    counts = Counter(name for name, _ in bound)
+    return {name: value for name, value in bound if counts[name] == 1}
+
+
+def _methods(body: list[Statement]) -> Iterator[FuncDef]:
+    for statement in body:
+        if isinstance(statement, FuncDef):
+            yield statement
+        elif isinstance(statement, Decorator):
+            yield statement.func
+        elif isinstance(statement, OverloadedFuncDef):
+            for item in statement.items:
+                yield item.func if isinstance(item, Decorator) else item
+
+
+def _receiver(function: FuncItem) -> str | None:
+    """The name of a method's first argument (``self``, ``cls``)."""
+    return function.arguments[0].variable.name if function.arguments else None
+
+
+def _own_attributes(test: Expression, receiver: str | None) -> Iterator[MemberExpr]:
+    """``self.x`` / ``cls.x`` in a test."""
+    return (
+        node
+        for node in _expressions(test)
+        if isinstance(node, MemberExpr)
+        and isinstance(node.expr, NameExpr)
+        and node.expr.name == receiver
+    )
+
+
+def _ensured(statement: Statement) -> Iterator[str]:
+    """The modules of a statement ``self.ensure_installed("sale")``."""
+    call = statement.expr if isinstance(statement, ExpressionStmt) else None
+    if (
+        isinstance(call, CallExpr)
+        and isinstance(call.callee, MemberExpr)
+        and call.callee.name == ENSURE_INSTALLED
+    ):
+        for argument in call.args:
+            yield from _strings(argument)
+
+
+def _located(block: Block) -> Iterator[tuple[Block, Statement]]:
+    """The statements of a block and of the compound statements in it, with their block."""
+    for statement in block.body:
+        yield block, statement
+        for nested in _blocks(statement):
+            yield from _located(nested)
 
 
 def _decides(block: Block, line: int) -> bool:

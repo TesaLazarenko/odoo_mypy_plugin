@@ -426,8 +426,9 @@ def write_addon(path: Path, spec: dict[str, object]) -> None:
     assert isinstance(manifest, str)
     data = spec.get("data", {})
     assert isinstance(data, dict)
+    auto_install = f", 'auto_install': {spec['auto_install']!r}" if "auto_install" in spec else ""
     (path / manifest).write_text(
-        f"{{'name': '{path.name}', 'depends': {depends!r}, 'data': {list(data)!r}}}\n"
+        f"{{'name': '{path.name}', 'depends': {depends!r}, 'data': {list(data)!r}{auto_install}}}\n"
     )
     for name, content in data.items():
         (path / name).parent.mkdir(parents=True, exist_ok=True)

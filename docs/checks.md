@@ -180,7 +180,10 @@ and its records are `Any`:
 - the `else` of `not in`;
 - the rest of the block after `if "sale.order" not in self.env: return` (or `raise` /
   `continue` / `break`);
-- `x if "sale.order" in self.env else y`.
+- `x if "sale.order" in self.env else y`;
+- the operands of `and` after the test (`"intrastat_code_id" in self._fields and
+  self.env["account.intrastat.code"].search(...)`), and those of `or` after a test that
+  is false there.
 
 The test may also be a flag assigned once in the function (`has_sale = "sale.order" in
 self.env`, then `if has_sale:`) or a method of the same class whose body is
@@ -233,7 +236,20 @@ adds is no unknown attribute (`self.env.company.sale_automatic_invoice`,
 A test names a module where Odoo's API takes one: `_get("sale")`,
 `ensure_installed("sale")`, `"sale" in modules._installed()`, a `("name", "=", "sale")`
 term. A module that is not on the addons path (Odoo Enterprise's `accountant`) may
-extend any model: all records are `Any` where such a test decides the line.
+extend any model: all records are `Any` where such a test decides the line. The test may
+also read an attribute that the methods of the class bind once
+(`cls.document_installed = "documents_account" in modules._installed()` in
+`setUpClass`, then `if self.document_installed:`).
+
+What an addon **runs with** is there with its own dependencies: after
+`self.ensure_installed("sale")` (the rest of its block), or under such a test, the
+models, XML ids and fields of `sale`'s closure (`sales_team.group_sale_salesman`, the
+`formula` that `account_tax_python` adds) are not reported. So are those of the addons
+Odoo installs by itself with the closure: an addon whose `auto_install` addons are all
+in it (`account_payment`, `auto_install: ["account"]`, adds `payment_token_id`;
+`base_import`, `auto_install: True` with `depends: ["web"]`), and its dependencies
+(`payment`). A model that no addon on the path defines is not reported where an addon
+off the path is tested for; what such an addon depends on is not known.
 
 ## Field definitions and field names: `odoo-field-ref`
 
@@ -319,7 +335,10 @@ error: Value "confirmd" is not in the selection of field "state" of Odoo model
 It has two sub-codes:
 
 - `odoo-vals-key`: a key that is not a field of the model as the addon sees it (fields
-  of later addons and of `_inherits` parents included);
+  of later addons and of `_inherits` parents included). A key that the `create` /
+  `write` of a class of the model reads from the values (`vals.pop("counterpart_account_id",
+  None)`, `.get`, `vals["k"]`, `"k" in vals`, also through `for vals in vals_list:`) is
+  taken: the override consumes it;
 - `odoo-vals-type`: a value the field does not take.
 
 ```text
@@ -747,7 +766,9 @@ With real recordset types, some plain mypy codes appear more often:
   binding the variable has that value's type, so reads, calls and field checks see the
   records, `False` or numbers it holds; where branches that gave it values of different
   types meet (after an `if`, at the head of a loop) it is `Any`. `x = None` stays a
-  placeholder that a later value replaces, as mypy takes it.
+  placeholder that a later value replaces, as mypy takes it: after a loop that may not
+  run (`x = None`, then `x = job` in a `while`) the variable is `Any`, where mypy said
+  `X | None` (`rebound_variables = false` keeps that).
 - **Records or `False`**: a variable that a binding may give `False`
   (`partner = line.partner_id if line else False`, `so_line = lines and lines[-1] or
   False`, `next((m for m in members if ...), False)`) keeps that `False` as
@@ -771,7 +792,12 @@ With real recordset types, some plain mypy codes appear more often:
   read as `Any` and its changes take any value. A dict changed under keys that are not
   literals (`totals[line.id] = 0.0`) is a mapping and keeps its value type.
 - A container without an annotation whose values are `int` takes a `float` too:
-  `totals = defaultdict(lambda: 0)`, then `totals[key] += line.balance`.
+  `totals = defaultdict(lambda: 0)`, then `totals[key] += line.balance`. One whose values
+  are `tuple[X, ...]` takes `list[X]`, and back: Odoo code stores `records._ids` (a
+  tuple) and `records.ids` (a list) alike.
+- `records[key]` with a key of type `Any` (`record[record._sequence_field]`, a private
+  attribute read as `Any`) is `Any`: Odoo declares `__getitem__(int | slice) -> Self`
+  and `(str) -> Any`, and mypy takes the first one for an `Any` key.
 - A value that holds unrelated types joined into a union
   (`{"move_ids": moves.ids, "envs": [env0, env1], "journal_id": journal.id}` holds
   `list[int] | list[Environment] | int | NewId`) is read as `Any` too, in a container
@@ -787,15 +813,42 @@ With real recordset types, some plain mypy codes appear more often:
   as `list[object]` (passed to a `list[dict]` parameter, an error) or asked for an
   annotation. `zip()`, `enumerate()`, `sorted()`, `reversed()`, `list()` and `iter()`
   of a display or such a variable give its items as `Any` where they were the join.
+- A **list that the function adds dict displays to** (`rows = []`, then
+  `rows.append({"name": n, "tag_ids": [(4, tag.id)]})`, `rows.insert(0, {...})`, `rows +=
+  [{...}]`) is `list[Any]`: mypy typed it from the first dict (its values as a union),
+  and a later dict of another shape was an error. The dicts are still checked where the
+  list is created from (`create(rows)`).
+- A list bound to `[]` that the function extends with what may be no list
+  (`plan.extend(groups.values())`, `lines.extend(order.order_line)`, a generator) is
+  `list[Any]`: mypy completes `[]` from a list argument only, and asked for an
+  annotation.
+- **Records are a `Sequence` and a `Set`**: Odoo's models module registers `BaseModel`
+  with them (`collections.abc.Sequence.register(BaseModel)`), which mypy does not
+  follow. A parameter of a registered class takes records: `Sequence[T]` with `T` the
+  records (`random.sample(products, 2)` is `list[ProductProduct]`), `Sequence[X]`
+  records of a class of `X`.
 - `filter(None, [prefix, record.name])` takes values that may be `False`: `None` as the
   function drops every falsy item.
 - `Command.set(["account.tag_x", "own_record_1", tag.id])` (Odoo 19, 20 declare
   `Collection[int]`) takes the XML ids of data that a loader such as the chart
   template's `_load_data` replaces: a bare name, which the data itself may create, and a
-  `module.name` the data files of the closure create. Another string stays an error.
+  `module.name` the data files of the closure create or whose module is in the
+  closure (ids that Python data of a test gives). Another string stays an error.
+- A list of domain terms takes Odoo's `TRUE_LEAF` / `FALSE_LEAF` (`(1, "=", 1)` /
+  `(0, "=", 1)`): a term whose first item is an `int`.
+- `create()` takes any iterable of values (`create({...} for i in range(3))`): Odoo
+  reads the list once.
+- A container of records without an annotation (`result = {}`, then `result[line.id] =
+  line`) takes records of no model too: `isinstance(value, models.BaseModel)` leaves
+  `BaseModel`, which Odoo code stores with the records of the model they are.
+- `cls.cr = cls.env.cr` in a test (Odoo 18 declares `TransactionCase.cr: Cursor` and
+  `env.cr` is `Cursor | TestCursor`): an attribute of an Odoo class (not the
+  environment) declared with a class derived from `Environment.cr`'s declared base reads
+  and takes every cursor class of that module.
 - A `NamedTuple` that Odoo annotates with field classes (Odoo 19's
   `Procurement(product_id: fields.Many2one, name: fields.Char, ...)`) takes and gives
-  `Any` for those items: the field class stands for its value.
+  `Any` for those items: the field class stands for its value. So does the name a later
+  class inherits (`StockRule.Procurement` of sale_stock).
 - `Counter()`, `OrderedDict()` and `defaultdict(lambda: {...})` bound to a variable are
   typed in an `Any` context too, as the displays above.
 - `records._fields["price_unit"]` is the class of that field (`Float`, with

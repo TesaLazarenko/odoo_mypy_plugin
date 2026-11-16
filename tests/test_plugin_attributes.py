@@ -144,6 +144,37 @@ def test_private_attribute_declared_with_annotation_keeps_its_type(run_mypy: Run
     ]
 
 
+def test_records_indexed_by_a_private_attribute_give_any(
+    run_mypy: RunMypy, odoo_version: int
+) -> None:
+    """``record[record._sequence_field]`` reads the field it names, not records."""
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import models
+
+                class Mixin(models.AbstractModel):
+                    _name = "my.mixin"
+                    _sequence_field = "name"
+
+                    def split(self) -> None:
+                        for record in self:
+                            sequence = record[record._sequence_field] or ""
+                            reveal_type(sequence)
+                            reveal_type(self[0])
+                """
+            }
+        }
+    )
+
+    records = "Any" if odoo_version == 17 else "my_mod.models.Mixin"  # Odoo 17: no annotation
+    assert result.messages("models.py") == [
+        '11: note: Revealed type is "Any | str"',
+        f'12: note: Revealed type is "{records}"',
+    ]
+
+
 # -- [16] generic mixins ----------------------------------------------------------------------
 
 

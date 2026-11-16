@@ -85,6 +85,43 @@ def test_env_cr_has_the_methods_of_a_cursor(run_mypy: RunMypy, odoo_version: int
     assert not any("attr-defined" in message for message in messages)
 
 
+THING = """
+from odoo import models
+
+class Thing(models.Model):
+    _name = "t.thing"
+"""
+
+TEST_CURSOR = """
+from odoo.tests import TransactionCase
+
+class TestThing(TransactionCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.cr = cls.env.cr
+
+    def test_thing(self) -> None:
+        self.cr = self.env.cr
+        self.cr.execute("SELECT 1")
+"""
+
+
+def test_cursor_of_a_test_case_takes_env_cr(run_mypy: RunMypy) -> None:
+    """Odoo 18 declares ``TransactionCase.cr: Cursor``; ``env.cr`` is ``Cursor | TestCursor``."""
+    result = run_mypy(
+        {
+            "t_cr": {
+                "models.py": THING,
+                "tests/__init__.py": "from . import test_thing\n",
+                "tests/test_thing.py": TEST_CURSOR,
+            }
+        }
+    )
+
+    assert result.messages("t_cr/tests/test_thing.py") == []
+
+
 @pytest.mark.odoo(20)
 def test_env_of_a_controller_is_an_environment(run_mypy: RunMypy) -> None:
     """Odoo 20 declares ``Controller.env`` as ``Environment | None``, like ``request.env``."""

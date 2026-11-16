@@ -532,9 +532,10 @@ def test_create_takes_a_list_of_values(run_mypy: RunMypy) -> None:
         "  [odoo-vals-type]",
         '22: error: Argument 1 to "create" of "BaseModel" has incompatible type "int"',
     ]
-    # The declared type, unchanged where no list of values is passed (Odoo 19+: its own).
-    expected = {"dict[str, Any] | list[dict[str, Any]]", "list[dict[str, Any]] | dict[str, Any]"}
-    assert messages[1].split("; expected ")[1].removesuffix("  [arg-type]").strip('"') in expected
+    # Where no list of values is passed: one dict, or any iterable of dicts (Odoo reads
+    # the list once).
+    expected = messages[1].split("; expected ")[1].removesuffix("  [arg-type]").strip('"')
+    assert set(expected.split(" | ")) == {"dict[str, Any]", "Iterable[dict[str, Any]]"}
 
 
 DRIFT_A = """

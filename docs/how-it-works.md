@@ -228,14 +228,31 @@ once it can be.
 - **Tests about installed modules** (`odoo_typing.module_tests`): where the env hooks
   type records, the function mypy checks (`checker.scope.top_level_function()`) is
   read once for its `if` tests that hold `"ir.module.module"` or `"installed"` and
-  the modules they name; a line those tests decide gives records of a model that a
-  named addon outside the dependencies extends as `Any`. mypy's own tree of the
-  function is used, so no file is parsed again.
+  the modules they name (also through a name the function binds once, or an
+  attribute the methods of its class bind once), and for its statements
+  `self.ensure_installed("x")`; a line those tests decide gives records of a model that a
+  named addon outside the dependencies extends as `Any`, and the models, XML ids and
+  fields of the named addon's closure are not reported (`Models.running_with`). mypy's
+  own tree of the function is used, so no file is parsed again; the class's methods are
+  read only for a test that reads an attribute of `self`.
+
+- **Auto-installed addons** (`AddonIndex.auto_installed`): the manifests' `auto_install`
+  (`True`: the addon's `depends`; a list: those addons) gives the addons Odoo installs
+  with a closure, to a fixed point, with their own dependencies. What they define is
+  no `odoo-model-depends` / `odoo-xmlid-depends` / `odoo-vals-key` error in the
+  closure's addons; their classes are not added to the addon's view.
 
 - **Records as the addon sees them** for what `self` gives: the method hooks of the
   `-> Self` methods, `__iter__`, `__getitem__` and the set operators of a model class
   map a class of the model that the reading addon's view extends to that view
   (`Models.view_type`); a type variable (`Self` of an override) is left alone.
+
+- **Dependency edges weigh as imports inside functions** (`DEPENDENCY_PRIORITY`,
+  mypy's `PRI_LOW`): within an import cycle mypy orders modules by their imports'
+  weight, dropping the lightest edges first. A plugin edge from a helper module to the
+  models it reads (`account/tools/after_commit.py` reads `env["account.move"]`) closes a
+  cycle; weighing as a top-level import it could put a model before the package it
+  imports a name from, and mypy then binds a submodule of that name instead.
 
 - **An exception in the plugin.** mypy calls `get_additional_deps` and
   `report_config_data` outside the context in which it reports the crash of a hook: an
