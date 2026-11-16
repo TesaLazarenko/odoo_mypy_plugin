@@ -46,6 +46,7 @@ from mypy.nodes import (
     ListExpr,
     MemberExpr,
     NameExpr,
+    RefExpr,
     StrExpr,
     TypeInfo,
     Var,
@@ -82,7 +83,8 @@ TUPLE = "builtins.tuple"
 OBJECT = "builtins.object"
 # mypy names a method's hook after the receiver's class: the dicts and lists of builtins
 # and collections.
-CONTAINERS = (DICT, LIST, "collections.defaultdict", "collections.OrderedDict")
+DEFAULTDICT = "collections.defaultdict"
+CONTAINERS = (DICT, LIST, DEFAULTDICT, "collections.OrderedDict")
 # The methods that give the values of a dict or a list.
 MIXED_READS = frozenset(
     f"{container}.{method}"
@@ -307,6 +309,13 @@ class MixedValueHooks(Hooks):
                 return [value]
             if _is_join(value) and self._of_mixed_display(receiver, ctx):
                 return [value]
+        if (
+            isinstance(receiver, IndexExpr)
+            and isinstance(receiver.base, NameExpr)
+            and container.type.has_base(DICT)
+            and self._holds_record_dicts(receiver.base, ctx)
+        ):
+            return [value]
         # ``rows = [[record, [], True]]`` is a ``list[list[object]]``: the object inside.
         new_id = self._profile.new_id
         found = next(filter(None, (_join_in(item, new_id) for item in arguments)), None)
@@ -321,6 +330,25 @@ class MixedValueHooks(Hooks):
         if not bindings or not all(map(_is_record_display, bindings)):
             return False
         return any(map(_is_named_change, local.changes(name)))
+
+    def _holds_record_dicts(self, name: NameExpr, ctx: MethodContext | MethodSigContext) -> bool:
+        """A local ``defaultdict`` whose items the function writes under several string keys.
+
+        ``balances = defaultdict(lambda: defaultdict(lambda: 0))``, then
+        ``balances[key]["balance"] += line.balance`` and
+        ``balances[key]["analytic_distribution"] = {...}``: each item is a record dict,
+        whose value type mypy took from the factory (``int``). Its items take any value.
+        """
+        local = self._local_values(ctx.api)
+        if local is None or len(local.item_keys(name)) < 2:
+            return False
+        bindings = local.bindings(name)
+        return bool(bindings) and all(
+            isinstance(value, CallExpr)
+            and isinstance(value.callee, RefExpr)
+            and value.callee.fullname == DEFAULTDICT
+            for value in bindings
+        )
 
     def _is_inferred(
         self, expression: Expression, ctx: MethodContext | MethodSigContext | FunctionContext

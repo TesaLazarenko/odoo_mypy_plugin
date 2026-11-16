@@ -240,3 +240,34 @@ def test_records_of_no_model_join_records_of_one(run_mypy: RunMypy) -> None:
     # A tuple of ids and a list of them go in the same container.
     assert 'expression has type "str", target has type "tuple[' in messages[1]
     assert ", ...] | list[" in messages[1]
+
+
+NESTED_RECORDS = """
+from collections import defaultdict
+
+from odoo import models
+
+class Thing(models.Model):
+    _name = "t.thing"
+
+    def balances(self, amount: float) -> None:
+        balances = defaultdict(lambda: defaultdict(lambda: 0))
+        counts = defaultdict(lambda: defaultdict(lambda: 0))
+        for thing in self:
+            key = (thing.id, thing.display_name)
+            balances[key]["balance"] += amount
+            balances[key]["distribution"] = {}
+            counts[key]["total"] = {}
+"""
+
+
+def test_items_written_under_several_string_keys_are_record_dicts(run_mypy: RunMypy) -> None:
+    """``balances[key]["analytic_distribution"] = {...}`` of a ``defaultdict(lambda: 0)``."""
+    messages = run_mypy({"my_mod": {"models.py": NESTED_RECORDS}}).messages("models.py")
+
+    # mypy asks for the annotations either way; one key only is a dict of numbers.
+    assert [message.split(" (expression")[0] for message in messages] == [
+        '10: error: Need type annotation for "balances"  [var-annotated]',
+        '11: error: Need type annotation for "counts"  [var-annotated]',
+        "16: error: Incompatible types in assignment",
+    ], messages

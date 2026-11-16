@@ -805,6 +805,12 @@ With real recordset types, some plain mypy codes appear more often:
   `totals = defaultdict(lambda: 0)`, then `totals[key] += line.balance`. One whose values
   are `tuple[X, ...]` takes `list[X]`, and back: Odoo code stores `records._ids` (a
   tuple) and `records.ids` (a list) alike.
+- A local `defaultdict` whose items the function writes under two or more string keys
+  holds record dicts: `balances = defaultdict(lambda: defaultdict(lambda: 0))`, then
+  `balances[key]["balance"] += line.balance` and `balances[key]["analytic_distribution"]
+  = {...}` (`account.automatic.entry.wizard`). mypy typed the items' values from the
+  factory (`int`), and the dict was an `assignment` error; the items take any value.
+  Under one key only it stays a dict of numbers.
 - `records[key]` with a key of type `Any` (`record[record._sequence_field]`, a private
   attribute read as `Any`) is `Any`: Odoo declares `__getitem__(int | slice) -> Self`
   and `(str) -> Any`, and mypy takes the first one for an `Any` key.

@@ -158,6 +158,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   (`Unsupported operand types for >= ("timedelta" and "object")`).
 - `create()` takes any iterable of values (`create({...} for i in range(3))`), which
   Odoo reads once.
+- A local `defaultdict` whose items the function writes under several string keys
+  (`balances[key]["balance"] += ...`, `balances[key]["analytic_distribution"] = {...}`)
+  holds record dicts: its items take any value, where mypy typed them from the factory.
 - `tuple()`, `set()` and the iterators of `itertools` (`product`, `chain`, `islice`...)
   give the items of a display of mixed values as `Any`, as `zip()` does:
   `product([no_partner, partner], [False, "New Company"])` gave `object`.

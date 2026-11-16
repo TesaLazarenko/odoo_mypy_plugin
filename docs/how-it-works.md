@@ -207,8 +207,10 @@ once it can be.
   unrelated values counts as a join, and a container of `Never` (`{}`) or of a literal
   takes any key through the signature hooks of the reads. The function hooks of `zip`,
   `enumerate` and the like (also the iterators of `itertools`, `MIXED_CALLS`) map the
-  join of a display argument to `Any`, and the
-  signature hook of `filter` takes `False` in the `None` overload.
+  join of a display argument to `Any`; the signature hooks of an item's `__setitem__`
+  take any value where the function writes the items of a local `defaultdict` under
+  two or more string keys (`LocalValues.item_keys`: `x[k]["a"] = v`, also `+=`); and
+  the signature hook of `filter` takes `False` in the `None` overload.
 
 - **Rebound variables** (`odoo_typing.rebound`). mypy types a local variable from its
   first value, after the hooks of that value have run, and no hook runs at a plain

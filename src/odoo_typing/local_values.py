@@ -42,6 +42,7 @@ from mypy.nodes import (
     ReturnStmt,
     SetExpr,
     Statement,
+    StrExpr,
     SymbolNode,
     TryStmt,
     TupleExpr,
@@ -168,6 +169,7 @@ class LocalValues:
         self._arms = tuple(collector.arms)
         self._ending = frozenset(collector.ending)
         self._stored: frozenset[int] | None = None  # see stored()
+        self._item_keys = collector.item_keys
         self.returns: tuple[ReturnStmt, ...] = tuple(collector.returns)
 
     def stored(self, expression: Expression) -> bool:
@@ -193,6 +195,10 @@ class LocalValues:
                     _carried(typing, found)
             self._stored = frozenset(found)
         return id(expression) in self._stored
+
+    def item_keys(self, name: NameExpr) -> frozenset[str]:
+        """The string keys the function writes to the items of a container (``x[k]["a"]``)."""
+        return frozenset(self._item_keys.get(_key(name), ()))
 
     def bindings(self, name: NameExpr) -> list[Expression | None]:
         """The values of every binding of a variable in the function (``None``: unknown)."""
@@ -367,6 +373,8 @@ class _Collector:
         # The arms of ``if`` / ``match`` statements: (statement, arm, first line, last line).
         self.arms: list[tuple[int, int, int, int]] = []
         self.ending: set[tuple[int, int]] = set()  # arms whose last statement returns or raises
+        # The string keys written to the items of a container: ``x[k]["a"] = v``.
+        self.item_keys: dict[_Key, set[str]] = {}
         self._path: list[tuple[str, int, int]] = []
 
     def _within(self, kind: str, statement: Statement, arm: int, block: Block | None) -> None:
@@ -448,9 +456,21 @@ class _Collector:
                 change = Change("__setitem__", args, (None, None), statement.line, end)
                 self._add(target.base, change)
             else:
+                self._item_key(target)
                 self._bind_targets(target, statement.line)
 
+    def _item_key(self, target: Expression) -> None:
+        """``x[k]["a"] = v`` (also ``+=``): a string key written to an item of ``x``."""
+        if (
+            isinstance(target, IndexExpr)
+            and isinstance(target.index, StrExpr)
+            and isinstance(target.base, IndexExpr)
+            and isinstance(target.base.base, NameExpr)
+        ):
+            self.item_keys.setdefault(_key(target.base.base), set()).add(target.index.value)
+
     def _operator_assignment(self, statement: OperatorAssignmentStmt) -> None:
+        self._item_key(statement.lvalue)
         if not isinstance(statement.lvalue, NameExpr):
             return
         method = IN_PLACE_OPERATORS.get(statement.op)
