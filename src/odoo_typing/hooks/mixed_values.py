@@ -95,10 +95,31 @@ MIXED_WRITES = frozenset(
     for container in CONTAINERS
     for method in ("__setitem__", "update", "setdefault")
 )
-# Calls whose result carries the items of an iterable they are given: ``zip(a, rows)``,
-# ``enumerate(rows)``.
+# The calls whose result holds the items of their arguments as they are: builtins, and the
+# iterators of ``itertools`` (``product([no_partner, partner], [False, "New Company"])``).
 MIXED_CALLS = frozenset(
-    f"builtins.{name}" for name in ("zip", "enumerate", "reversed", "sorted", "list", "iter")
+    {
+        f"builtins.{name}"
+        for name in ("zip", "enumerate", "reversed", "sorted", "list", "iter", "tuple", "set")
+    }
+    | {
+        f"itertools.{name}"
+        for name in (
+            "product",
+            "chain",
+            "permutations",
+            "combinations",
+            "combinations_with_replacement",
+            "zip_longest",
+            "islice",
+            "cycle",
+            "pairwise",
+            "compress",
+            "dropwhile",
+            "takewhile",
+            "filterfalse",
+        )
+    }
 )
 INT = "builtins.int"
 FLOAT = "builtins.float"

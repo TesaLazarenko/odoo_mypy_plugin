@@ -169,6 +169,8 @@ def test_record_dicts_joins_and_numbers_of_containers(run_mypy: RunMypy) -> None
 
 
 DATA = """
+from itertools import product
+
 from odoo import fields, models
 
 class Thing(models.Model):
@@ -185,6 +187,8 @@ class Thing(models.Model):
         self.check(expected)
         for thing, row in zip(self, [{"a": self, "b": 1}, {"a": 1.5}]):
             len(row)
+        for partner, company in product([self, self], [False, "New Company"]):
+            self.create({"name": company})
         by_team = dict((thing.id, []) for thing in self)
         by_team[self.id].append(self)
         reveal_type(" ".join(filter(None, [1])))
@@ -199,8 +203,8 @@ def test_data_built_from_displays_is_not_typed_from_its_first_values(run_mypy: R
 
     # Only the last line is wrong: ``filter(None, ...)`` still takes no ``int`` for a str.
     assert [message.split(";")[0] for message in result.messages("models.py")] == [
-        '20: note: Revealed type is "str"',
-        '20: error: List item 0 has incompatible type "Literal[1]"',
+        '24: note: Revealed type is "str"',
+        '24: error: List item 0 has incompatible type "Literal[1]"',
     ]
 
 

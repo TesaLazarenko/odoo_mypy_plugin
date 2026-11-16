@@ -821,8 +821,12 @@ With real recordset types, some plain mypy codes appear more often:
   `vals = {"name": name, "line_ids": []}`, `dict((team, []) for team in teams)`), bound
   to a variable, is typed as `list[Any]` / `dict[Any, Any]`: mypy typed it from its items
   as `list[object]` (passed to a `list[dict]` parameter, an error) or asked for an
-  annotation. `zip()`, `enumerate()`, `sorted()`, `reversed()`, `list()` and `iter()`
-  of a display or such a variable give its items as `Any` where they were the join.
+  annotation. `zip()`, `enumerate()`, `sorted()`, `reversed()`, `list()`, `tuple()`,
+  `set()`, `iter()` and the iterators of `itertools` that give their arguments' items
+  (`product`, `chain`, `zip_longest`, `islice`, `combinations`, ...) of a display or
+  such a variable give its items as `Any` where they were the join: `for partner,
+  company in product([no_partner, partner], [False, "New Company"])` then
+  `create({"partner_name": company})` was an `odoo-vals-type` error for `object`.
 - A **list that the function adds dict displays to** (`rows = []`, then
   `rows.append({"name": n, "tag_ids": [(4, tag.id)]})`, `rows.insert(0, {...})`, `rows +=
   [{...}]`) is `list[Any]`: mypy typed it from the first dict (its values as a union),

@@ -206,7 +206,8 @@ once it can be.
   they widen `int` values to `float` in a container without an annotation. A union of
   unrelated values counts as a join, and a container of `Never` (`{}`) or of a literal
   takes any key through the signature hooks of the reads. The function hooks of `zip`,
-  `enumerate` and the like map the join of a display argument to `Any`, and the
+  `enumerate` and the like (also the iterators of `itertools`, `MIXED_CALLS`) map the
+  join of a display argument to `Any`, and the
   signature hook of `filter` takes `False` in the `None` overload.
 
 - **Rebound variables** (`odoo_typing.rebound`). mypy types a local variable from its
