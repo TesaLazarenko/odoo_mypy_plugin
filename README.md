@@ -49,6 +49,10 @@ error: Odoo model "crm.lead" is defined in addon "crm", which is not in the depe
   model's class, with every field and method the addon sees.
 - **Per-addon view.** A module sees only the models of the addons in its `depends`
   closure. A model used without its addon in `depends` is reported.
+- **Tests are checked too.** The records a test creates in `setUpClass`
+  (`cls.partner = cls.env["res.partner"].create(...)`) are attributes of the test class
+  with their model's type. Plain mypy reports every such line and every later
+  `self.partner` as an unknown attribute, and checks nothing behind it.
 - **Odoo-specific checks.** Model names, field references (`related=`, `compute=`,
   `@api.depends`), `create` / `write` values, domains and XML ids.
 - **Typed helper methods.** The annotations of the PyCharm plugin "Odoo IDE",

@@ -5,7 +5,15 @@ from __future__ import annotations
 import ast
 import textwrap
 
-from odoo_typing.guards import Guard, field_guard, is_guarded, model_guards, module_guard
+from odoo_typing.guards import (
+    Guard,
+    call_strings,
+    field_guard,
+    guarded_fields,
+    is_guarded,
+    model_guards,
+    module_guard,
+)
 
 SOURCE = """
 def action(self):
@@ -125,3 +133,55 @@ def test_flags_and_helper_methods_stand_for_their_tests() -> None:
         Guard(field_guard("x_flag"), 12, 12),
         Guard("sale.order", 15, 17),
     }
+
+
+def test_a_recordset_of_env_contains_its_fields() -> None:
+    source = """
+    if "x_stock" in env["product.product"]:
+        a = 1
+    if "x_other" in records:
+        b = 2
+    """
+    guards = model_guards(ast.walk(ast.parse(textwrap.dedent(source))))
+
+    assert set(guards) == {Guard(field_guard("x_stock"), 3, 3)}
+
+
+def test_guarded_fields_are_the_fields_guarded_on_a_line() -> None:
+    guards = (
+        Guard(field_guard("x_a"), 3, 9),
+        Guard(field_guard("x_b"), 5, 6),
+        Guard("sale.order", 1, 20),
+    )
+
+    assert guarded_fields(guards, 4) == {"x_a"}
+    assert guarded_fields(guards, 5) == {"x_a", "x_b"}
+    assert guarded_fields(guards, 10) == frozenset()
+
+
+CALLS_SOURCE = """
+class Common:
+    def first(self):
+        self.ensure_installed("sale")
+        state = self.env["ir.module.module"]._get(name="payment").state
+        if journal.type == "purchase" or kind in ("stock", "mrp"):
+            domain = [("type", "=", "account")]
+
+        def inner():
+            check("inner_only")
+        return self.env["sale.order"]
+
+    def second(self):
+        return other("crm")
+
+top("module_level")
+"""
+
+
+def test_call_strings_are_the_whole_arguments_of_the_function_around_a_line() -> None:
+    tree = ast.parse(textwrap.dedent(CALLS_SOURCE))
+
+    assert call_strings(tree, 11) == {"sale", "payment", "inner_only"}
+    assert call_strings(tree, 10) == {"inner_only"}
+    assert call_strings(tree, 14) == {"crm"}
+    assert call_strings(tree, 16) == frozenset()

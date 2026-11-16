@@ -18,12 +18,22 @@ from mypy.nodes import (
     Var,
 )
 from mypy.plugin import ClassDefContext
-from mypy.types import AnyType, LiteralType, Type, TypeOfAny, UnionType
+from mypy.types import (
+    AnyType,
+    Instance,
+    LiteralType,
+    Type,
+    TypeOfAny,
+    UnionType,
+    get_proper_type,
+)
 
 from odoo_typing.classes import instance_of
 from odoo_typing.compat import OdooProfile
 
 __all__ = ["normalize_meta_attributes"]
+
+DICT = "builtins.dict"
 
 
 def normalize_meta_attributes(ctx: ClassDefContext, profile: OdooProfile) -> None:
@@ -155,11 +165,24 @@ def _meta_attribute_type(
         if not isinstance(node.node, Var):
             return None
         if node.node.type is not None and not node.node.is_inferred:
-            return node.node.type  # annotated (or normalized) on a base class
+            return _given(node.node.type)  # annotated (or normalized) on a base class
         if base.fullname == profile.base_model:
             return AnyType(TypeOfAny.special_form)
         break
     return None if _is_field_definition(value, profile) else AnyType(TypeOfAny.special_form)
+
+
+def _given(declared: Type) -> Type:
+    """What a model class may give for an attribute a base class declares.
+
+    Odoo 19 declares ``_inherits: frozendict[str, str]``, the type Odoo builds from
+    what the class gives: a plain ``{"res.partner": "partner_id"}``, which is no
+    ``frozendict``. An attribute declared with a subclass of ``dict`` takes anything.
+    """
+    proper = get_proper_type(declared)
+    if isinstance(proper, Instance) and proper.type.fullname != DICT and proper.type.has_base(DICT):
+        return AnyType(TypeOfAny.special_form)
+    return declared
 
 
 def _is_field_definition(value: Expression, profile: OdooProfile) -> bool:

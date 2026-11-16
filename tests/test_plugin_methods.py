@@ -710,3 +710,38 @@ def test_hooks_of_view_classes_keep_their_names(run_mypy: RunMypy) -> None:
         '11: error: Odoo model "t.thing" has no field "nope" in domain  [odoo-domain]',
         '12: error: Odoo model "t.thing" has no field "nope" in mapped("nope")  [odoo-field-ref]',
     ]
+
+
+@pytest.mark.odoo(18, 19, 20)
+def test_browse_takes_what_odoo_takes(run_mypy: RunMypy) -> None:
+    """One id of a record, ``None`` and ``False``: Odoo declares ``int | Iterable[IdType]``."""
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import fields, models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    partner_id = fields.Many2one("res.partner")
+
+                    def action(self) -> None:
+                        partners = self.env["res.partner"]
+                        partners.browse(self.partner_id.id)
+                        partners.browse(self.env.context.get("active_id"))
+                        partners.browse(False)
+                        partners.browse([1, 2])
+                        reveal_type(partners.browse(self.id))
+                        partners.browse(1.5)
+                """
+            }
+        }
+    )
+
+    messages = result.messages("models.py")
+    assert messages[0].startswith("15: note: Revealed type is ")
+    assert len(messages) == 2, messages
+    assert messages[1].startswith(
+        '16: error: Argument 1 to "browse" of "BaseModel" has incompatible type "float"'
+    )

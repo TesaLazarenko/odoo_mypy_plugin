@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import RunMypy
 
 T_BASE = """
@@ -215,3 +216,52 @@ def test_fields_made_in_the_database_are_not_reported_outside_vals(run_mypy: Run
         "[odoo-field-ref]",
         '14: error: Odoo model "t.thing" has no field "nope" in domain  [odoo-domain]',
     ]
+
+
+@pytest.mark.odoo(19, 20)
+def test_mapped_with_a_function_gives_its_values_or_its_records(run_mypy: RunMypy) -> None:
+    """Odoo 19 declares ``list[T] | BaseModel``, which fits no parameter that takes a list."""
+    messages = _messages(
+        run_mypy,
+        """
+        from odoo import models
+
+        class Order(models.Model):
+            _inherit = "t.order"
+
+            def check(self, name: str) -> None:
+                reveal_type(self.mapped(lambda order: order.amount * 2))
+                reveal_type(sum(self.mapped(lambda order: order.amount)))
+                reveal_type(", ".join(self.mapped(lambda order: order.name or "")))
+                reveal_type(self.mapped(lambda order: order.line_ids))
+                reveal_type(self.mapped(name))
+        """,
+    )
+
+    assert messages == [
+        '8: note: Revealed type is "list[float]"',
+        '9: note: Revealed type is "float | Literal[0]"',
+        '10: note: Revealed type is "str"',
+        '11: note: Revealed type is "t_base.models.Line"',
+        '12: note: Revealed type is "Any"',  # a path known only at run time
+    ]
+
+
+def test_field_guard_on_the_records_of_env_covers_a_path(run_mypy: RunMypy) -> None:
+    messages = _messages(
+        run_mypy,
+        """
+        from odoo import models
+
+        class Order(models.Model):
+            _inherit = "t.order"
+
+            def check(self) -> None:
+                if "stock_ids" in self.env["t.line"]:
+                    self.mapped("line_ids.stock_ids")
+                self.mapped("line_ids.stock_ids")
+        """,
+    )
+
+    assert len(messages) == 1, messages
+    assert messages[0].startswith('10: error: Odoo model "t.line" has no field "stock_ids"')

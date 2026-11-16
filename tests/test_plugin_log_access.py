@@ -37,8 +37,8 @@ def test_log_access_fields_have_odoo_types(run_mypy: RunMypy) -> None:
 
     messages = result.messages("models.py")
     assert messages[:4] == [
-        '13: note: Revealed type is "datetime.datetime | Literal[False]"',
-        '14: note: Revealed type is "datetime.datetime | Literal[False]"',
+        '13: note: Revealed type is "datetime.datetime"',
+        '14: note: Revealed type is "datetime.datetime"',
         '15: note: Revealed type is "int"',
         '16: note: Revealed type is "str"',
     ]
@@ -70,9 +70,35 @@ def test_log_access_fields_on_abstract_mixin_and_transient(run_mypy: RunMypy) ->
     )
 
     assert result.messages("models.py") == [
-        '8: note: Revealed type is "datetime.datetime | Literal[False]"',
-        '14: note: Revealed type is "datetime.datetime | Literal[False]"',
+        '8: note: Revealed type is "datetime.datetime"',
+        '14: note: Revealed type is "datetime.datetime"',
     ]
+
+
+def test_log_access_dates_are_set_on_every_saved_record(run_mypy: RunMypy) -> None:
+    """``create`` and ``write`` set them: they read like required fields (``required_values``)."""
+    addons = {
+        "my_mod": {
+            "models.py": """
+            from odoo import models
+
+            class Thing(models.Model):
+                _name = "t.thing"
+
+                def age(self) -> None:
+                    reveal_type(self.create_date)
+                    self.write_date.date()
+            """
+        }
+    }
+
+    assert run_mypy(addons).messages("models.py") == [
+        '8: note: Revealed type is "datetime.datetime"'
+    ]
+    declared = run_mypy(addons, options="required_values = false\n").messages("models.py")
+    assert declared[0] == '8: note: Revealed type is "datetime.datetime | Literal[False]"'
+    assert len(declared) == 2
+    assert 'has no attribute "date"' in declared[1]
 
 
 def test_log_access_disabled_or_not_auto_has_no_fields(run_mypy: RunMypy) -> None:

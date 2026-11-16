@@ -125,8 +125,9 @@ The same names are not reported where other checks name fields either: domains,
 still reported as a typo.
 
 **`required_values`** (on by default) reads a field that is required (`required=True`,
-as the merged definitions of the model leave it) and `display_name` as their value type
-without `| Literal[False]`: `", ".join(records.mapped("name"))`, `Telegram(bot.token)`
+as the merged definitions of the model leave it, also a field delegated through
+`_inherits` from a required one), `display_name`, `create_date` and `write_date` as
+their value type without `| Literal[False]`: `", ".join(records.mapped("name"))`, `Telegram(bot.token)`
 and `format_date(env, rec.date)` then type-check. On the 37 core addons of the
 benchmark's `big` profile about half of the `... | Literal[False]` errors are of required
 fields or `display_name`. A value that goes into a variable with several values keeps

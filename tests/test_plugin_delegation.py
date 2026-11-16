@@ -182,3 +182,39 @@ def test_inherits_is_transitive(run_mypy: RunMypy) -> None:
         '12: note: Revealed type is "int"',
     ]
     assert len(messages) == 3 and 'field "size"' in messages[2]
+
+
+def test_delegated_field_is_required_when_the_delegated_models_field_is(
+    run_mypy: RunMypy,
+) -> None:
+    """``Field.setup_related``: an inherited field of a required field is required."""
+    addons = {
+        "my_mod": {
+            "models.py": """
+            from odoo import fields, models
+
+            class Parent(models.Model):
+                _name = "t.parent"
+
+                name = fields.Char(required=True)
+                note = fields.Char()
+
+            class Child(models.Model):
+                _name = "t.child"
+                _inherits = {"t.parent": "parent_id"}
+
+                parent_id = fields.Many2one("t.parent", required=True, ondelete="cascade")
+
+                def action(self) -> None:
+                    reveal_type(self.name)
+                    reveal_type(self.note)
+            """
+        }
+    }
+
+    assert run_mypy(addons).messages("models.py") == [
+        '17: note: Revealed type is "str"',
+        '18: note: Revealed type is "str | Literal[False]"',
+    ]
+    declared = run_mypy(addons, options="required_values = false\n").messages("models.py")
+    assert declared[0] == '17: note: Revealed type is "str | Literal[False]"'

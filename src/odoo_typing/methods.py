@@ -37,6 +37,8 @@ from mypy.types import (
     CallableType,
     FunctionLike,
     Instance,
+    LiteralType,
+    NoneType,
     Type,
     TypeOfAny,
     TypeVarId,
@@ -49,6 +51,7 @@ from mypy.typevars import fill_typevars
 # isort: split
 # After mypy.types: mypy.checker and mypy.types import each other at import time.
 from mypy.checker import TypeChecker
+from mypy.typeops import make_simplified_union
 
 from odoo_typing.classes import receiver_type
 from odoo_typing.local_values import MAX_DEPTH, LocalValues
@@ -58,16 +61,20 @@ __all__ = [
     "COMMAND_ID_METHODS",
     "SELF_METHODS",
     "annotate_self_overrides",
+    "browse_signature",
     "command_id_signature",
     "create_signature",
     "identity_decorator",
     "identity_factory",
+    "is_browse",
     "is_command_id_method",
     "is_create",
     "is_self_method",
     "keep_receiver",
     "returns_own_records",
 ]
+
+ITERABLE: Final = "typing.Iterable"
 
 # ``Command.link(id)`` and the like: Odoo declares ``id: int``.
 COMMAND_ID_METHODS: Final = frozenset({"link", "update", "delete", "unlink"})
@@ -180,6 +187,45 @@ def command_id_signature(new_id: str, ctx: MethodSigContext) -> FunctionLike:
     widened = UnionType([declared, Instance(node.node, [])])
     arg_types = [*signature.arg_types]
     arg_types[index] = widened
+    return signature.copy_modified(arg_types=arg_types)
+
+
+def is_browse(fullname: str) -> bool:
+    """Whether a method's full name is ``<receiver class>.browse``."""
+    return fullname.rpartition(".")[2] == "browse"
+
+
+def browse_signature(base_model: str, ctx: MethodSigContext) -> FunctionLike:
+    """``browse(record.id)`` and ``browse(context.get("active_id"))``.
+
+    Odoo declares ``ids: int | Iterable[IdType]``, but ``browse`` takes more: its
+    docstring says "int or iterable(int) or None", and any falsy argument gives no
+    records. So ``None`` and ``False`` fit, and so does one id of any kind the iterable
+    may hold: on Odoo 18 ``record.id`` is ``int | NewId``, which a list of ids may hold
+    but the id alone may not (a ``NewId`` alone is falsy: no records, no error).
+    """
+    signature = ctx.default_signature
+    receiver = get_proper_type(ctx.type)
+    if (
+        not isinstance(signature, CallableType)
+        or not signature.arg_types
+        or not isinstance(receiver, Instance)
+        or not receiver.type.has_base(base_model)
+    ):
+        return signature
+    declared = get_proper_type(signature.arg_types[0])
+    if not isinstance(declared, UnionType):
+        return signature
+    held = [
+        item.args[0]
+        for item in map(get_proper_type, declared.items)
+        if isinstance(item, Instance) and item.type.fullname == ITERABLE and item.args
+    ]
+    if len(held) != 1:
+        return signature
+    false = LiteralType(False, ctx.api.named_generic_type("builtins.bool", []))
+    arg_types = [*signature.arg_types]
+    arg_types[0] = make_simplified_union([*declared.items, held[0], NoneType(), false])
     return signature.copy_modified(arg_types=arg_types)
 
 

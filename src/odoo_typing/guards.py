@@ -30,9 +30,16 @@ in self.env``, then ``if has_sale:``), or a method of the same class whose body 
 ``return <test>`` (``if self._has_sale():``). A helper of another class or addon is not
 followed: an override may change it.
 
-A field is guarded the same way, by ``"f" in records._fields``, ``records._fields.get("f")``
-or ``hasattr(records, "f")`` (:func:`field_guard`): code that writes a field another addon
-may add. The field name alone counts, whatever the records are.
+A field is guarded the same way, by ``"f" in records._fields``, ``records._fields.get("f")``,
+``"f" in env["model"]`` or ``hasattr(records, "f")`` (:func:`field_guard`): code that writes
+a field another addon may add. The field name alone counts, whatever the records are.
+
+Code that runs only with an addon outside the dependencies also uses that addon's models.
+Two more signs of it are read where such a model would be reported
+(:func:`guarded_fields`, :func:`call_strings`): the line is under the guard of a field
+that no model of the dependencies has, or the function passes the name of the addon that
+defines the model to a call (``self.ensure_installed("sale")``,
+``modules._get("sale").state``).
 """
 
 from __future__ import annotations
@@ -44,11 +51,20 @@ from typing import Final, TypeAlias
 
 from odoo_typing.node_index import NodeIndex
 
-__all__ = ["Guard", "field_guard", "is_guarded", "model_guards", "module_guard"]
+__all__ = [
+    "Guard",
+    "call_strings",
+    "field_guard",
+    "guarded_fields",
+    "is_guarded",
+    "model_guards",
+    "module_guard",
+]
 
 TERMINATORS: Final = (ast.Return, ast.Raise, ast.Continue, ast.Break)
 REGISTRY_ATTRIBUTES: Final = frozenset({"registry", "pool", "models"})
 BLOCK_FIELDS: Final = ("body", "orelse", "finalbody")
+FIELD_PREFIX: Final = "field:"
 
 
 def _statement_blocks(index: NodeIndex) -> list[list[ast.stmt]]:
@@ -115,6 +131,38 @@ class Guard:
 def is_guarded(guards: Iterable[Guard], model: str, line: int) -> bool:
     """Whether a line of a file is covered by a guard of a model."""
     return any(guard.model == model and guard.first <= line <= guard.last for guard in guards)
+
+
+def guarded_fields(guards: Iterable[Guard], line: int) -> frozenset[str]:
+    """The fields whose guards cover a line of a file (``if "f" in self._fields:``)."""
+    return frozenset(
+        guard.model.removeprefix(FIELD_PREFIX)
+        for guard in guards
+        if guard.first <= line <= guard.last and guard.model.startswith(FIELD_PREFIX)
+    )
+
+
+def call_strings(tree: ast.AST, line: int) -> frozenset[str]:
+    """The strings the function around a line passes to calls as whole arguments.
+
+    ``cls.ensure_installed("sale")`` gives ``sale``; a string inside a list, a tuple or
+    a comparison (``("type", "=", "sale")``, ``journal.type == "sale"``) is no argument.
+    """
+    functions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.lineno <= line <= (node.end_lineno or node.lineno)
+    ]
+    if not functions:
+        return frozenset()
+    innermost = max(functions, key=lambda node: node.lineno)
+    found: set[str] = set()
+    for node in ast.walk(innermost):
+        if isinstance(node, ast.Call):
+            arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
+            found.update(name for name in map(_string, arguments) if name is not None)
+    return frozenset(found)
 
 
 def model_guards(nodes: Iterable[ast.AST] | NodeIndex) -> tuple[Guard, ...]:
@@ -310,12 +358,14 @@ def _contained_name(key: ast.expr, container: ast.expr) -> str | None:
         return name
     if isinstance(container, ast.Attribute) and container.attr == "_fields":
         return field_guard(name)
+    if isinstance(container, ast.Subscript) and _is_registry(container.value):
+        return field_guard(name)  # ``"f" in env["model"]``: a recordset contains its fields
     return None
 
 
 def field_guard(field_name: str) -> str:
     """The guard name of a field that may be missing (``if "f" in self._fields:``)."""
-    return f"field:{field_name}"
+    return f"{FIELD_PREFIX}{field_name}"
 
 
 def module_guard(addon_name: str) -> str:

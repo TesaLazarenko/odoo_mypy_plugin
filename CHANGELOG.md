@@ -39,6 +39,36 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - `mapped("a.b")`, `grouped("a")` and `read([...])` / `search_read` return real types.
 - Unannotated overrides of `-> Self` methods that return their own records keep the
   model type through `super()`.
+- An attribute a class method defines (`cls.partner = ...` in `setUpClass`) is an
+  attribute of the class and its subclasses, with the type of its value: plain mypy
+  reports every such line and every later read (`"TestSale" has no attribute
+  "partner"`), which was over 90 % of the errors left on Odoo's own addons, and the
+  records of the tests were `Any`. The records a test class of another addon keeps read as the
+  model the reading addon sees.
+- `env.context` is a mapping on Odoo 20: a class without bases whose `__new__` builds
+  another class's object (`frozendict` returns a `MappingProxyType`) has that class as
+  its base.
+- `from odoo import Command, _, SUPERUSER_ID` on Odoo 19 and 20, where `odoo` is a
+  namespace package and a module of it binds the names (`odoo.Command = Command`): the
+  package has them, with their types.
+- `env.website` (Odoo 20, declared `BaseModel`) is the `website` records: an attribute
+  of `Environment` declared as records of no model is the model it is named after.
+- A controller's `self.env` is an `Environment` (Odoo 20 declares `Environment | None`
+  on its `Controller`; what an addon's own class declares is left alone).
+- A class that names its attribute hook after another method
+  (`__getattr__ = __getitem__`, Odoo 20's `TableSQL`) has that method as the hook.
+- `browse(...)` takes what Odoo takes besides the declared `int | Iterable[IdType]`:
+  `None` and `False` (its docstring: "int or iterable(int) or None"), so
+  `browse(context.get("active_id"))` is no error, and one id of any kind a list of ids
+  may hold (`record.id` is `int | NewId` on Odoo 18).
+- `mapped(function)` is the list of the function's values, or its records (Odoo 19 and
+  20 declare a union of both, which no `sum(...)` or `join(...)` accepts); `mapped` of
+  a path known only at run time is `Any`, as on Odoo 17 and 18.
+- `_inherits = {"res.partner": "partner_id"}` in a model class is no error on Odoo 19,
+  which declares the attribute as the `frozendict` it builds from it.
+- A field delegated through `_inherits` is required when the parent's field is, as in
+  Odoo; `create_date` and `write_date` read without `| Literal[False]`
+  (`required_values`).
 
 ### Checks
 
@@ -53,6 +83,11 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   record reads `False`).
 - `env.cr` has the methods of a cursor (`execute`, `fetchall`, `dbname`): Odoo 18 declares
   it as `BaseCursor`, which has none of them.
+- A model of an addon outside the dependencies is not reported in code written for that
+  addon: under the guard of a field that no model of the dependencies has
+  (`if "payment_provider_id" in lines._fields:`), and in a function that passes the
+  addon's name to a call (`cls.ensure_installed("sale")`). `"f" in env["model"]` guards
+  a field like `"f" in records._fields`.
 - Fewer false errors: a key that only an addon outside the closure adds to a selection
   (`selection_add`) in domains and vals; `vals_ignore_keys` names (`x_*`) in domains,
   `mapped`, `read`, orders and `@api.depends`; `default_x=False` in a context; assigning

@@ -31,6 +31,7 @@ from odoo_typing.classes import (
     record_python_mro,
 )
 from odoo_typing.compat import OdooProfile
+from odoo_typing.hooks.class_attributes import bind_method_aliases
 from odoo_typing.hooks.env import type_request
 from odoo_typing.hooks.meta_attributes import normalize_meta_attributes
 from odoo_typing.hooks.models import (
@@ -131,6 +132,7 @@ class ModelClassHooks(Hooks):
     def after_class_body(self, ctx: ClassDefContext) -> None:
         """Run once the class body is analyzed (and again for each written base)."""
         normalize_meta_attributes(ctx, self._profile)
+        bind_method_aliases(ctx)
         if not self.request_typed:
             self.request_typed = type_request(self._profile, ctx.api.modules)
         if not ctx.cls.info.has_base(self._profile.base_model):

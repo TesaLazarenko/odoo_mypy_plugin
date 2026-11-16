@@ -117,13 +117,17 @@ class RecordsetHooks(Hooks):
             if is_self_method(method)
             else ctx.default_return_type
         )
+        if method == "mapped":
+            result = self._mapped_values(result)
         receiver = receiver_type(ctx.type)
         argument = (
             literal_string(ctx.args[0][0], ctx.arg_types[0][0])
             if ctx.args and ctx.args[0]
             else None
         )
-        if not isinstance(receiver, Instance) or argument is None:
+        if not isinstance(receiver, Instance):
+            return result
+        if argument is None:
             return result
         if self._models.model_of(receiver.type) is None:
             return result  # a ``sorted`` / ``mapped`` method of another class
@@ -143,6 +147,34 @@ class RecordsetHooks(Hooks):
         if isinstance(records, AnyType) and self._relational_end(receiver, argument.value, ctx):
             return value  # records of a comodel mypy cannot type, not a list
         return checker.named_generic_type("builtins.list", [value])
+
+    def _mapped_values(self, declared: Type) -> Type:
+        """What ``mapped`` returns where Odoo declares a list or records (Odoo 19+).
+
+        ``list[T] | BaseModel`` fits no parameter that takes a list (``sum(...)``,
+        ``", ".join(...)``), has no attribute of records, and makes mypy infer ``T`` from
+        that parameter instead of from the function. ``mapped`` returns records only
+        when the function (or the field) gives records: then they are those records;
+        any other value gives the list, and an unknown one is unknown (``Any``, as
+        where Odoo declares nothing).
+        """
+        union = get_proper_type(declared)
+        if not isinstance(union, UnionType):
+            return declared
+        items = [get_proper_type(item) for item in union.items]
+        lists = [
+            item
+            for item in items
+            if isinstance(item, Instance) and item.type.fullname == "builtins.list" and item.args
+        ]
+        if len(lists) != 1 or len(items) != 2:
+            return declared
+        value = get_proper_type(lists[0].args[0])
+        if isinstance(value, AnyType):
+            return AnyType(TypeOfAny.special_form)  # a list or records: not known which
+        if isinstance(value, Instance) and value.type.has_base(self._profile.base_model):
+            return value
+        return lists[0]
 
     def _relational_end(self, receiver: Instance, path: str, ctx: MethodContext) -> bool:
         """Whether a path ends with a relational field (``mapped`` then gives records).

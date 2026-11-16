@@ -21,7 +21,15 @@ from mypy.checker import CheckerScope, TypeChecker
 from mypy.checkexpr import ExpressionChecker
 from mypy.errors import Errors
 from mypy.messages import MessageBuilder
-from mypy.nodes import LambdaExpr, MypyFile, TypeInfo
+from mypy.nodes import (
+    FuncDef,
+    LambdaExpr,
+    MemberExpr,
+    MypyFile,
+    SymbolTableNode,
+    TypeInfo,
+    Var,
+)
 from mypy.plugin import Plugin
 from mypy.semanal import SemanticAnalyzer
 from mypy.typeanal import TypeAnalyser
@@ -65,6 +73,11 @@ ATTRIBUTES: list[tuple[object, str, str]] = [
     (TypeAnalyser, "api", "hooks/annotations.py (through getattr: odoo.* annotations)"),
     (Plugin, "_modules", "plugin.py"),
     (SemanticAnalyzer, "cur_mod_node", "hooks/models.py (errors_hidden)"),
+    (Var, "is_self", "hooks/class_attributes.py (the cls of a class method)"),
+    (SymbolTableNode, "implicit", "hooks/class_attributes.py (readable_on_class)"),
+    (TypeInfo, "metadata", "hooks/class_attributes.py, classes.py"),
+    (FuncDef, "unanalyzed_type", "hooks/built_classes.py"),
+    (MemberExpr, "is_inferred_def", "hooks/class_attributes.py (mypy infers cls.x = ...)"),
 ]
 
 

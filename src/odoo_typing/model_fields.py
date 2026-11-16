@@ -70,12 +70,14 @@ MAGIC_FIELDS_17: Final = (
     MAGIC_FIELDS[0],
     FieldInfo("display_name", "Char", compute="_compute_display_name"),
 )
-# Added with them unless ``_log_access`` is off.
+# Added with them unless ``_log_access`` is off. Odoo does not declare the dates required,
+# but ``create`` and ``write`` set them on every record, so a saved record has them like
+# the value of a required field.
 LOG_ACCESS_FIELDS: Final = (
     FieldInfo("create_uid", "Many2one", comodel="res.users", readonly=True),
-    FieldInfo("create_date", "Datetime", readonly=True),
+    FieldInfo("create_date", "Datetime", readonly=True, required=True),
     FieldInfo("write_uid", "Many2one", comodel="res.users", readonly=True),
-    FieldInfo("write_date", "Datetime", readonly=True),
+    FieldInfo("write_date", "Datetime", readonly=True, required=True),
 )
 
 
@@ -241,7 +243,11 @@ def delegation_fields(
 
 
 def delegated_field(info: FieldInfo, delegate_field: str) -> FieldInfo:
-    """The related field ``_add_inherited_fields`` makes for a delegated model's field."""
+    """The related field ``_add_inherited_fields`` makes for a delegated model's field.
+
+    It is required when the delegated model's field is (``Field.setup_related``): a
+    record always has its delegated record, so it reads that field's value.
+    """
     return FieldInfo(
         info.name,
         info.field_type,
@@ -250,7 +256,8 @@ def delegated_field(info: FieldInfo, delegate_field: str) -> FieldInfo:
         selection_method=info.selection_method,
         related=f"{delegate_field}.{info.name}",
         readonly=info.readonly,
-        dynamic=info.dynamic & {"comodel", "selection", "readonly"},
+        required=info.required,
+        dynamic=info.dynamic & {"comodel", "selection", "readonly", "required"},
     )
 
 

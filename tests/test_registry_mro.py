@@ -7,12 +7,14 @@ parents in that closure (Odoo extends a parent's registry class in place).
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Sequence
 from pathlib import Path
 
 from test_registry_semantics import _build, _get, _names
 
 from odoo_typing.registry import Registry
+from odoo_typing.registry.edges import imported_names
 from odoo_typing.scanner import Contribution
 
 BASE_MODEL = 'class Base(models.AbstractModel):\n    _name = "base"\n'
@@ -256,3 +258,87 @@ def test_dependency_modules_leave_out_addons_outside_the_closure(tmp_path: Path)
 
     assert "t_mail.m" in modules
     assert {"t_sms.m", "t_project.m"}.isdisjoint(modules)  # not in t_user's closure
+
+
+def test_test_modules_of_other_addons_name_the_models_of_inherited_records(
+    tmp_path: Path,
+) -> None:
+    """A test reads the records its base classes keep as its own addon sees their model."""
+    common = (
+        "from odoo.tests.common import TransactionCase\n"
+        "from t_mail.tests.common import MailCommon\n"
+        "class ProjectCommon(MailCommon):\n"
+        "    @classmethod\n"
+        "    def setUpClass(cls):\n"
+        "        cls.task = cls.env['t.task']\n"
+    )
+    mail_common = (
+        "class MailCommon:\n"
+        "    @classmethod\n"
+        "    def setUpClass(cls):\n"
+        "        cls.thread = cls.env['t.thread']\n"
+    )
+    registry = _build(
+        tmp_path,
+        base=BASE,
+        addons={
+            "t_mail": (
+                [],
+                {**_files(_cls("Thread", "t.thread")), "tests/common.py": mail_common},
+            ),
+            "t_project": (
+                ["t_mail"],
+                {**_files(_cls("Task", "t.task")), "tests/common.py": common},
+            ),
+            "t_user": (
+                ["t_project"],
+                {
+                    **_files(
+                        _cls("Task", inherit=["t.task"]) + _cls("Thread", inherit=["t.thread"])
+                    ),
+                    "tests/test_task.py": "from t_project.tests.common import ProjectCommon\n",
+                },
+            ),
+        },
+    )
+    test_file = tmp_path / "addons" / "t_user" / "tests" / "test_task.py"
+    imported = ["t_project.tests.common", "t_project.tests.common.ProjectCommon", "odoo.tests"]
+
+    # The tips of the models the test modules name (each tip depends on its chain):
+    # ``t.task`` of the imported module, ``t.thread`` of the one it imports in turn.
+    tips = frozenset({"t_user.m", "odoo.addons.base.m"})
+    assert registry.inherited_view_modules(test_file, imported) == tips
+    assert registry.view_modules("t.thread", "t_user") == tips
+    assert registry.inherited_view_modules(test_file, ["t_mail.tests.common"]) == tips
+    # The models of its own addon's modules are that module's own business.
+    assert registry.inherited_view_modules(test_file, ["t_user.m"]) == frozenset()
+    # A module the addon itself loads is no test module.
+    assert registry.inherited_view_modules(test_file, ["t_project.m"]) == frozenset()
+
+
+def test_imported_names_are_the_modules_and_what_is_imported_from_them() -> None:
+    tree = ast.parse(
+        "import a.b, c as d\n"
+        "from e.f import g, h as i\n"
+        "from . import j\n"
+        "from .k import l\n"
+        "from ..m import n\n"
+        "def later():\n"
+        "    from o import p\n"
+    )
+
+    assert imported_names(tree, "pkg.sub") == {
+        "a.b",
+        "c",
+        "e.f",
+        "e.f.g",
+        "e.f.h",
+        "pkg.sub",
+        "pkg.sub.j",
+        "pkg.sub.k",
+        "pkg.sub.k.l",
+        "pkg.m",
+        "pkg.m.n",
+        "o",
+        "o.p",
+    }

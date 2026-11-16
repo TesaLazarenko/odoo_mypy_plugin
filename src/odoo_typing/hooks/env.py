@@ -40,6 +40,7 @@ __all__ = [
     "XmlIdUse",
     "add_request_attributes",
     "env_cursor",
+    "present_env",
     "request_env",
     "type_request",
 ]
@@ -208,6 +209,18 @@ class EnvHooks(Hooks):
         api.fail(message, xml_id, code=ODOO_XMLID)
         return None
 
+    def named_record(self, model: str, ctx: AttributeContext) -> Type:
+        """``env.website`` (Odoo 20): records of the model an attribute is named after.
+
+        Odoo declares the property as ``BaseModel``: records, but of no model, so every
+        field read from them was an unknown attribute. Only where the declared type is
+        ``BaseModel`` itself and the reading addon sees a model of that name.
+        """
+        declared = get_proper_type(ctx.default_attr_type)
+        if not isinstance(declared, Instance) or declared.type.fullname != self._profile.base_model:
+            return ctx.default_attr_type
+        return self.record(model, ctx)
+
     def record(self, model: str, ctx: AttributeContext) -> Type:
         """``env.user`` and the like: a record of a model, as the reading addon sees it."""
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
@@ -237,6 +250,27 @@ def request_env(environment: str, ctx: AttributeContext) -> Type:
     if node is None or not isinstance(node.node, TypeInfo):
         return ctx.default_attr_type
     return instance_of(node.node)
+
+
+def present_env(environment: str, ctx: AttributeContext) -> Type:
+    """An ``env`` declared ``Environment | None``, read: the ``Environment``.
+
+    Odoo 20 declares ``Controller.env`` that way (``None`` outside a request), like
+    ``request.env``: code that handles a route has one, and Odoo's own controllers
+    index it without a check. An assignment keeps the declared type. Only for the
+    classes of Odoo itself: an addon's own ``env: Environment | None`` stays as its
+    author declared it.
+    """
+    declared = get_proper_type(ctx.default_attr_type)
+    if ctx.is_lvalue or not isinstance(declared, UnionType):
+        return ctx.default_attr_type
+    kept = [item for item in map(get_proper_type, declared.items) if not isinstance(item, NoneType)]
+    if len(kept) != 1 or len(declared.items) != 2:  # not ``X | None``
+        return ctx.default_attr_type
+    present = kept[0]
+    if isinstance(present, Instance) and present.type.fullname == environment:
+        return present
+    return ctx.default_attr_type
 
 
 def env_cursor(ctx: AttributeContext) -> Type:

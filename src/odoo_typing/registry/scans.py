@@ -6,6 +6,7 @@ first question, and an addon's files are scanned only when a question needs the 
 
 from __future__ import annotations
 
+import ast
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
@@ -16,7 +17,7 @@ from typing import Protocol
 from odoo_typing.addons import Addon, AddonIndex, LoadKey
 from odoo_typing.config import Settings
 from odoo_typing.frozen import frozen
-from odoo_typing.guards import Guard, is_guarded, model_guards
+from odoo_typing.guards import Guard, call_strings, guarded_fields, is_guarded, model_guards
 from odoo_typing.node_index import index_nodes
 from odoo_typing.records import Record
 from odoo_typing.references import KNOWN_CLASSES
@@ -34,6 +35,7 @@ from odoo_typing.scanner import (
     field_kind,
     linked_field,
     parse_bytes,
+    parse_source,
     read_source,
     referenced_models,
     scan_addon,
@@ -130,6 +132,8 @@ class ScannedAddons:
         self._described: dict[str, FieldClass | None] = {}  # by dotted name, once asked
         self._sources = SourceClasses(settings.odoo_path, self._addon_module_file, scans)
         self._unreached: dict[Path, _UnreachedFile] = {}  # files the addon scans miss
+        # The file parsed last for call_strings(): its path, stamp and tree.
+        self._parsed: tuple[Path, Stamp | None, ast.AST | None] | None = None
         self._xml_ids: dict[str, Mapping[str, str]] = {}  # of a closure (_ClosureIds)
         self._own_xml_ids: dict[str, Mapping[str, str]] = {}  # of one addon's data files
         self._misnamed: set[str] = set()  # addons warned about by misnamed()
@@ -366,6 +370,33 @@ class ScannedAddons:
         scan = self._by_path.get(resolved)
         guards = scan.guards if scan is not None else self._unreached_file(resolved).found.guards
         return is_guarded(guards, model, line)
+
+    def guarded_fields(self, path: str | Path, line: int) -> frozenset[str]:
+        """The fields whose guards cover a line of a source file (see :meth:`guarded`)."""
+        addon = self.addons.addon_for_path(path)
+        if addon is not None:
+            self._models_of(addon.name)  # scans the addon
+        resolved = self.addons.real_path(path)
+        scan = self._by_path.get(resolved)
+        guards = scan.guards if scan is not None else self._unreached_file(resolved).found.guards
+        return guarded_fields(guards, line)
+
+    def call_strings(self, path: str | Path, line: int) -> frozenset[str]:
+        """The strings the function around a line of a source file passes to calls.
+
+        Asked where an error would be reported, so the file is parsed for it (and kept
+        while the questions are about the same version of the same file).
+        """
+        resolved = self.addons.real_path(path)
+        current = stamp(resolved)
+        if self._parsed is None or self._parsed[:2] != (resolved, current):
+            try:
+                tree: ast.AST | None = parse_source(resolved)
+            except SourceError:
+                tree = None
+            self._parsed = (resolved, current, tree)
+        tree = self._parsed[2]
+        return call_strings(tree, line) if tree is not None else frozenset()
 
     def source_stamp(self, path: str | Path) -> Stamp | None:
         """A source file's stamp as the answers about it were read (scan or own parse)."""

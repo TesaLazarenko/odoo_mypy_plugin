@@ -534,6 +534,65 @@ def test_guarded_models_outside_depends_are_any(run_mypy: RunMypy) -> None:
     ]
 
 
+def test_models_in_code_for_an_addon_outside_depends_are_any(run_mypy: RunMypy) -> None:
+    """Under the guard of a field no model has, or in a function that names the addon."""
+    result = run_mypy(
+        {
+            "t_base": {"models.py": T_PARTNER},
+            "t_nodep": {
+                "depends": ["base"],
+                "models.py": """
+                from odoo import fields, models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+
+                    known = fields.Char()
+
+                    def with_field(self) -> None:
+                        if "x_partner_id" in self._fields:
+                            reveal_type(self.env["t.partner"])
+                            self.env["ee.only"].search([])
+                        managed = "x_partner_id" in self.env["t.thing"]._fields
+                        if managed:
+                            self.env["t.partner"].search([])
+                        if "known" in self._fields:
+                            self.env["t.partner"]
+
+                    def with_addon(self) -> None:
+                        self.ensure_installed("t_base")
+                        reveal_type(self.env["t.partner"])
+                        self.env["ee.only"]
+
+                    def with_domain(self) -> None:
+                        if self.env["ir.module.module"].search([("name", "=", "t_base")]):
+                            self.env["t.partner"]
+
+                    def with_state(self) -> None:
+                        if self.env["ir.module.module"]._get("t_base").state == "installed":
+                            self.env["t.partner"]
+
+                    def ensure_installed(self, name: str) -> None:
+                        pass
+                """,
+            },
+        },
+        check=["t_nodep"],
+    )
+
+    depends = (
+        'error: Odoo model "t.partner" is defined in addon "t_base", which is not in '
+        'the dependencies of "t_nodep"  [odoo-model-depends]'
+    )
+    assert result.messages("t_nodep/models.py") == [
+        '11: note: Revealed type is "Any"',
+        f"17: {depends}",  # a field of the model itself is no sign of another addon
+        '21: note: Revealed type is "Any"',
+        '22: error: Unknown Odoo model "ee.only"  [odoo-model]',
+        f"26: {depends}",  # the name in a domain is no argument of a call
+    ]
+
+
 def test_flag_and_helper_guards_of_models_outside_depends(run_mypy: RunMypy) -> None:
     result = run_mypy(
         {

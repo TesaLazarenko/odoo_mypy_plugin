@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from mypy.lookup import lookup_fully_qualified
-from mypy.nodes import Context, Expression, MemberExpr, TypeInfo
+from mypy.nodes import Context, Expression, MemberExpr, TypeInfo, Var
 from mypy.plugin import AttributeContext, CheckerPluginInterface, MethodSigContext
 from mypy.types import (
     AnyType,
@@ -12,6 +12,7 @@ from mypy.types import (
     Instance,
     LiteralType,
     NoneType,
+    ProperType,
     Type,
     TypeOfAny,
     UnionType,
@@ -225,6 +226,41 @@ class FieldValueHooks(Hooks):
             return self._assigned(declared, owner_info, ctx)
         return (
             self._models.comodel_at_use_site(declared, owner_info, ctx.api) or ctx.default_attr_type
+        )
+
+    def kept_record(self, ctx: AttributeContext) -> Type:
+        """Records kept on an object that is no model, as the reading addon sees their model.
+
+        A test case keeps the records it creates (``cls.product = ...`` in the
+        ``setUpClass`` of ``product``'s common test class), and the tests of other addons
+        read them: Odoo gives them the registry class, with the fields of every installed
+        addon, so a test of ``sale`` reads ``self.product.invoice_policy``.
+
+        An assignment takes the same class: the records a module gets from ``env`` are
+        of the class that module sees, which may be another class of the same view than
+        the one the attribute was first given (a merged class is made per module).
+        """
+        declared = get_proper_type(ctx.default_attr_type)
+        if isinstance(declared, UnionType):  # ``cls.company = found or cls.env.company``
+            items = [self._kept(get_proper_type(item), ctx) or item for item in declared.items]
+            return make_simplified_union(items)
+        return self._kept(declared, ctx) or ctx.default_attr_type
+
+    def _kept(self, kept: ProperType, ctx: AttributeContext) -> Type | None:
+        """Kept records as the reading addon sees them; ``None`` for anything else."""
+        if not isinstance(kept, Instance) or self._models.model_of(kept.type) is None:
+            return None
+        return self._models.comodel_at_use_site(kept, None, ctx.api)
+
+    def keeps_record(self, variable: Var) -> bool | None:
+        """Whether an attribute holds records of a model; ``None`` while mypy infers its type."""
+        if variable.type is None:
+            return None
+        kept = get_proper_type(variable.type)
+        items = kept.items if isinstance(kept, UnionType) else [kept]
+        return any(
+            isinstance(item, Instance) and self._models.model_of(item.type) is not None
+            for item in map(get_proper_type, items)
         )
 
     def _assigned(self, declared: Instance, owner: TypeInfo | None, ctx: AttributeContext) -> Type:

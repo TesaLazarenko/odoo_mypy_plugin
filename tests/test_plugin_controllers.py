@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import RunMypy
 
 CONTROLLER = """
@@ -82,3 +83,74 @@ def test_env_cr_has_the_methods_of_a_cursor(run_mypy: RunMypy, odoo_version: int
         ["13"] if odoo_version >= 18 else []
     )
     assert not any("attr-defined" in message for message in messages)
+
+
+@pytest.mark.odoo(20)
+def test_env_of_a_controller_is_an_environment(run_mypy: RunMypy) -> None:
+    """Odoo 20 declares ``Controller.env`` as ``Environment | None``, like ``request.env``."""
+    result = run_mypy(
+        {
+            "my_mod": {
+                "controllers.py": """
+                from odoo import http
+
+                class Main(http.Controller):
+                    @http.route("/my", type="http", auth="public")
+                    def index(self):
+                        reveal_type(self.env["res.partner"].search([]).name)
+                        self.env["res.partnr"]
+                """
+            }
+        }
+    )
+
+    messages = result.messages("controllers.py")
+    assert messages[0] == '7: note: Revealed type is "str | Literal[False]"'
+    assert len(messages) == 2, messages
+    assert 'Unknown Odoo model "res.partnr"' in messages[1]
+
+
+def test_optional_env_of_an_addons_own_class_stays_optional(run_mypy: RunMypy) -> None:
+    """The plugin corrects what Odoo declares, not what the addon's author declared."""
+    result = run_mypy(
+        {
+            "my_mod": {
+                "listener.py": """
+                from odoo.api import Environment
+
+                class Listener:
+                    env: Environment | None = None
+
+                    def handle(self) -> None:
+                        self.env["res.partner"]
+                        if self.env is not None:
+                            reveal_type(self.env["res.partner"])
+                """
+            }
+        }
+    )
+
+    messages = result.messages("listener.py")
+    assert len(messages) == 2, messages
+    assert messages[0].startswith('8: error: Value of type "Environment | None" is not indexable')
+    assert messages[1].startswith("10: note: Revealed type is ")
+
+
+@pytest.mark.odoo(20)
+def test_env_attribute_named_after_a_model_is_that_models_records(run_mypy: RunMypy) -> None:
+    """``env.website`` (Odoo 20) is declared ``BaseModel``: records of no model."""
+    source = """
+    from odoo import http
+
+    class Main(http.Controller):
+        @http.route("/my", type="http", auth="public")
+        def index(self):
+            reveal_type(self.env.website.name)
+            self.env.website.nope
+    """
+    result = run_mypy({"my_mod": {"controllers.py": source}})
+
+    messages = result.messages("controllers.py")
+    assert messages[0] == '7: note: Revealed type is "str"'
+    assert len(messages) == 2, messages
+    assert '"Website" has no attribute "nope"' in messages[1]

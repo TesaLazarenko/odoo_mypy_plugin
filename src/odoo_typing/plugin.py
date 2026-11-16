@@ -57,6 +57,7 @@ registry on each cold run, and could still pick an arbitrary extension class.
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -64,7 +65,16 @@ from functools import partial
 from typing import TypeVar
 
 from mypy.lookup import lookup_fully_qualified
-from mypy.nodes import Decorator, FuncDef, MypyFile, TypeInfo
+from mypy.nodes import (
+    Decorator,
+    FuncDef,
+    Import,
+    ImportAll,
+    ImportFrom,
+    MypyFile,
+    TypeInfo,
+    Var,
+)
 from mypy.options import Options
 from mypy.plugin import (
     AnalyzeTypeContext,
@@ -77,7 +87,16 @@ from mypy.plugin import (
     Plugin,
     ReportConfigContext,
 )
-from mypy.types import AnyType, FunctionLike, Type, TypeOfAny
+from mypy.types import (
+    AnyType,
+    CallableType,
+    FunctionLike,
+    Instance,
+    Type,
+    TypeOfAny,
+    get_proper_type,
+)
+from mypy.util import correct_relative_import
 
 from odoo_typing import records
 from odoo_typing.addons import Addon
@@ -90,7 +109,7 @@ from odoo_typing.annotations import (
 from odoo_typing.compat import profile_for
 from odoo_typing.config import ConfigError, Settings, load_settings
 from odoo_typing.domains import DOMAIN_METHODS, PARAMETER_DOMAIN_METHODS
-from odoo_typing.errors import fail_soft, report_internal_error
+from odoo_typing.errors import RAISE_VARIABLE, fail_soft, report_internal_error
 from odoo_typing.fingerprint import Fingerprints
 from odoo_typing.hooks.annotations import (
     DICT_GET,
@@ -98,6 +117,8 @@ from odoo_typing.hooks.annotations import (
     values_get,
     values_get_signature,
 )
+from odoo_typing.hooks.built_classes import inherit_built_class
+from odoo_typing.hooks.class_attributes import define_through_cls, readable_on_class
 from odoo_typing.hooks.comparisons import COMPARISON_HOOKS, ComparisonHooks
 from odoo_typing.hooks.domains import (
     DomainHooks,
@@ -110,6 +131,7 @@ from odoo_typing.hooks.env import (
     EnvHooks,
     add_request_attributes,
     env_cursor,
+    present_env,
     request_env,
     type_request,
 )
@@ -120,16 +142,19 @@ from odoo_typing.hooks.models import ODOO_MODEL, ODOO_MODEL_DEPENDS, Models
 from odoo_typing.hooks.recordsets import RecordsetHooks
 from odoo_typing.hooks.vals import ValsHooks
 from odoo_typing.methods import (
+    browse_signature,
     command_id_signature,
     create_signature,
     identity_decorator,
     identity_factory,
+    is_browse,
     is_command_id_method,
     is_create,
     is_self_method,
     keep_receiver,
 )
 from odoo_typing.odoo_version import profile_mismatch_warning, version_mismatch_warning
+from odoo_typing.package_names import bound_on_package, import_into
 from odoo_typing.records import RecordStore, load_index
 from odoo_typing.references import RECORD_PATH_METHODS
 from odoo_typing.registry import Registry
@@ -159,6 +184,7 @@ ResultT = TypeVar("ResultT")
 __version__ = records.source_digest()
 
 DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
+ENV = "env"
 # Methods whose first argument is ``vals`` (``create``: also a list of them;
 # ``copy``: its ``default``).
 VALS_METHODS = frozenset({"create", "write", "copy"})
@@ -220,6 +246,10 @@ class OdooPlugin(Plugin):
         self._after_class_body = fail_soft(
             self._classes.after_class_body, _no_result, "the class hook of a model"
         )
+        self._kept_record = fail_soft(
+            self._values.kept_record, _default_attribute, "the hook of a record kept on a class"
+        )
+        self._every_class = fail_soft(_every_class, _no_result, "the hook of every class")
         self._rewritten: dict[str, MypyFile] = {}  # module -> the tree rewritten last
 
     def _new_registry(self, settings: Settings) -> Registry:
@@ -329,11 +359,33 @@ class OdooPlugin(Plugin):
             if registry.misnamed(file.fullname, file.path):
                 return []  # never make mypy load the addon again under its configured name
             modules = set(registry.dependency_modules(file.fullname, file.path))
+            modules |= registry.inherited_view_modules(file.path, _imported_modules(file))
         except Exception as exc:
             report_internal_error(exc, f"finding the models {file.fullname} relies on")
             raise
         modules.discard(file.fullname)
+        modules.update(self._package_imports(file))
         return [(DEPENDENCY_PRIORITY, module, -1) for module in sorted(modules)]
+
+    def _package_imports(self, file: MypyFile) -> list[str]:
+        """Give the ``odoo`` namespace package the names Odoo binds on it (Odoo 19+).
+
+        ``from odoo import Command, _`` names what a module of the package assigns to it
+        (:mod:`odoo_typing.package_names`): the same imports are added to the package's
+        module, which mypy parses from an empty source. With an ``__init__.py`` (Odoo 17,
+        18) the package says what it has itself.
+
+        Returns:
+            The modules of the added imports.
+        """
+        odoo = self._models.settings.odoo_path
+        if file.fullname != odoo.name or (odoo / "__init__.py").exists():
+            return []
+        try:
+            return import_into(file, bound_on_package(odoo, odoo.name))
+        except Exception as exc:
+            report_internal_error(exc, f"reading the names bound on the package {odoo.name}")
+            raise
 
     # -- annotations: odoo.values.* / odoo.model.* -----------------------------------------
 
@@ -386,6 +438,10 @@ class OdooPlugin(Plugin):
     ) -> Callable[[ClassDefContext], None] | None:
         """Give Odoo model classes the MRO of their registry class.
 
+        Every class also gets the attributes its class methods define
+        (:mod:`odoo_typing.hooks.class_attributes`) and, when it builds another class's
+        objects, that class as its base (:mod:`odoo_typing.hooks.built_classes`).
+
         Also rewrites the annotations of the class's module (:meth:`_rewrite_module_of`): mypy
         analyzes a module's classes before their bodies, and defers what it cannot look
         up yet, so the module's functions see the rewritten names on the next pass.
@@ -393,10 +449,37 @@ class OdooPlugin(Plugin):
         self._rewrite_module_of(fullname)
         found = self._hooks.mro
         if fullname not in found:
-            found[fullname] = _soft(
+            model = _soft(
                 self._find_customize_class_mro_hook(fullname), _no_result, f"the MRO of {fullname}"
             )
+            every = self._every_class
+            found[fullname] = every if model is None else partial(_both, every, model)
         return found[fullname]
+
+    def get_class_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
+        """Let a class read the attributes its class methods define (no hook of its own).
+
+        mypy asks for this hook right before it looks the attribute up on the class, which
+        is when an attribute defined through ``cls`` stops being instance-only
+        (:mod:`odoo_typing.hooks.class_attributes`).
+        """
+        class_name, _, name = fullname.rpartition(".")
+        if not self._modules:
+            return None
+        try:
+            symbol = lookup_fully_qualified(class_name, self._modules, raise_on_missing=False)
+            if symbol is None or not isinstance(symbol.node, TypeInfo):
+                return None
+            readable_on_class(symbol.node, name)
+            attribute = symbol.node.get(name)
+            variable = attribute.node if attribute is not None else None
+            if isinstance(variable, Var) and self._values.keeps_record(variable):
+                return self._kept_record
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            if os.environ.get(RAISE_VARIABLE):
+                raise
+            report_internal_error(exc, f"reading the class attribute {fullname}")
+        return None
 
     def get_method_hook(self, fullname: str) -> Callable[[MethodContext], Type] | None:
         """Type ``env[...]`` and recordset methods; check vals, domains and field paths."""
@@ -463,10 +546,28 @@ class OdooPlugin(Plugin):
         found = self._hooks.attribute
         if fullname not in found:
             self._type_request()
-            found[fullname] = _soft(
-                self._find_attribute_hook(fullname), _default_attribute, f"the hook of {fullname}"
-            )
+            hook = self._find_attribute_hook(fullname)
+            if hook is None:
+                kept = self._keeps_record(fullname)
+                if kept is None:
+                    return None  # asked again once mypy has inferred the attribute's type
+                hook = self._values.kept_record if kept else None
+            found[fullname] = _soft(hook, _default_attribute, f"the hook of {fullname}")
         return found[fullname]
+
+    def _keeps_record(self, fullname: str) -> bool | None:
+        """Whether an attribute of a class that is no model holds records of a model.
+
+        ``None`` while its type is not known: mypy infers ``self.partner = ...`` when it
+        checks the method that assigns it, which may be after the first read.
+        """
+        symbol = (
+            lookup_fully_qualified(fullname, self._modules, raise_on_missing=False)
+            if self._modules
+            else None
+        )
+        variable = symbol.node if symbol is not None else None
+        return self._values.keeps_record(variable) if isinstance(variable, Var) else False
 
     def _type_request(self) -> None:
         """Type ``odoo.http.request`` once mypy has checked its assignment (see ``type_request``).
@@ -583,6 +684,8 @@ class OdooPlugin(Plugin):
             return partial(create_signature, profile.base_model, untyped=profile.untyped_fields)
         if is_command_id_method(fullname):
             return partial(command_id_signature, profile.new_id)
+        if is_browse(fullname):
+            return partial(browse_signature, profile.base_model)
         if is_term_list_method(fullname):
             return term_list_signature
         domain_class = profile.domain_class  # Odoo 19+: DomainType parameters
@@ -617,6 +720,34 @@ class OdooPlugin(Plugin):
             found = found.func
         return found.type if isinstance(found, FuncDef) else None
 
+    def _declared_records(self, fullname: str) -> bool:
+        """Whether an attribute or property is declared as ``BaseModel``: records of no model."""
+        symbol = (
+            lookup_fully_qualified(fullname, self._modules, raise_on_missing=False)
+            if self._modules
+            else None
+        )
+        node = symbol.node if symbol is not None else None
+        variable = node.var if isinstance(node, Decorator) else node
+        declared = get_proper_type(variable.type) if isinstance(variable, Var) else None
+        if isinstance(declared, CallableType):  # a property: what its getter returns
+            declared = get_proper_type(declared.ret_type)
+        return (
+            isinstance(declared, Instance)
+            and declared.type.fullname == self._models.profile.base_model
+        )
+
+    def _declared_by_odoo(self, class_fullname: str) -> bool:
+        """Whether a class is one of Odoo's own, outside the addons.
+
+        What Odoo declares too loosely is read as Odoo uses it; what an addon declares
+        (``env: Environment | None`` of its own class) is its author's word.
+        """
+        package = self._models.settings.odoo_path.name
+        if not class_fullname.startswith(f"{package}."):
+            return False
+        return self._models.registry.addons.addon_for_module(class_fullname) is None
+
     def _find_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
         """Resolve record-typed attributes of model classes from the reading addon."""
         profile = self._models.profile
@@ -633,6 +764,10 @@ class OdooPlugin(Plugin):
         if required and fullname == f"{profile.base_model}.display_name":
             return self._values.display_name  # Odoo 17, 18 annotate it on BaseModel
         owner, _, name = fullname.rpartition(".")
+        if owner == profile.environment and self._declared_records(fullname):
+            return partial(self._env.named_record, name)  # ``env.website`` (Odoo 20)
+        if name == ENV and owner != profile.base_model and self._declared_by_odoo(owner):
+            return partial(present_env, profile.environment)  # a controller's (Odoo 20)
         if name in LOG_ACCESS_USERS and registry.contribution(owner):
             # Declared as ``Many2one[Any]``: the res.users records the reading addon sees.
             return partial(self._env.record, "res.users")
@@ -666,6 +801,38 @@ def _any_type(_ctx: AnalyzeTypeContext) -> Type:
 
 def _no_result(_ctx: ClassDefContext) -> None:
     return None
+
+
+def _imported_modules(file: MypyFile) -> list[str]:
+    """What a file's import statements name, as dotted names (``a.b`` and ``a.b.c``)."""
+    found: list[str] = []
+    for statement in file.imports:
+        if isinstance(statement, Import):
+            found += [name for name, _ in statement.ids]
+        elif isinstance(statement, (ImportFrom, ImportAll)):
+            source, _ = correct_relative_import(
+                file.fullname, statement.relative, statement.id, file.is_package_init_file()
+            )
+            found.append(source)
+            if isinstance(statement, ImportFrom):
+                found += [f"{source}.{name}" for name, _ in statement.names]
+    return found
+
+
+def _every_class(ctx: ClassDefContext) -> None:
+    """What the plugin does for a class of any kind, before mypy analyzes its body."""
+    inherit_built_class(ctx)
+    define_through_cls(ctx)
+
+
+def _both(
+    first: Callable[[ClassDefContext], None],
+    second: Callable[[ClassDefContext], None],
+    ctx: ClassDefContext,
+) -> None:
+    """Run two class hooks, one after the other."""
+    first(ctx)
+    second(ctx)
 
 
 def _checked(check: Callable[[MethodContext], None], ctx: MethodContext) -> Type:

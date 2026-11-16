@@ -40,6 +40,7 @@ class ModelFields(ModelViews):
         self._unresolved_fields: dict[tuple[str, str], Mapping[str, FieldInfo]] = {}
         self._related_comodels: dict[tuple[str, str, str], str | None] = {}
         self._field_sources: dict[tuple[str, str], tuple[str, ...]] = {}
+        self._field_names: dict[str, frozenset[str]] = {}  # of all models an addon sees
         # One object for equal answers: the views of a model from many addons mostly
         # see the same fields (memory: each view would hold its own copies otherwise).
         self._field_pool: dict[FieldInfo, FieldInfo] = {}
@@ -68,6 +69,21 @@ class ModelFields(ModelViews):
             }
             self._fields[key] = self._shared({**merged, **resolved}) if resolved else merged
         return self._fields[key]
+
+    def has_field_named(self, name: str, addon_name: str) -> bool:
+        """Whether any model an addon sees has a field of a name.
+
+        ``if "x" in records._fields:`` on a name none has is a test for an addon outside
+        the dependencies. Asked where an error would be reported: the names of a view
+        are collected at the first question about it.
+        """
+        if addon_name not in self._field_names:
+            self._field_names[addon_name] = frozenset(
+                field
+                for model in self.models(addon_name)
+                for field in self.fields(model, addon_name)
+            )
+        return name in self._field_names[addon_name]
 
     def field_sources(self, model: str, addon_name: str) -> tuple[str, ...]:
         """The models whose classes :meth:`fields` reads for a model, the model first.

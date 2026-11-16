@@ -81,7 +81,10 @@ def class_infos(
     type checking runs). A class whose definition mypy has not finished (a placeholder
     in its module's names: a deferred class of another module of the same import
     cycle, as Odoo 17's ``base.models.res_partner`` for ``base.populate``) is pending
-    even when its module no longer counts as incomplete.
+    even when its module no longer counts as incomplete. So is a class of a module
+    that mypy has loaded but not analyzed yet (it has no names at all): mypy checks a
+    module only after the modules it depends on, and nothing may say that a test
+    depends on its addon's classes of a model it never names.
     """
     infos: list[TypeInfo] = []
     pending = missing = False
@@ -92,8 +95,10 @@ def class_infos(
             infos.append(node.node)
         elif tree is None:
             missing = True
-        elif incomplete(item.module) or (
-            node is not None and isinstance(node.node, PlaceholderNode)
+        elif (
+            incomplete(item.module)
+            or (node is not None and isinstance(node.node, PlaceholderNode))
+            or not tree.names  # loaded with the module, but analyzed after it
         ):
             pending = missing = True
     return Found(infos=infos, pending=pending, missing=missing)

@@ -184,7 +184,8 @@ class Models:
         """Report a model name that no addon in the view defines.
 
         Not on a line that runs only when the model is installed (``if "m" in
-        self.env:``, :mod:`odoo_typing.guards`): the records are ``Any`` there.
+        self.env:``, :mod:`odoo_typing.guards`), or only with an addon outside the
+        dependencies (:meth:`_optional_code`): the records are ``Any`` there.
 
         Returns:
             ``Any`` if an addon outside the dependencies defines it (reported with
@@ -194,6 +195,8 @@ class Models:
         if self.registry.guarded(api.path, model, context.line):
             return AnyType(TypeOfAny.special_form)  # ``if "m" in self.env:``
         outside = self.registry.addons_outside_defining(model, addon_name)
+        if self._optional_code(outside, addon_name, context.line, api.path):
+            return AnyType(TypeOfAny.special_form)
         if outside:
             message = (
                 f'Odoo model "{model}" is defined in {not_in_dependencies(outside, addon_name)}'
@@ -202,6 +205,22 @@ class Models:
             return AnyType(TypeOfAny.special_form)
         api.fail(f'Unknown Odoo model "{model}"', context, code=ODOO_MODEL)
         return None
+
+    def _optional_code(
+        self, outside: tuple[str, ...], addon_name: str, line: int, path: str
+    ) -> bool:
+        """Whether a line runs only with an addon outside the dependencies installed.
+
+        Two signs (:mod:`odoo_typing.guards`): the line is under the guard of a field
+        that no model of the dependencies has (``if "payment_provider_id" in
+        lines._fields:``), or its function passes the name of an addon that defines the
+        model to a call (``cls.ensure_installed("sale")``).
+        """
+        registry = self.registry
+        guarded = registry.guarded_fields(path, line)
+        if any(not registry.has_field_named(name, addon_name) for name in guarded):
+            return True
+        return bool(outside) and not registry.call_strings(path, line).isdisjoint(outside)
 
     def comodel_at_use_site(
         self, comodel: Instance, owner: TypeInfo | None, api: CheckerPluginInterface

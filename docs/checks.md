@@ -38,19 +38,35 @@ plugin:
   keep the receiver's model, also through unannotated overrides of `create`, `copy`,
   `search`...
 - **`self.env.user`, `self.env.company`** are `res.users` / `res.company` records as the
-  addon sees them.
+  addon sees them; so is `self.env.website` on Odoo 20 (declared as `BaseModel`: an
+  attribute of the environment declared as records of no model is the model it is named
+  after).
 - **Methods added to `base`** (`self._phone_format(...)` from `phone_validation`) exist
   on every model of an addon that depends on the adding addon.
 - **`_inherits` and `delegate=True`**: `line.product_id.uom_id` (through `_inherits` of
   `product.template`) is the `uom.uom` record. Fields of the parents are delegated,
-  methods are not.
-- **Log-access fields**: `self.create_date` is `datetime | Literal[False]` and
+  methods are not. A delegated field is required when the parent's field is, as in Odoo:
+  `product.name` of a `product.product` is `str`.
+- **Log-access fields**: `self.create_date` is `datetime` (`create` and `write` set the
+  dates on every record; `datetime | Literal[False]` with `required_values = false`) and
   `self.create_uid` a `res.users` record, unless `_log_access` / `_auto` is `False`.
+- **Attributes a class method defines**: `cls.partner = cls.env["res.partner"].create(...)`
+  in `setUpClass` defines `partner` for the class and its subclasses, with the type of
+  the value. Plain mypy takes only `self.name = ...` of an instance method for a
+  definition, so every such line and every later `self.partner` of a test was
+  `has no attribute "partner"`, and the records were `Any`: nearly all errors of a test
+  module. The records a test class of another addon keeps (`self.product` of
+  `product`'s common test class, read in a test of `sale`) are the model as the reading
+  addon sees it. The tests are then checked like any other code.
 - **`from odoo.addons.my_base.models.x import Y`** (a custom addon) is the real class
   with the [overlay root](configuration.md#the-overlay-root), not `import-not-found`.
 - **`mapped("partner_id.name")`** is `list[str | Literal[False]]`, `mapped("line_ids")`
   the comodel's records, and `grouped("partner_id")` a `dict` from the field's values to
   records.
+- **`mapped(lambda r: r.amount)`** is `list[float]`, and the function's records when it
+  returns records. Odoo 19 and 20 declare `list[T] | BaseModel` for both, which fits no
+  parameter that takes a list (`sum(...)`, `", ".join(...)`). `mapped(name)` of a path
+  known only at run time is `Any`.
 - **`read(["name", "partner_id"])`** and `search_read(domain, ["name"])` with a literal
   list return a list of `TypedDict`s with `id` and those fields, typed as `read()` gives
   them (`partner_id` is `tuple[int, str] | Literal[False]`, x2many fields `list[int]`).
@@ -59,11 +75,26 @@ plugin:
 - **`self.env.cr`** has the methods of a cursor (`execute`, `fetchall`, `dbname`): Odoo
   18 declares it as `BaseCursor`, a base class that has none of them, so every
   `env.cr.execute(...)` was `"BaseCursor" has no attribute "execute"`.
+- **`self.env.context`** is a mapping on Odoo 20 (`.get(...)`, `["key"]`, `dict(...)`,
+  `**context`). Odoo 20 declares it as `frozendict`, a class whose `__new__` returns a
+  `MappingProxyType` and that has no method of its own, so every
+  `env.context.get(...)` was `"frozendict" has no attribute "get"`. A class without
+  bases whose `__new__` builds another class's object has that class as its base.
 - **Controllers**: `odoo.http.request` is a `Request` and `request.env` an
   `Environment`, so `request.env["res.partner"]` is checked like `self.env`, in every
   module, also one without model classes (a controller helper) and on warm runs. (Odoo
   17-19 build `request` with werkzeug, which mypy does not follow; Odoo 20 declares
-  `env` as possibly `None`.)
+  `env` as possibly `None`.) A controller's own `self.env` (Odoo 20, declared
+  `Environment | None` by Odoo) is an `Environment` too; an `env` that an addon's own
+  class declares as possibly `None` stays so.
+- **`from odoo import Command, _, SUPERUSER_ID`** on Odoo 19 and 20: `odoo` has no
+  `__init__.py` there, and gets these names from `odoo/init.py`
+  (`odoo.Command = Command`), which mypy does not follow: each such import was
+  `Module "odoo" has no attribute "Command"`, and the name was `Any`. The package gets
+  the names a module of its own binds on it.
+- **`table.field`** of a query's table (Odoo 20's `TableSQL`): a class that names its
+  attribute hook after another method (`__getattr__ = __getitem__`) has that method as
+  the hook; mypy alone reports every attribute of such a class.
 
 **Odoo 17** declares no types at all: the plugin gives its fields, `self.env`,
 `self.id`, record iteration, `create()` and the `api` decorators the types Odoo 18
@@ -147,10 +178,21 @@ self.env`, then `if has_sale:`) or a method of the same class whose body is
 `return <test>` (`if self._has_sale():`).
 
 A **field** that another addon may add is guarded the same way by
-`"x_flag" in self._fields`, `self._fields.get("x_flag")` or `hasattr(record, "x_flag")`.
-There the name is not reported as an unknown key of `vals`, a domain field, or a field of
-`mapped()` / `filtered()` / `sorted()` / `grouped()` / `read()` (whatever the records
-are).
+`"x_flag" in self._fields`, `self._fields.get("x_flag")`, `"x_flag" in self.env["model"]`
+or `hasattr(record, "x_flag")`. There the name is not reported as an unknown key of
+`vals`, a domain field, or a field of `mapped()` / `filtered()` / `sorted()` /
+`grouped()` / `read()` (whatever the records are).
+
+Code written **for an addon outside the dependencies** also uses that addon's models.
+A model is not reported (and its records are `Any`):
+
+- under the guard of a field that no model of the dependencies has
+  (`if "payment_provider_id" in lines._fields:` in `account`, then
+  `self.env["payment.provider"]`): only another addon can add it;
+- in a function that passes the name of the addon that defines the model to a call
+  (`cls.ensure_installed("sale")`, `modules._get("sale").state == "installed"`, then
+  `cls.env["sale.order"]`). A name inside a domain or a comparison
+  (`("type", "=", "sale")`) does not count.
 
 ## Field definitions and field names: `odoo-field-ref`
 
@@ -648,7 +690,9 @@ With real recordset types, some plain mypy codes appear more often:
   (`if record.name:`) first.
 - `arg-type` with `int | NewId` (`record.id` of possibly new records, Odoo 17 and 18):
   pass `record.ids` / `record._origin.id`, or check `isinstance(record.id, int)`.
-  `Command.link` / `update` / `delete` / `unlink` take one as Odoo does.
+  `Command.link` / `update` / `delete` / `unlink` and `browse` take one as Odoo does;
+  `browse` also takes `None` and `False` (`browse(context.get("active_id"))`), which
+  give no records.
 - `assignment` between two classes of the same model (`AccountMoveLine` of two addons):
   use another variable name, or annotate it.
 - `assignment` and then `attr-defined` where a variable is reused: `partner = False`

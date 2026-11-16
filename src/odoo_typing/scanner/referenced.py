@@ -30,7 +30,8 @@ def referenced_models(tree: ast.Module, nodes: NodeIndex | None = None) -> set[s
 
     ``env[NAME]`` counts when ``NAME`` is a module-level string constant, and
     ``env.user`` / ``env.company`` / ``env.companies`` name ``res.users`` and
-    ``res.company``, and so do ``.create_uid`` / ``.write_uid`` (``res.users``).
+    ``res.company``, and so do ``.create_uid`` / ``.write_uid`` (``res.users``). Any other
+    ``env.<name>`` names the model ``<name>``, if there is one (``env.website``).
     A subscript of any other expression counts when its key looks like a model name
     (``ENV["res.partner"]``, ``environment[...]``: aliases of ``env``); a key that is
     no model only adds an edge to nothing.
@@ -49,6 +50,10 @@ def referenced_models(tree: ast.Module, nodes: NodeIndex | None = None) -> set[s
     for attribute in index.of(ast.Attribute):
         if attribute.attr in ENV_RECORDS and _is_env(attribute.value):
             models.add(ENV_RECORDS[attribute.attr])
+        elif _is_env(attribute.value):
+            # ``env.website`` (Odoo 20): records of the model the attribute is named
+            # after. Any other name (``env.cr``) only adds an edge to nothing.
+            models.add(attribute.attr)
         elif attribute.attr in LOG_ACCESS_USERS:
             models.add("res.users")  # ``record.create_uid``: a res.users record
     return models

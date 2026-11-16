@@ -524,3 +524,64 @@ def test_dmypy_domain_type_parameter_outside_addons_widens_lists(
     assert [line.split(": error: ")[0] for line in before if "error" in line] == ["caller.py:11"]
     assert 'incompatible type "Domain"' in "".join(before)
     assert [line for line in after if "error" in line] == []
+
+
+# -- attributes a class method defines (hooks/class_attributes.py) ----------------------
+
+CLASS_COMMON = """
+from odoo.tests.common import TransactionCase
+
+
+class Common(TransactionCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.thing = cls.env["x.thing"].create({"name": "A"})
+"""
+CLASS_TEST = """
+from .common import Common
+
+
+class TestThing(Common):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        reveal_type(cls.thing)
+
+    def test_read(self) -> None:
+        reveal_type(self.thing.name)
+        self.other
+"""
+
+
+def test_dmypy_attributes_of_class_methods_follow_edits(daemon: Daemon, tmp_path: Path) -> None:
+    tests = tmp_path / "addons/my_mod/tests"
+    tests.mkdir()
+    (tests / "__init__.py").write_text("from . import test_thing\n")
+    (tests / "common.py").write_text(textwrap.dedent(CLASS_COMMON))
+    (tests / "test_thing.py").write_text(textwrap.dedent(CLASS_TEST))
+    first = daemon.check()
+    with (tests / "common.py").open("a") as handle:
+        handle.write("        cls.other = cls.thing.name\n")
+    second = daemon.check()
+    (tests / "common.py").write_text(textwrap.dedent(CLASS_COMMON) + "undefined_name\n")
+    broken = daemon.check()  # mypy analyzes the module's top level once more
+    (tests / "common.py").write_text(textwrap.dedent(CLASS_COMMON))
+    third = daemon.check()
+
+    typed = [
+        'tests/test_thing.py:9: note: Revealed type is "dep_mod.models.Thing"',
+        'tests/test_thing.py:12: note: Revealed type is "str | Literal[False]"',
+    ]
+    missing = 'tests/test_thing.py:13: error: "TestThing" has no attribute "other"  [attr-defined]'
+    undefined = 'tests/common.py:10: error: Name "undefined_name" is not defined  [name-defined]'
+    tests_only = [
+        [line for line in lines if line.startswith("tests/")]
+        for lines in (first, second, broken, third)
+    ]
+    assert tests_only == [
+        [*typed, missing],
+        typed,
+        [*typed, missing, undefined],
+        [*typed, missing],
+    ]

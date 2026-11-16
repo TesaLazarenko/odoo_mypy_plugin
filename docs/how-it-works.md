@@ -91,6 +91,31 @@ once it can be.
   named in `env["..."]` and comodel literals, and the comodels of the relational fields
   its classes inherit (so `self.partner_id.<field added by a dependency>` resolves).
 
+  A file that imports test modules of other addons also gets the classes of the models
+  those modules name (and the ones they import in turn), as its own addon sees them: a
+  test reads the records its base classes keep (`self.partner` of another addon's
+  common test class) without ever naming their model. A class of a module that mypy
+  has loaded but not analyzed yet is never merged into a view class.
+
+  For the `odoo` package of Odoo 19+, which has no `__init__.py`, the same hook adds
+  the imports of the names a module of the package binds on it (`odoo.Command =
+  Command` in `odoo/init.py`) to the package's empty module, so `from odoo import
+  Command` is the class.
+
+- **Attributes of any class.** mypy asks for the MRO hook of every class, before it
+  analyzes the class body. For each class method the plugin marks the first parameter
+  as the method's `self`, so mypy itself defines the attributes of
+  `cls.name = value` (types, `cls.rows = []` / `.append`, later assignments). mypy
+  keeps such definitions for instances only: the names assigned through the first
+  parameter are kept in the class's metadata (so in mypy's cache), and
+  `get_class_attribute_hook`, which mypy asks right before it looks an attribute up on
+  a class, makes the definition readable there. An attribute hook then re-resolves a
+  record kept on a class that is no model (a test case) from the reading addon, like a
+  relational field. A class without bases whose `__new__` returns another class's
+  object (Odoo 20's `frozendict`; read from the source, since mypy drops the function
+  bodies of modules whose errors it does not show) gets that class as its base, and a
+  class with `__getattr__ = <method>` that method as its hook.
+
 - **`get_customize_class_mro_hook`** gives each model class the MRO of its registry
   class, computed by the registry. It is never copied from a base class, so it does not
   depend on the order in which mypy analyzes the classes of an import cycle.

@@ -6,15 +6,52 @@ Without them mypy may type-check a file before the classes of the models it refe
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Iterable
 from pathlib import Path
 
+from odoo_typing.addons import Addon
 from odoo_typing.config import Settings
 from odoo_typing.registry.annotations import AnnotatedModels
 from odoo_typing.registry.scans import IndexLoader, ScanCache
-from odoo_typing.scanner import Contribution
+from odoo_typing.scanner import Contribution, SourceError, parse_source
 
-__all__ = ["DependencyEdges"]
+__all__ = ["DependencyEdges", "imported_names"]
+
+IMPORT_LIMIT = 200  # modules followed from one file: far above any chain of test classes
+
+
+def _module_file(addon: Addon, module: str) -> Path | None:
+    """The file of a module of an addon that no scan lists (a test module)."""
+    relative = module[len(addon.module_prefix) :].strip(".").split(".")
+    base = addon.path.joinpath(*relative)
+    for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def imported_names(tree: ast.Module, package: str) -> frozenset[str]:
+    """What the import statements of a module name, as dotted names.
+
+    ``from a.b import c`` gives ``a.b`` and ``a.b.c``: ``c`` may be a module.
+
+    Args:
+        tree: The module's syntax tree.
+        package: The package its relative imports are relative to.
+    """
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            parts = package.split(".") if package else []
+            base = parts[: len(parts) - (node.level - 1)] if node.level else []
+            source = ".".join([*base, *([node.module] if node.module else [])])
+            if source:
+                found.add(source)
+                found.update(f"{source}.{alias.name}" for alias in node.names)
+    return frozenset(found)
 
 
 class DependencyEdges(AnnotatedModels):
@@ -30,6 +67,7 @@ class DependencyEdges(AnnotatedModels):
         self._edge_addon_memo: dict[str, frozenset[str]] = {}
         self._view_addon_memo: dict[tuple[str, str], frozenset[str]] = {}
         self._name_sets: dict[frozenset[str], frozenset[str]] = {}  # equal sets kept once
+        self._imports: dict[Path, frozenset[str]] = {}  # of test modules of other addons
 
     def covered_models(self, module: str, path: str | Path | None = None) -> frozenset[str]:
         """Models whose whole registry class a module's dependency edges cover.
@@ -66,6 +104,54 @@ class DependencyEdges(AnnotatedModels):
         for model in self.covered_models(module, path):
             modules |= self.view_modules(model, addon)
         return frozenset(modules)
+
+    def inherited_view_modules(self, path: str | Path, imported: Iterable[str]) -> frozenset[str]:
+        """Modules to analyze before a file that imports modules of other addons.
+
+        A test class keeps the records its base classes create (``self.partner`` of
+        another addon's common test class), and reads them as its own addon sees their
+        model. The file never names the model, so nothing else makes mypy analyze its
+        addon's classes of that model first. The imported modules that no addon scan
+        reaches (tests) say which models: those they name, and those named by the
+        modules of other addons they import in turn.
+
+        Args:
+            path: The importing file.
+            imported: The modules it imports, as mypy names them.
+        """
+        addon = self.addon_name_for_path(path)
+        if addon is None:
+            return frozenset()
+        modules: set[str] = set()
+        seen: set[str] = set()
+        pending = list(imported)
+        while pending and len(seen) < IMPORT_LIMIT:
+            name = pending.pop()
+            found = self.addons.resolve_module(name)
+            if name in seen or found is None or found[0].name == addon:
+                continue
+            seen.add(name)
+            if self.module_scan(found[1]) is not None:
+                continue  # a module the addon itself loads: not a test
+            source = _module_file(found[0], found[1])
+            if source is None:
+                continue  # a name in a module, not a module
+            for model in self.covered_models(found[1], source):
+                if self.visible(model, addon):
+                    modules |= self.view_modules(model, addon)
+            pending.extend(self._imports_of(source, found[1]))
+        return frozenset(modules)
+
+    def _imports_of(self, path: Path, module: str) -> frozenset[str]:
+        """The modules a source file imports (and what it imports from them), as dotted names."""
+        if path not in self._imports:
+            try:
+                tree = parse_source(path)
+            except SourceError:
+                tree = None
+            package = module if path.name == "__init__.py" else module.rpartition(".")[0]
+            self._imports[path] = imported_names(tree, package) if tree is not None else frozenset()
+        return self._imports[path]
 
     def loaded_with(
         self, model: str, addon_name: str, module: str, path: str | Path | None = None
