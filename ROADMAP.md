@@ -1903,6 +1903,10 @@ addon-і, був мовчки неповним (тест читав поле —
   шляхом addons може визначати лише невідоме.
 - *Ключі vals, які читає `create` / `write`* (`vals.pop("counterpart_account_id", None)`):
   сканер записує їх у `Contribution.value_keys`, перевірка ключів їх приймає.
+- *Параметр, який метод перевіряє за `_name`* (`source_ref._name == "mail.template"`,
+  також у методі класу, якому він передає параметр): приймає записи цих моделей
+  (`Contribution.dispatches`). Odoo 20 оголошує `message_post_with_source(source_ref: str
+  | IrUiView)`, а сам передає шаблон.
 - *Записи — `Sequence` і `Set`* ([hooks/registered.py](src/odoo_typing/hooks/registered.py)):
   класи, з якими модуль моделей Odoo реєструє `BaseModel` (`register`), читаються з його
   коду; `random.sample(products, 2)` — `list[ProductProduct]`.
@@ -1929,7 +1933,7 @@ addon-і, був мовчки неповним (тест читав поле —
 | 17 | 10 903 | 511 | **394** | 165 → 95 |
 | 18 | 18 273 | 592 | **401** | 175 → 99 |
 | 19 | 20 175 | 746 | **544** | 207 → 134 |
-| 20 | 22 768 | 1 081 | **844** | 240 → 152 |
+| 20 | 22 768 | 1 081 | **840** | 240 → 148 |
 
 Кожну нову і кожну зниклу помилку прочитано за рядком коду (`dd.py` по кожному кроку):
 нових помилок 0 на всіх версіях (окрім тих самих рядків з іншим текстом типу), зниклі —
@@ -1945,14 +1949,13 @@ addon-і, був мовчки неповним (тест читав поле —
 виконатись, і `root_delayable.delay()` після нього (`queue_job`); там, де гілки зустрічаються,
 перевизначена змінна — `Any`.
 
-Тести: 17 — 803, 18 — 809, 19 — 823, 20 — 826.
+Тести: 17 — 804, 18 — 810, 19 — 824, 20 — 827.
 
 **Лишилось** (правдиві за оголошеннями Odoo): `X | Literal[False]` необов'язкових полів
 (`assertIn(..., message.body)`, `abs(picking.scheduled_date - out_date)` — з наслідком
 mypy на тому ж рядку, `>=` з `object`), `NewId`, `Any | None` з `context.get(...)`,
 `Char.size: int | None`; анотації Odoo, вужчі за код, що їх кличе
-(`message_post_with_source(mail.template)` при `source_ref: str | IrUiView`,
-`_track_execute` зі списком при `set[str]`); справжні знахідки (`product_template`, що
+(`_track_execute` зі списком при `set[str]`); справжні знахідки (`product_template`, що
 може бути `False`, у контролерах `website_sale`; список у `Char` поля
 `assignment_domain`; атрибут класу тесту, що затіняє метод базового класу).
 

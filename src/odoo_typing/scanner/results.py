@@ -157,6 +157,9 @@ class Contribution:
             ``None`` if neither tells.
         value_keys: The keys its ``create`` / ``write`` read from the values they are
             given (``vals.pop("counterpart_account_id", None)``), in source order.
+        dispatches: The parameters of its methods that take records of the models they
+            test (``source_ref._name == "mail.template"``): ``(method, parameter,
+            models)``.
     """
 
     addon: str
@@ -173,6 +176,7 @@ class Contribution:
     log_access: bool | None = None
     abstract: bool | None = None
     value_keys: tuple[str, ...] = ()
+    dispatches: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
 
     @property
     def fullname(self) -> str:

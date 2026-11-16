@@ -141,6 +141,10 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   `list[ProductProduct]`, a `Sequence[Product]` parameter takes products.
 - A key that a model's `create` / `write` reads from the values
   (`vals.pop("counterpart_account_id", None)`) is no `odoo-vals-key` error.
+- A parameter that its method tests against model names (`source_ref._name ==
+  "mail.template"`, also in a method of the class it passes the parameter to) takes
+  the records of those models: `message_post_with_source(template)` on Odoo 20, which
+  declares `source_ref: str | IrUiView`.
 - `create()` takes any iterable of values (`create({...} for i in range(3))`), which
   Odoo reads once.
 - A container of records without an annotation takes records of no model too

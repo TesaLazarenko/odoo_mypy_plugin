@@ -74,6 +74,48 @@ FIELDS_MODULE = "odoo.fields"
 class RecordsetHooks(Hooks):
     """Type what recordset methods return; check the field names and paths they are given."""
 
+    def dispatched(self, info: TypeInfo, method: str) -> dict[str, frozenset[str]]:
+        """The parameters of a method of a model class that take records of models it tests.
+
+        From the classes of the MRO that define the method
+        (:func:`odoo_typing.scanner.class_bodies.record_dispatches`).
+        """
+        found: dict[str, set[str]] = {}
+        for base in info.mro:
+            if method not in base.names:
+                continue
+            contribution = self.registry.contribution(base.fullname)
+            for name, parameter, models in contribution.dispatches if contribution else ():
+                if name == method:
+                    found.setdefault(parameter, set()).update(models)
+        return {parameter: frozenset(models) for parameter, models in found.items()}
+
+    def dispatch_signature(self, method: str, ctx: MethodSigContext) -> FunctionLike:
+        """A parameter that the method tests against model names takes their records.
+
+        ``message_post_with_source(source_ref: str | IrUiView)`` (Odoo 20) passes
+        ``source_ref`` to ``_get_source_from_ref``, which tests ``source_ref._name ==
+        "mail.template"``: Odoo's own code passes a template, and every such call was an
+        ``arg-type`` error. The parameter also takes the records of the tested models, as
+        the reading addon sees them.
+        """
+        signature = ctx.default_signature
+        receiver = receiver_type(ctx.type)
+        if not isinstance(signature, CallableType) or not isinstance(receiver, Instance):
+            return signature
+        accepted = self.dispatched(receiver.type, method)
+        reader = self.registry.addon_name_for_path(ctx.api.path)
+        if not accepted or reader is None:
+            return signature
+        arguments = list(signature.arg_types)
+        for position, name in enumerate(signature.arg_names):
+            models = accepted.get(name or "", frozenset())
+            found = (self._models.env_model(model, reader, ctx.api) for model in sorted(models))
+            extra: list[Type] = [records for records in found if records is not None]
+            if extra:
+                arguments[position] = UnionType.make_union([arguments[position], *extra])
+        return signature.copy_modified(arg_types=arguments)
+
     def read_result(self, method: str, ctx: MethodContext) -> Type:
         """``read(["a", "b"])`` / ``search_read(fields=[...])``: a list of TypedDicts.
 

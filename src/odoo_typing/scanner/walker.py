@@ -25,6 +25,7 @@ from odoo_typing.guards import model_guards
 from odoo_typing.node_index import index_nodes
 from odoo_typing.scanner.annotations import annotation_aliases
 from odoo_typing.scanner.class_bodies import (
+    NAME_TEST,
     abstract,
     as_names,
     declared_comodels,
@@ -34,6 +35,7 @@ from odoo_typing.scanner.class_bodies import (
     log_access,
     model_name,
     read_value_keys,
+    record_dispatches,
 )
 from odoo_typing.scanner.evaluation import UNKNOWN, assign, class_attributes
 from odoo_typing.scanner.field_classes import (
@@ -101,7 +103,11 @@ def scan_file_classes(addon: Addon, path: Path) -> tuple[Contribution, ...]:
         tree = parse_bytes(source, path)
     except SourceError:
         return ()
-    file = _File(module=addon.module_prefix, package=addon.module_prefix)
+    file = _File(
+        module=addon.module_prefix,
+        package=addon.module_prefix,
+        tests_names=bool(NAME_TEST.search(source)),
+    )
     walker._walk(tree.body, file)
     return tuple(file.contributions)
 
@@ -117,6 +123,7 @@ class _File:
     # What the module's names are bound to (see odoo_typing.scanner.field_classes).
     origins: dict[str, str] = field(default_factory=dict)
     classes: dict[str, FieldClass] = field(default_factory=dict)  # by class name
+    tests_names: bool = False  # the source compares a ``_name`` (``x._name == "m"``)
 
 
 class _ImportWalker:
@@ -197,7 +204,7 @@ class _ImportWalker:
             self.errors.append(error)
             return
         nodes = index_nodes(tree)
-        file = _File(module=module, package=package)
+        file = _File(module=module, package=package, tests_names=bool(NAME_TEST.search(source)))
         self._names[module] = file.names
         self._origins[module] = file.origins
         self._walk(tree.body, file)
@@ -338,6 +345,7 @@ class _ImportWalker:
                 log_access=log_access(attrs),
                 abstract=abstract(node, attrs),
                 value_keys=read_value_keys(node),
+                dispatches=record_dispatches(node) if file.tests_names else (),
             )
         )
 

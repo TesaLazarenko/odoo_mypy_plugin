@@ -827,6 +827,12 @@ With real recordset types, some plain mypy codes appear more often:
   follow. A parameter of a registered class takes records: `Sequence[T]` with `T` the
   records (`random.sample(products, 2)` is `list[ProductProduct]`), `Sequence[X]`
   records of a class of `X`.
+- A **parameter its method tests against model names** takes the records of those
+  models, whatever its annotation: Odoo 20 declares `message_post_with_source(source_ref:
+  str | IrUiView)`, and the method passes `source_ref` to `_get_source_from_ref`, which
+  tests `source_ref._name == "mail.template"`. The scan reads `p._name == "m"` (`!=`,
+  `in (...)`) of a parameter in the methods of a model class, also through the methods of
+  the class it passes the parameter to.
 - `filter(None, [prefix, record.name])` takes values that may be `False`: `None` as the
   function drops every falsy item.
 - `Command.set(["account.tag_x", "own_record_1", tag.id])` (Odoo 19, 20 declare

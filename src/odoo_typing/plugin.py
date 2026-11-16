@@ -894,10 +894,32 @@ class OdooPlugin(Plugin):
             widen = partial(self._domains.widen_signature, None)
         if fullname.rpartition(".")[2] == "filtered":
             return partial(self._recordsets.filtered_signature, widen)
-        if widen is None:
-            # ``env["stock.rule"].Procurement(...)``, ``random.Random().sample(records, 2)``
-            return self._field_tuple_hook(fullname) or self._registered_hook(fullname)
-        return widen
+        if widen is not None:
+            return widen
+        # ``env["stock.rule"].Procurement(...)``, ``random.Random().sample(records, 2)``
+        found = self._field_tuple_hook(fullname) or self._registered_hook(fullname)
+        dispatch = self._dispatch_hook(fullname)
+        if found is not None and dispatch is not None:
+            return partial(_signature_then, found, dispatch)
+        return found or dispatch
+
+    def _dispatch_hook(self, fullname: str) -> Callable[[MethodSigContext], FunctionLike] | None:
+        """A method of a model class whose parameter takes records of the models it tests.
+
+        See :meth:`RecordsetHooks.dispatch_signature`. A merged view class has no full name
+        to look up: its hook looks at the receiver of the call.
+        """
+        owner, _, method = fullname.rpartition(".")
+        if not self._modules or not owner or method.startswith("__"):
+            return None
+        hook = partial(self._recordsets.dispatch_signature, method)
+        symbol = lookup_fully_qualified(owner, self._modules, raise_on_missing=False)
+        if symbol is None:  # a view class made in the module being checked
+            return hook if self._models.registry.addons.addon_for_module(owner) else None
+        info = symbol.node
+        if not isinstance(info, TypeInfo) or not info.has_base(self._models.profile.base_model):
+            return None
+        return hook if self._recordsets.dispatched(info, method) else None
 
     def _registered_hook(
         self, fullname: str

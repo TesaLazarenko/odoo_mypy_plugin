@@ -7,13 +7,15 @@ The model name and its ``_inherit`` parents, the methods, the models it delegate
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping
+import re
+from collections.abc import Iterator, Mapping
 from typing import Final
 
 from odoo_typing.scanner.evaluation import UNKNOWN
 from odoo_typing.scanner.syntax import RELATIONAL_FIELDS, callee_name, comodel_argument
 
 __all__ = [
+    "NAME_TEST",
     "abstract",
     "as_names",
     "declared_comodels",
@@ -23,6 +25,7 @@ __all__ = [
     "log_access",
     "model_name",
     "read_value_keys",
+    "record_dispatches",
 ]
 
 # Bases of the classes of models that have a table (``_abstract = False``).
@@ -226,3 +229,114 @@ def _read_key(node: ast.AST, names: set[str]) -> str | None:
 
 def _text(node: ast.expr) -> str | None:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+# A comparison of a name's ``_name`` (``source_ref._name == "mail.template"``).
+NAME_TEST: Final = re.compile(rb"\w\._name\s*(?:[=!]=|(?:not\s+)?in\b)")
+NAME_OPERATORS: Final = (ast.Eq, ast.NotEq, ast.In, ast.NotIn)
+
+
+def record_dispatches(node: ast.ClassDef) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """The parameters of a class's methods that take records of the models they test.
+
+    ``_get_source_from_ref(self, source_ref)`` of ``mail.thread`` tests
+    ``source_ref._name == "mail.template"`` (and ``"ir.ui.view"``): the parameter takes
+    records of those models, whatever it is annotated with. So does a parameter that a
+    method passes on to such a parameter of a method of the class
+    (``message_post_with_source(source_ref)`` calls ``self._get_source_from_ref(source_ref)``).
+
+    Returns:
+        ``(method, parameter, models)`` for each such parameter.
+    """
+    methods = {
+        statement.name: statement
+        for statement in node.body
+        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+    positional = {
+        name: [argument.arg for argument in (f.args.posonlyargs + f.args.args)[1:]]
+        for name, f in methods.items()
+    }
+    tested: dict[tuple[str, str], set[str]] = {}
+    passed: list[tuple[str, str, str, str]] = []  # method, parameter, callee, its parameter
+    for name, function in methods.items():
+        receiver = function.args.args[0].arg if function.args.args else None
+        own = {*positional[name], *(argument.arg for argument in function.args.kwonlyargs)}
+        for item in ast.walk(function):
+            for parameter, models in _name_tests(item, own):
+                tested.setdefault((name, parameter), set()).update(models)
+            callee = _own_method(item, receiver, methods)
+            if callee is not None and isinstance(item, ast.Call):
+                passed += _passed(name, item, own, positional[callee])
+    changed = True
+    while changed:  # through the methods a method calls, to a fixed point
+        changed = False
+        for name, parameter, callee, target in passed:
+            found = tested.get((callee, target), set())
+            known = tested.setdefault((name, parameter), set())
+            if not found <= known:
+                known |= found
+                changed = True
+    return tuple(
+        (method, parameter, tuple(sorted(models)))
+        for (method, parameter), models in tested.items()
+        if models
+    )
+
+
+def _own_method(node: ast.AST, receiver: str | None, methods: Mapping[str, object]) -> str | None:
+    """The method of the class that a node calls on ``self``, if it is such a call."""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == receiver
+        and node.func.attr in methods
+    ):
+        return node.func.attr
+    return None
+
+
+def _name_tests(node: ast.AST, parameters: set[str]) -> Iterator[tuple[str, set[str]]]:
+    """``p._name == "m"`` / ``"m" == p._name`` / ``p._name in ("m", "n")`` of a parameter."""
+    if not isinstance(node, ast.Compare):
+        return
+    if len(node.ops) != 1 or not isinstance(node.ops[0], NAME_OPERATORS):
+        return
+    for tested, other in ((node.left, node.comparators[0]), (node.comparators[0], node.left)):
+        if (
+            isinstance(tested, ast.Attribute)
+            and tested.attr == "_name"
+            and isinstance(tested.value, ast.Name)
+            and tested.value.id in parameters
+        ):
+            items = other.elts if isinstance(other, ast.Tuple | ast.List | ast.Set) else [other]
+            models = {
+                item.value
+                for item in items
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            }
+            if models:
+                yield tested.value.id, models
+
+
+def _passed(
+    name: str, call: ast.Call, parameters: set[str], callee_parameters: list[str]
+) -> list[tuple[str, str, str, str]]:
+    """The parameters a call of a method of the class passes on, and where they go."""
+    callee = call.func.attr if isinstance(call.func, ast.Attribute) else ""
+    found = [
+        (name, argument.id, callee, callee_parameters[position])
+        for position, argument in enumerate(call.args)
+        if isinstance(argument, ast.Name)
+        and argument.id in parameters
+        and position < len(callee_parameters)
+    ]
+    found += [
+        (name, keyword.value.id, callee, keyword.arg)
+        for keyword in call.keywords
+        if keyword.arg is not None
+        and isinstance(keyword.value, ast.Name)
+        and keyword.value.id in parameters
+    ]
+    return found
