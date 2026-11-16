@@ -148,6 +148,29 @@ class Line(models.Model):
         reveal_type(self.label)
         reveal_type(self.day)
         reveal_type(self.display_name)
+
+    def stored(self, flag: bool) -> None:
+        # A variable with one value has the field's value type.
+        once = self.name
+        reveal_type(once)
+        # One that gets several keeps the type Odoo declares: mypy takes a variable's
+        # type from its first value, and the next one may be of a field that is not
+        # required.
+        if flag:
+            text = self.name
+        else:
+            text = self.note
+        reveal_type(text)
+        rows = []
+        rows.append((self.name, self.display_name, 1))
+        rows = [(False, False, 2)]
+        values = {"name": self.name}
+        values["name"] = False
+        # A later value fits a variable typed by its first one.
+        lines = []
+        lines.append("x")
+        lines.append(self.name)
+        reveal_type(lines)
 """
 
 
@@ -175,4 +198,7 @@ def test_required_values_read_without_false(run_mypy: RunMypy) -> None:
         "str",
         "datetime.date",
         "str",
+        "str",  # a variable with one value
+        "str | Literal[False]",  # a variable with several values; no error for the rest
+        "list[str]",
     ]

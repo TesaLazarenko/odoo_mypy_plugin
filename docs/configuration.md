@@ -129,9 +129,13 @@ as the merged definitions of the model leave it) and `display_name` as their val
 without `| Literal[False]`: `", ".join(records.mapped("name"))`, `Telegram(bot.token)`
 and `format_date(env, rec.date)` then type-check. On the 37 core addons of the
 benchmark's `big` profile about half of the `... | Literal[False]` errors are of required
-fields or `display_name`. Odoo does read `False` there for a new record (`new()`, a
-form's onchange) before the value is set: `required_values = false` reads these fields
-as Odoo declares them, for code that must handle such records.
+fields or `display_name`. A value that goes into a variable with several values keeps
+the declared type: mypy takes a variable's type from its first value, so
+`date = move.date` (required) would make `date = line.date` (not required) in the other
+arm of an `if` an error; the same holds for the items of a list or dict that is filled
+in several statements. Odoo does read `False` for a required field of a new record
+(`new()`, a form's onchange) before the value is set: `required_values = false` reads
+these fields as Odoo declares them, for code that must handle such records.
 
 **`literal_selection = true`** reads a `Selection` field whose keys are literal
 (including the `selection_add` of the addon's view) as

@@ -646,10 +646,6 @@ With real recordset types, some plain mypy codes appear more often:
 - `union-attr` / `arg-type` with `... | Literal[False]`: a field that is not required
   read as `str | Literal[False]` (Odoo's own typing). Check the value
   (`if record.name:`) first.
-- `assignment` where a variable takes a required field and then one that is not
-  (`name = move.name`, later `name = partner.ref`): the first value makes it `str`.
-  Annotate the variable, or read the fields as Odoo declares them
-  (`required_values = false`).
 - `arg-type` with `int | NewId` (`record.id` of possibly new records, Odoo 17 and 18):
   pass `record.ids` / `record._origin.id`, or check `isinstance(record.id, int)`.
   `Command.link` / `update` / `delete` / `unlink` take one as Odoo does.

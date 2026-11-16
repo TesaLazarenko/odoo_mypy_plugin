@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from mypy.lookup import lookup_fully_qualified
-from mypy.nodes import MemberExpr, TypeInfo
+from mypy.nodes import Context, Expression, MemberExpr, TypeInfo
 from mypy.plugin import AttributeContext, CheckerPluginInterface, MethodSigContext
 from mypy.types import (
     AnyType,
@@ -32,7 +32,7 @@ from odoo_typing.references import resolve_path
 from odoo_typing.scanner import FieldInfo
 from odoo_typing.vals import RECORDS, VALUE_TYPES, stored, value_type_named
 
-__all__ = ["FieldValueHooks", "without_false"]
+__all__ = ["FieldValueHooks"]
 
 # Field classes whose reading ``_value_get`` types (``Image`` is a ``Binary``).
 VALUE_KINDS = frozenset({"Binary", "Reference", "Selection"})
@@ -74,7 +74,9 @@ class FieldValueHooks(Hooks):
         """``required_values``: a required field (and ``display_name``) without ``False``.
 
         Odoo reads ``False`` for a required field of a new record or of a form whose
-        value is not set yet; code that reads saved records does not see it.
+        value is not set yet; code that reads saved records does not see it. A value
+        that goes into a variable with several values keeps the declared type (see
+        :meth:`_stored`).
         """
         member = ctx.context
         records = record_type(ctx)
@@ -88,9 +90,29 @@ class FieldValueHooks(Hooks):
         if not isinstance(value, UnionType):
             return signature
         kept = [item for item in value.items if not _is_false(item)]
-        if len(kept) == len(value.items):
+        if len(kept) == len(value.items) or self._stored(member, ctx.api):
             return signature
         return signature.copy_modified(ret_type=make_simplified_union(kept))
+
+    def display_name(self, ctx: AttributeContext) -> Type:
+        """``required_values``: ``display_name`` (annotated on ``BaseModel``) without ``False``."""
+        value = get_proper_type(ctx.default_attr_type)
+        if ctx.is_lvalue or not isinstance(value, UnionType) or self._stored(ctx.context, ctx.api):
+            return ctx.default_attr_type
+        return make_simplified_union([item for item in value.items if not _is_false(item)])
+
+    def _stored(self, expression: Context, api: CheckerPluginInterface) -> bool:
+        """Whether a value read goes into a variable that gets several values.
+
+        mypy takes a variable's type from its first value: ``date = move.date`` (a
+        required field) would make ``date = line.date`` (one that is not) an error in
+        the other arm of an ``if``, and ``rows.append((tag.display_name, ...))`` would
+        make ``rows = [(False, ...)]`` one. There the field keeps the type Odoo declares.
+        """
+        if not isinstance(expression, Expression):
+            return False
+        local = self._local_values(api)
+        return local is not None and local.stored(expression)
 
     def _value_get(
         self, descriptor: Instance, signature: CallableType, ctx: MethodSigContext
@@ -231,14 +253,6 @@ class FieldValueHooks(Hooks):
                 return ctx.default_attr_type
             items.append(item)
         return make_simplified_union(items)
-
-
-def without_false(ctx: AttributeContext) -> Type:
-    """``required_values``: ``display_name`` (annotated on ``BaseModel``) without ``False``."""
-    value = get_proper_type(ctx.default_attr_type)
-    if ctx.is_lvalue or not isinstance(value, UnionType):
-        return ctx.default_attr_type
-    return make_simplified_union([item for item in value.items if not _is_false(item)])
 
 
 def _is_false(item: Type) -> bool:

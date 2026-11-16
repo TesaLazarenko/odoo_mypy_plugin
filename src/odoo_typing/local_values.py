@@ -23,19 +23,24 @@ from mypy.nodes import (
     AssignmentStmt,
     Block,
     CallExpr,
+    ConditionalExpr,
+    DictExpr,
     Expression,
     ExpressionStmt,
     ForStmt,
     FuncItem,
     IfStmt,
     IndexExpr,
+    ListComprehension,
     ListExpr,
     MatchStmt,
     MemberExpr,
     NameExpr,
     OperatorAssignmentStmt,
+    OpExpr,
     RaiseStmt,
     ReturnStmt,
+    SetExpr,
     Statement,
     SymbolNode,
     TryStmt,
@@ -160,7 +165,26 @@ class LocalValues:
         self._loops = tuple(collector.loops)
         self._arms = tuple(collector.arms)
         self._ending = frozenset(collector.ending)
+        self._stored: frozenset[int] | None = None  # see stored()
         self.returns: tuple[ReturnStmt, ...] = tuple(collector.returns)
+
+    def stored(self, expression: Expression) -> bool:
+        """Whether an expression gives the first value of a variable that gets several.
+
+        mypy takes a variable's type from its first value: ``date = move.date`` where
+        ``date`` is assigned again, an item of the first tuple appended to an empty
+        list. A value that is typed more narrowly there makes a later one an error; the
+        later values fit either way.
+        """
+        if self._stored is None:
+            found: set[int] = set()
+            several = (events for events in self._events.values() if len(events) > 1)
+            for events in several:
+                _carried(events[0], found)
+                if _is_empty(events[0]):  # ``rows = []``: the next value types it
+                    _carried(events[1], found)
+            self._stored = frozenset(found)
+        return id(expression) in self._stored
 
     def bindings(self, name: NameExpr) -> list[Expression | None]:
         """The values of every binding of a variable in the function (``None``: unknown)."""
@@ -222,6 +246,39 @@ class LocalValues:
     def _arms_at(self, line: int) -> dict[int, int]:
         """The arm of each ``if`` / ``match`` statement whose arm holds a line."""
         return {key: arm for key, arm, first, last in self._arms if first <= line <= last}
+
+
+def _is_empty(event: _Binding | Change) -> bool:
+    """Whether a binding gives no type yet: ``x = []``, ``x = {}``, ``x = None``, ``x = list()``."""
+    value = event.value if isinstance(event, _Binding) else None
+    if isinstance(value, ListExpr | SetExpr | DictExpr):
+        return not value.items
+    if isinstance(value, NameExpr):
+        return value.name == "None"
+    return isinstance(value, CallExpr) and not value.args and isinstance(value.callee, NameExpr)
+
+
+def _carried(event: _Binding | Change, found: set[int]) -> None:
+    """Collect the expressions whose types a binding or a change carries into a variable.
+
+    The value itself and, through it, the items of displays, the arms of a conditional
+    expression or of ``and`` / ``or``, and the element of a list comprehension.
+    """
+    values = [event.value] if isinstance(event, _Binding) else list(event.args)
+    pending = [value for value in values if value is not None]
+    while pending:
+        node = pending.pop()
+        found.add(id(node))
+        if isinstance(node, ListExpr | TupleExpr | SetExpr):
+            pending.extend(node.items)
+        elif isinstance(node, DictExpr):
+            pending.extend(value for _, value in node.items)
+        elif isinstance(node, ConditionalExpr):
+            pending.extend((node.if_expr, node.else_expr))
+        elif isinstance(node, OpExpr) and node.op in {"and", "or"}:
+            pending.extend((node.left, node.right))
+        elif isinstance(node, ListComprehension):
+            pending.append(node.generator.left_expr)
 
 
 def _key(name: NameExpr) -> _Key:

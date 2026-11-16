@@ -47,9 +47,10 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - A `vals` or domain variable assigned in another arm of the `if` / `match` the call is
   in, or in an arm that returns, is not taken for its value; `match` statements are
   followed like `if`.
-- Required fields and `display_name` read without `| Literal[False]`; option
-  `required_values = false` reads them as Odoo declares them (a new record reads
-  `False`).
+- Required fields and `display_name` read without `| Literal[False]`, except where the
+  value goes into a variable that gets several values (mypy takes its type from the
+  first one); option `required_values = false` reads them as Odoo declares them (a new
+  record reads `False`).
 - `env.cr` has the methods of a cursor (`execute`, `fetchall`, `dbname`): Odoo 18 declares
   it as `BaseCursor`, which has none of them.
 - Fewer false errors: a key that only an addon outside the closure adds to a selection

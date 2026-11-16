@@ -114,7 +114,7 @@ from odoo_typing.hooks.env import (
     type_request,
 )
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
-from odoo_typing.hooks.field_values import FieldValueHooks, without_false
+from odoo_typing.hooks.field_values import FieldValueHooks
 from odoo_typing.hooks.model_classes import ModelClassHooks
 from odoo_typing.hooks.models import ODOO_MODEL, ODOO_MODEL_DEPENDS, Models
 from odoo_typing.hooks.recordsets import RecordsetHooks
@@ -631,7 +631,7 @@ class OdooPlugin(Plugin):
             return partial(request_env, profile.environment)  # Odoo 17: a bare property
         required = self._models.settings.required_values
         if required and fullname == f"{profile.base_model}.display_name":
-            return without_false  # Odoo 17, 18 annotate it on BaseModel
+            return self._values.display_name  # Odoo 17, 18 annotate it on BaseModel
         owner, _, name = fullname.rpartition(".")
         if name in LOG_ACCESS_USERS and registry.contribution(owner):
             # Declared as ``Many2one[Any]``: the res.users records the reading addon sees.
