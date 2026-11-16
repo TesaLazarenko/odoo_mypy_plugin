@@ -13,8 +13,11 @@ added in place. Keys of ``**spread`` and non-literal keys are not checked.
 What a field accepts follows Odoo's ``convert_to_cache``: ``False`` and ``None`` clear
 almost every field. A plain ``bool`` value is taken where ``False`` is: Odoo code
 writes ``x = cond and value`` and ``min(..., default=False)``, which mypy types
-``bool``. ``Boolean`` takes any value (``bool(value)``), and a computed ``Binary`` that
-is not stored often holds other data (widget dicts), so neither is checked.
+``bool``. With a string condition (``model.match_label and partner.id``) mypy gives the
+empty string; a ``Many2one`` takes it as no record, numbers as ``0`` (``int(value or 0)``),
+so they take ``""`` too (a ``Selection`` or an x2many field rejects it). ``Boolean``
+takes any value (``bool(value)``), and a computed ``Binary`` that is not stored often
+holds other data (widget dicts), so neither is checked.
 """
 
 from __future__ import annotations
@@ -136,6 +139,10 @@ VALUE_TYPES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
     }
 )
 RELATIONAL_CLASSES: Final = frozenset({"Many2one", "One2many", "Many2many"})
+# The classes that take the empty string as no value (see the module docstring).
+EMPTY_STRING_CLASSES: Final = frozenset(
+    {"Many2one", "Integer", "Many2oneReference", "Float", "Monetary"}
+)
 BINARY_CLASSES: Final = frozenset({"Binary", "Image"})
 SHOWN_KEYS: Final = 8  # selection keys listed in a message
 X2MANY_CLASSES: Final = frozenset({"One2many", "Many2many"})
@@ -376,7 +383,10 @@ class ValsChecker:
         if accepted is None or (info.field_type in BINARY_CLASSES and not stored(info)):
             return
         # Every listed class takes False: also take ``bool`` (see the module docstring).
-        widened = UnionType.make_union([accepted, self.checker.named_type("builtins.bool")])
+        falsy: list[Type] = [self.checker.named_type("builtins.bool")]
+        if info.field_type in EMPTY_STRING_CLASSES:
+            falsy.append(LiteralType("", self.checker.named_type("builtins.str")))
+        widened = UnionType.make_union([accepted, *falsy])
         if not is_subtype(value_type, widened):
             options = self.checker.options
             self.checker.fail(

@@ -608,17 +608,22 @@ an error. So:
 | Field class | Takes |
 |---|---|
 | `Char`, `Text`, `Html`, `Selection` | `str \| bool \| None` |
-| `Integer`, `Many2oneReference` | `int \| NewId \| bool \| None` |
-| `Float`, `Monetary` | `float \| bool \| None` |
+| `Integer`, `Many2oneReference` | `int \| NewId \| bool \| None \| Literal[""]` |
+| `Float`, `Monetary` | `float \| bool \| None \| Literal[""]` |
 | `Date`, `Datetime` | `date \| str \| bool \| None` |
 | `Binary`, `Image` | `bytes \| str \| bool \| None` |
-| `Many2one` | `int \| NewId \| BaseModel \| tuple \| bool \| None` |
+| `Many2one` | `int \| NewId \| BaseModel \| tuple \| bool \| None \| Literal[""]` |
 | `One2many`, `Many2many` | `list \| tuple \| BaseModel \| bool \| None` (commands, ids, records) |
 | `Reference` | `str \| BaseModel \| bool \| None` |
 | `Boolean`, `Json`, `Properties`, a class that converts values itself, a computed `Binary` that is not stored | `Any` |
 
 A field of a subclass that an addon defines takes what the Odoo class it derives from
 takes (`class BigInteger(fields.Integer)`: the `Integer` row).
+
+`Literal[""]` is what mypy gives a string condition: `model.mapped_partner_id =
+model.match_label and partner.id` is `Literal[""] | int`. Odoo converts it as any falsy
+value (no record, `int(value or 0)`, `float(value or 0.0)`); a `Selection` (Odoo 20
+raises on `""`) and the x2many fields do not take it.
 
 So a selection key that does not exist and records of the wrong comodel are not errors
 in these values: they are checked in the dict literals of `create()` / `write()`

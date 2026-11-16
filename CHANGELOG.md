@@ -158,6 +158,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   (`Unsupported operand types for >= ("timedelta" and "object")`).
 - `create()` takes any iterable of values (`create({...} for i in range(3))`), which
   Odoo reads once.
+- `Many2one`, `Integer`, `Many2oneReference`, `Float` and `Monetary` values take the empty
+  string a string condition gives (`model.mapped_partner_id = model.match_label and
+  partner.id`), which Odoo converts as any falsy value.
 - A local `defaultdict` whose items the function writes under several string keys
   (`balances[key]["balance"] += ...`, `balances[key]["analytic_distribution"] = {...}`)
   holds record dicts: its items take any value, where mypy typed them from the factory.

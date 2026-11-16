@@ -400,6 +400,12 @@ class Order(models.Model):
             if order.count:
                 label = True
             order.name = label  # bool: usually False only
+
+    def _compute_partner(self) -> None:
+        # A string condition gives "": no record, 0 (``int(value or 0)``).
+        self.partner_id = self.note and self.partner_id.id
+        self.count = self.note and 3
+        self.amount = self.note and 1.5
 """
 
 
