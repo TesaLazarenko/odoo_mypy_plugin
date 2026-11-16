@@ -14,7 +14,7 @@ from mypy.nodes import (
     StrExpr,
     TupleExpr,
 )
-from mypy.operators import op_methods
+from mypy.operators import op_methods, reverse_op_methods
 from mypy.plugin import MethodContext
 from mypy.subtypes import is_subtype
 from mypy.types import (
@@ -22,6 +22,8 @@ from mypy.types import (
     FunctionLike,
     Instance,
     LiteralType,
+    NoneType,
+    ProperType,
     Type,
     TypeOfAny,
     get_proper_type,
@@ -32,7 +34,14 @@ from odoo_typing.hooks.models import Hooks
 from odoo_typing.hooks.nodes import fail_unfiltered, type_checker
 from odoo_typing.vals import ODOO_SELECTION, selection_problem
 
-__all__ = ["COMPARISON_HOOKS", "FALSE_OPERATORS", "ComparisonHooks", "false_operand"]
+__all__ = [
+    "COMPARISON_HOOKS",
+    "FALSE_OPERATORS",
+    "REVERSED_OPERATORS",
+    "ComparisonHooks",
+    "empty_operand",
+    "false_operand",
+]
 
 # The methods mypy checks ``a == "x"``, ``a != "x"`` and ``a in ("x", "y")`` with.
 COMPARISON_HOOKS = frozenset(
@@ -48,6 +57,42 @@ FALSE_OPERATORS: Final = frozenset(
 )
 
 
+# ``x.__radd__`` and the like: the method mypy checks ``None + x`` with (``None`` has none).
+REVERSED_OPERATORS: Final = frozenset(
+    name for name in reverse_op_methods.values() if name.startswith("__r")
+)
+
+
+def empty_operand(name: str, ctx: MethodContext) -> Type:
+    """A reversed operator that the ``None`` or ``False`` of an empty value does not fit.
+
+    ``fields.Datetime.from_string(order.date_order) + timedelta(days=2)``: Odoo declares
+    ``datetime | None``, and for ``None`` mypy checks ``timedelta.__radd__``, reports the
+    operand and goes on with ``timedelta``, what that method returns. The variable was
+    then ``datetime | timedelta``, and ``abs(min_date - out_date)`` a second error about a
+    ``datetime`` no value is. The operand is still reported; the result is not known.
+    """
+    given = get_proper_type(ctx.arg_types[0][0]) if ctx.arg_types and ctx.arg_types[0] else None
+    if not isinstance(given, NoneType) and not (
+        isinstance(given, LiteralType) and given.value is False
+    ):
+        return ctx.default_return_type
+    return _unfit(name, get_proper_type(ctx.type), given, ctx)
+
+
+def _unfit(name: str, receiver: ProperType, given: ProperType, ctx: MethodContext) -> Type:
+    """``Any`` if no signature of a method of the receiver takes the operand."""
+    info = receiver.type if isinstance(receiver, Instance) else None
+    method = info.get_method(name) if info is not None else None
+    declared = get_proper_type(method.type) if method is not None else None
+    if not isinstance(declared, FunctionLike):
+        return ctx.default_return_type
+    taken = [item.arg_types[1] for item in declared.items if len(item.arg_types) > 1]
+    if any(is_subtype(given, operand) for operand in taken):
+        return ctx.default_return_type
+    return AnyType(TypeOfAny.from_error)
+
+
 def false_operand(name: str, ctx: MethodContext) -> Type:
     """An operator that the ``False`` of an empty value does not support gives no type.
 
@@ -58,17 +103,10 @@ def false_operand(name: str, ctx: MethodContext) -> Type:
     still reported; what the operation gives is not known.
     """
     receiver = get_proper_type(ctx.type)
-    if not isinstance(receiver, LiteralType) or receiver.value is not False:
+    given = get_proper_type(ctx.arg_types[0][0]) if ctx.arg_types and ctx.arg_types[0] else None
+    if not isinstance(receiver, LiteralType) or receiver.value is not False or given is None:
         return ctx.default_return_type
-    method = receiver.fallback.type.get_method(name)
-    declared = get_proper_type(method.type) if method is not None else None
-    given = ctx.arg_types[0][0] if ctx.arg_types and ctx.arg_types[0] else None
-    if given is None or not isinstance(declared, FunctionLike):
-        return ctx.default_return_type
-    taken = [item.arg_types[1] for item in declared.items if len(item.arg_types) > 1]
-    if any(is_subtype(given, operand) for operand in taken):
-        return ctx.default_return_type
-    return AnyType(TypeOfAny.from_error)
+    return _unfit(name, receiver.fallback, given, ctx)
 
 
 class ComparisonHooks(Hooks):

@@ -316,16 +316,33 @@ class Picking(models.Model):
         reveal_type(self.delay - 1)
         reveal_type(False - 1)
         return late
+
+    def from_text(self, text: str) -> None:
+        planned = fields.Datetime.from_string(text)
+        out = planned + timedelta(days=self.delay)
+        abs(planned - out)
 """
 
 
-def test_an_operator_false_does_not_support_is_one_error(run_mypy: RunMypy) -> None:
+def test_an_operator_false_does_not_support_is_one_error(
+    run_mypy: RunMypy, odoo_version: int
+) -> None:
     """``abs(date - other) <= delta`` of an empty date: the operand, no error about ``int``."""
     messages = run_mypy({"my_mod": {"models.py": FALSE_OPERAND}}).messages("models.py")
 
-    assert messages == [
-        '14: error: Unsupported operand types for - ("Literal[False]" and "datetime")  [operator]',
-        '14: note: Left operand is of type "datetime | Literal[False]"',
+    errors = [message.split("  [")[0] for message in messages if ": error: " in message]
+    assert errors[:1] == [
+        '14: error: Unsupported operand types for - ("Literal[False]" and "datetime")',
+    ], messages
+    assert [message for message in messages if ": note: Revealed" in message] == [
         '15: note: Revealed type is "int"',
         '16: note: Revealed type is "int"',
-    ], messages
+    ]
+    # Odoo 19+ declares ``from_string`` as ``datetime | None``: the operands are
+    # reported, and no error about ``abs`` of a ``datetime`` that no value is.
+    assert not [error for error in errors if '"abs"' in error], messages
+    if odoo_version >= 19:
+        assert errors[1:] == [
+            '21: error: Unsupported operand types for + ("None" and "timedelta")',
+            '22: error: Unsupported left operand type for - ("None")',
+        ], messages

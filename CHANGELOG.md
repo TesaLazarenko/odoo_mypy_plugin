@@ -155,7 +155,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - An operator that the `False` of an empty value does not support
   (`abs(picking.scheduled_date - out_date) <= delta`) is one error, about the operand:
   mypy went on with `int`, what `int.__sub__` returns, and reported the comparison too
-  (`Unsupported operand types for >= ("timedelta" and "object")`).
+  (`Unsupported operand types for >= ("timedelta" and "object")`). So is one that `None`
+  does not support on the left (`fields.Datetime.from_string(text) + timedelta(days=2)`
+  of Odoo 19+, checked through `timedelta.__radd__`).
 - `create()` takes any iterable of values (`create({...} for i in range(3))`), which
   Odoo reads once.
 - Odoo 20: the parameters that Odoo annotates `dict[str, ...]` take `env.context`, a

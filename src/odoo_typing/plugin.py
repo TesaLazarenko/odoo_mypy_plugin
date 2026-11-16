@@ -129,7 +129,9 @@ from odoo_typing.hooks.class_attributes import define_through_cls, readable_on_c
 from odoo_typing.hooks.comparisons import (
     COMPARISON_HOOKS,
     FALSE_OPERATORS,
+    REVERSED_OPERATORS,
     ComparisonHooks,
+    empty_operand,
     false_operand,
 )
 from odoo_typing.hooks.domains import (
@@ -824,6 +826,8 @@ class OdooPlugin(Plugin):
             return self._comparisons.selection_keys
         if fullname in FALSE_OPERATORS:
             return partial(false_operand, name)  # ``record.date - other`` of an empty date
+        if name in REVERSED_OPERATORS:
+            return partial(empty_operand, name)  # ``None + timedelta(...)``
         if name == CONTAINS:
             return self._asked.contains  # ``"f" in records``
         if name == "fetch":

@@ -885,6 +885,9 @@ With real recordset types, some plain mypy codes appear more often:
   mypy then went on with the type `int.__sub__` returns: `timedelta | int` is an `object`
   for `abs`, and the comparison was a second error on the line (`Unsupported operand
   types for >= ("timedelta" and "object")`). What such an operation gives is `Any`.
+  So it is for `None` on the left: `fields.Datetime.from_string(text) + timedelta(days=2)`
+  (Odoo 19+ declares `datetime | None`) is reported for the operand, and the result is
+  no `datetime | timedelta` that made `abs(planned - out)` two more errors.
 - `filter(None, [prefix, record.name])` takes values that may be `False`: `None` as the
   function drops every falsy item.
 - `Command.set(["account.tag_x", "own_record_1", tag.id])` (Odoo 19, 20 declare

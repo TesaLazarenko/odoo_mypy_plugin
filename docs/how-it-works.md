@@ -274,6 +274,10 @@ once it can be.
   asks for `builtins.int.__sub__`. When the receiver is the literal `False` and the
   operand fits none of the method's signatures, the hook gives `Any`: mypy has reported
   the operand, and would otherwise go on with the return type of the method that failed.
+  `None` has no operator methods, so for `None + delta` mypy checks the right operand's
+  reversed method (`timedelta.__radd__`); the hooks of the reversed methods
+  (`REVERSED_OPERATORS`, `empty_operand`) give `Any` the same way when the operand is
+  `None` or `False`.
 
 - **Dependency edges weigh as imports inside functions** (`DEPENDENCY_PRIORITY`,
   mypy's `PRI_LOW`): within an import cycle mypy orders modules by their imports'
