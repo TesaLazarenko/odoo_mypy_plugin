@@ -268,6 +268,8 @@ class ValsChecker:
             (:meth:`odoo_typing.registry.Registry.accepted_values`).
         selection_elsewhere: The keys a selection field (model, name) gets in any addon:
             a key only an addon outside the closure adds is not reported.
+        read_type: What reading a field of a class gives, as Odoo declares it
+            (``Field[T]``); ``None`` if it is not declared or names a type variable.
     """
 
     checker: TypeChecker
@@ -279,6 +281,7 @@ class ValsChecker:
     guarded: Callable[[str, int], bool]
     values_of: Callable[[str], frozenset[str]]
     selection_elsewhere: Callable[[str, str], frozenset[str]] = lambda _model, _field: frozenset()
+    read_type: Callable[[str], Type | None] = lambda _field_class: None
 
     def typed(self, node: Expression) -> bool:
         """Whether an expression's type is the values of a model (``odoo.values.*``).
@@ -483,7 +486,13 @@ class ValsChecker:
             if item is None:
                 return None  # e.g. ``datetime`` not loaded: do not guess
             items.append(item)
-        return UnionType.make_union(items)
+        accepted = UnionType.make_union(items)
+        read = self.read_type(field_type)
+        if read is not None and not is_subtype(read, accepted):
+            # A field takes what reading it gives: ``tag.image = product.image_1920``
+            # (Odoo 20 reads a binary field as a ``BinaryValue``).
+            return UnionType.make_union([*items, read])
+        return accepted
 
     def _named(self, name: str) -> Type | None:
         return value_type_named(name, self.checker, self.base_model, self.new_id)

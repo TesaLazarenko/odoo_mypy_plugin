@@ -65,3 +65,18 @@ def test_names_bound_on_the_odoo_package_are_imported(run_mypy: RunMypy) -> None
         assert messages[0] == '4: note: Revealed type is "int"'
         assert len(messages) == 2, messages
         assert 'has no attribute "lnik"' in messages[1]
+
+
+@pytest.mark.odoo(19, 20)
+def test_names_of_the_odoo_package_survive_a_run_with_other_options(run_mypy: RunMypy) -> None:
+    """mypy parses the package again, without asking the plugin, in a stale import cycle."""
+    addons = {"my_mod": {"models.py": MODELS}}
+
+    other = run_mypy(addons, fresh_cache=True, flags=["--disable-error-code", "odoo-model-depends"])
+    again = run_mypy(addons, fresh_cache=True)  # the options changed: the cycle is stale
+
+    for result in (other, again):
+        messages = result.messages("models.py")
+        assert messages[0] == '4: note: Revealed type is "int"'
+        assert len(messages) == 2, messages
+        assert 'has no attribute "lnik"' in messages[1]

@@ -327,3 +327,51 @@ def test_attribute_hook_named_after_another_method_is_that_method(run_mypy: RunM
         '16: note: Revealed type is "int"',
         '17: error: "Plain" has no attribute "anything"  [attr-defined]',
     ]
+
+
+def test_attribute_hook_declared_to_return_its_own_base_gives_any(run_mypy: RunMypy) -> None:
+    """Odoo 20's ``table.order_id.partner_id``: each step is declared ``-> SQL``, the base."""
+    result = run_mypy(
+        {
+            "my_mod": {
+                "tools.py": """
+                class Sql:
+                    code: str = ""
+
+                class Table(Sql):
+                    alias: str = "t"
+
+                    def __getitem__(self, name: str) -> Sql:
+                        return Field(self, name)
+
+                    __getattr__ = __getitem__
+
+                class Field(Sql):
+                    def __init__(self, table: Table, name: str) -> None:
+                        self.table = table
+
+                    def __getattr__(self, name: str) -> Sql:
+                        return Field(self.table, name)
+
+                class Own:
+                    def __getattr__(self, name: str) -> "Own":
+                        return self
+
+                def read(table: Table, own: Own) -> None:
+                    reveal_type(table.order_id)
+                    reveal_type(table.order_id.partner_id.name)
+                    reveal_type(table.alias)
+                    reveal_type(table["order_id"])
+                    reveal_type(own.anything.more)
+                """
+            }
+        }
+    )
+
+    assert result.messages("tools.py") == [
+        '25: note: Revealed type is "Any"',
+        '26: note: Revealed type is "Any"',
+        '27: note: Revealed type is "str"',
+        '28: note: Revealed type is "my_mod.tools.Sql"',
+        '29: note: Revealed type is "my_mod.tools.Own"',
+    ]

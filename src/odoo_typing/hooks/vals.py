@@ -7,9 +7,16 @@ from __future__ import annotations
 
 from functools import partial
 
-from mypy.nodes import CallExpr, MemberExpr, NameExpr, TempNode
+from mypy.lookup import lookup_fully_qualified
+from mypy.nodes import CallExpr, MemberExpr, NameExpr, TempNode, TypeInfo
 from mypy.plugin import CheckerPluginInterface, MethodContext, MethodSigContext
-from mypy.types import FunctionLike, Instance, Type
+from mypy.types import AnyType, FunctionLike, Instance, Type, get_proper_type, has_type_vars
+
+# isort: split
+# After mypy.types: these modules import each other at import time.
+from mypy.checker import TypeChecker
+from mypy.maptype import map_instance_to_supertype
+from mypy.typevars import fill_typevars_with_any
 
 from odoo_typing.classes import receiver_type
 from odoo_typing.hooks.models import Hooks, errors_hidden
@@ -98,7 +105,30 @@ class ValsHooks(Hooks):
             self._field_guarded(api.path),
             partial(self._accepted_values, addon_name=addon_name, api=api),
             self._selection_elsewhere(addon_name),
+            partial(self._read_type, type_checker(api)),
         )
+
+    def _read_type(self, checker: TypeChecker, field_class: str) -> Type | None:
+        """What reading a field of an Odoo field class gives (the ``T`` of ``Field[T]``)."""
+        profile = self._profile
+        # ``odoo.fields`` has every field class, wherever Odoo defines it (19+: odoo.orm).
+        fields_module = f"{self._settings.odoo_path.name}.fields"
+        found = lookup_fully_qualified(f"{fields_module}.{field_class}", checker.modules)
+        base = lookup_fully_qualified(profile.field_base, checker.modules)
+        info = found.node if found is not None else None
+        field = base.node if base is not None else None
+        if (
+            not isinstance(info, TypeInfo)
+            or not isinstance(field, TypeInfo)
+            or not field.defn.type_vars
+            or field not in info.mro
+        ):
+            return None
+        own = fill_typevars_with_any(info)
+        if not isinstance(own, Instance):
+            return None
+        read = map_instance_to_supertype(own, field).args[0]
+        return None if has_type_vars(read) or isinstance(get_proper_type(read), AnyType) else read
 
     def _vals_target(self, model: str, addon_name: str, api: CheckerPluginInterface) -> ValsTarget:
         """The fields the vals of a model are checked against, as an addon sees them."""

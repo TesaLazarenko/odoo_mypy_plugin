@@ -100,7 +100,10 @@ once it can be.
   For the `odoo` package of Odoo 19+, which has no `__init__.py`, the same hook adds
   the imports of the names a module of the package binds on it (`odoo.Command =
   Command` in `odoo/init.py`) to the package's empty module, so `from odoo import
-  Command` is the class.
+  Command` is the class. mypy parses a module again without this hook when another
+  module of its import cycle is out of date, so every hook lookup also binds the names
+  the package's current tree lacks (one dict lookup once it is done), and the package's
+  cache entry carries the bound names as its config data.
 
 - **Attributes of any class.** mypy asks for the MRO hook of every class, before it
   analyzes the class body. For each class method the plugin marks the first parameter

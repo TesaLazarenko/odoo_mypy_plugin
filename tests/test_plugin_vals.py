@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import RunMypy
 
 T_BASE = """
@@ -551,3 +552,36 @@ def test_vals_of_another_arm_of_if_or_match_do_not_reach_the_call(run_mypy: RunM
         '23: error: Odoo model "t.order" has no field "nme"; did you mean "name"?  [odoo-vals-key]',
     ]
     assert not any("odoo-model" in message for message in messages)  # b"..." is no name
+
+
+@pytest.mark.odoo(20)
+def test_field_takes_what_reading_it_gives(run_mypy: RunMypy) -> None:
+    """Odoo 20 reads a binary field as a ``BinaryValue``, which another one takes."""
+    result = run_mypy(
+        {
+            "my_mod": {
+                "models.py": """
+                from odoo import fields, models
+
+                class Thing(models.Model):
+                    _name = "t.thing"
+                    _description = "Thing"
+
+                    image = fields.Image()
+                    data = fields.Binary()
+
+                    def copy_from(self, other: "Thing") -> None:
+                        self.image = other.image
+                        self.write({"data": other.data, "image": b"raw"})
+                        self.image = 5
+                """
+            }
+        }
+    )
+
+    messages = result.messages("models.py")
+    assert len(messages) == 1, messages
+    assert messages[0].startswith(
+        '14: error: Incompatible type for field "image" of Odoo model "t.thing" (expression has'
+        ' type "int"'
+    )

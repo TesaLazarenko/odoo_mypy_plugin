@@ -50,13 +50,21 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   its base.
 - `from odoo import Command, _, SUPERUSER_ID` on Odoo 19 and 20, where `odoo` is a
   namespace package and a module of it binds the names (`odoo.Command = Command`): the
-  package has them, with their types.
+  package has them, with their types, also after mypy parses the package again for a
+  stale import cycle (a changed option), which it does without asking plugins.
 - `env.website` (Odoo 20, declared `BaseModel`) is the `website` records: an attribute
   of `Environment` declared as records of no model is the model it is named after.
 - A controller's `self.env` is an `Environment` (Odoo 20 declares `Environment | None`
   on its `Controller`; what an addon's own class declares is left alone).
 - A class that names its attribute hook after another method
-  (`__getattr__ = __getitem__`, Odoo 20's `TableSQL`) has that method as the hook.
+  (`__getattr__ = __getitem__`, Odoo 20's `TableSQL`) has that method as the hook; what
+  a `__getattr__` declared to return a base class of its own class gives is `Any`
+  (`table.order_id.partner_id`: each step is declared `-> SQL`, which has no attributes).
+- A field takes what reading it gives: on Odoo 20 a binary field reads as a
+  `BinaryValue`, and `tag.image = product.image_1920` was an `odoo-vals-type` error.
+- A list of relational commands takes the plain tuples as well
+  (`commands = [Command.update(...)]`, then `commands.append((2, line.id))`): Odoo 19
+  and 20 type `Command` as an `int` enumeration.
 - `browse(...)` takes what Odoo takes besides the declared `int | Iterable[IdType]`:
   `None` and `False` (its docstring: "int or iterable(int) or None"), so
   `browse(context.get("active_id"))` is no error, and one id of any kind a list of ids

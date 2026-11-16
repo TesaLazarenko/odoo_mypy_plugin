@@ -94,7 +94,12 @@ plugin:
   the names a module of its own binds on it.
 - **`table.field`** of a query's table (Odoo 20's `TableSQL`): a class that names its
   attribute hook after another method (`__getattr__ = __getitem__`) has that method as
-  the hook; mypy alone reports every attribute of such a class.
+  the hook; mypy alone reports every attribute of such a class. A hook declared to
+  return a base class of its own class (`-> SQL`) gives `Any`, so
+  `table.order_id.partner_id` is no error.
+- **Lists of commands**: `commands = [Command.update(...)]` takes
+  `commands.append((2, line.id))` too (on Odoo 19 and 20 `Command` is an `int`
+  enumeration, and the plain tuple is no `tuple[Command, ...]`).
 
 **Odoo 17** declares no types at all: the plugin gives its fields, `self.env`,
 `self.id`, record iteration, `create()` and the `api` decorators the types Odoo 18

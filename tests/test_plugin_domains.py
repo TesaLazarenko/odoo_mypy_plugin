@@ -333,3 +333,30 @@ def test_domains_list_of_terms_takes_terms_with_other_values(run_mypy: RunMypy) 
         '20: error: Argument 1 to "append" of "list" has incompatible type "tuple[str, int]"',
         '22: error: Argument 1 to "append" of "list" has incompatible type "tuple[int, str, int]"',
     ]
+
+
+@pytest.mark.odoo(19, 20)
+def test_list_of_commands_takes_plain_command_tuples(run_mypy: RunMypy) -> None:
+    """``Command`` is an ``int`` enumeration on Odoo 19+: its tuples are no ``tuple[int, ...]``."""
+    messages = _messages(
+        run_mypy,
+        """
+        from odoo import Command, models
+
+        class Order(models.Model):
+            _inherit = "t.order"
+
+            def check(self, ids: list[int]) -> None:
+                commands = [Command.update(1, {"label": "x"})]
+                commands.append((2, 5))
+                commands.append((0, 0, {"label": "y"}))
+                commands += [(5,), Command.set(ids)]
+                commands.append(7)
+                self.write({"line_ids": commands})
+        """,
+    )
+
+    assert len(messages) == 1, messages
+    assert messages[0].startswith(
+        '12: error: Argument 1 to "append" of "list" has incompatible type "int"'
+    )

@@ -57,6 +57,7 @@ registry on each cold run, and could still pick an arbitrary extension class.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections.abc import Callable
@@ -154,7 +155,7 @@ from odoo_typing.methods import (
     keep_receiver,
 )
 from odoo_typing.odoo_version import profile_mismatch_warning, version_mismatch_warning
-from odoo_typing.package_names import bound_on_package, import_into
+from odoo_typing.package_names import Bound, bind_in, bound_on_package, import_into
 from odoo_typing.records import RecordStore, load_index
 from odoo_typing.references import RECORD_PATH_METHODS
 from odoo_typing.registry import Registry
@@ -185,6 +186,7 @@ __version__ = records.source_digest()
 
 DEPENDENCY_PRIORITY = 10  # mypy.build.PRI_MED
 ENV = "env"
+GETATTR = "__getattr__"
 # Methods whose first argument is ``vals`` (``create``: also a list of them;
 # ``copy``: its ``default``).
 VALS_METHODS = frozenset({"create", "write", "copy"})
@@ -251,6 +253,11 @@ class OdooPlugin(Plugin):
         )
         self._every_class = fail_soft(_every_class, _no_result, "the hook of every class")
         self._rewritten: dict[str, MypyFile] = {}  # module -> the tree rewritten last
+        # The ``odoo`` package where it is a namespace (Odoo 19+), and its tree once the
+        # names Odoo binds on it are there (see _bind_package_names).
+        self._package = settings.odoo_path.name if profile.namespace_odoo else None
+        self._package_tree: MypyFile | None = None
+        self._package_bound: Bound | None = None
 
     def _new_registry(self, settings: Settings) -> Registry:
         """A registry for the settings, and the fingerprints that follow it.
@@ -276,6 +283,11 @@ class OdooPlugin(Plugin):
         the addons paths makes mypy check the module again.
         """
         try:
+            bound = self._package_names(ctx.id)
+            if bound:
+                # The names added to the ``odoo`` package (Odoo 19+): its cache entry
+                # is of no use to a run that would add other names, or none.
+                return json.dumps(sorted(bound.items()))
             return self._fingerprints.module_data(ctx.id, ctx.path)
         except Exception as exc:
             report_internal_error(exc, f"computing the cache data of {ctx.id}")
@@ -290,6 +302,7 @@ class OdooPlugin(Plugin):
         """
         super().set_modules(modules)
         self._inputs_checked = False
+        self._package_bound = None  # a daemon update: ``odoo/init.py`` may have changed
         self._hooks.forget_declared()
 
     def _refresh_registry(self) -> None:
@@ -378,14 +391,44 @@ class OdooPlugin(Plugin):
         Returns:
             The modules of the added imports.
         """
-        odoo = self._models.settings.odoo_path
-        if file.fullname != odoo.name or (odoo / "__init__.py").exists():
-            return []
         try:
-            return import_into(file, bound_on_package(odoo, odoo.name))
+            return import_into(file, self._package_names(file.fullname))
         except Exception as exc:
-            report_internal_error(exc, f"reading the names bound on the package {odoo.name}")
+            report_internal_error(exc, f"reading the names bound on the package {file.fullname}")
             raise
+
+    def _bind_package_names(self) -> None:
+        """Bind the names of the ``odoo`` namespace package in its current tree (Odoo 19+).
+
+        mypy parses the package again without :meth:`get_additional_deps` when a module
+        of its import cycle is out of date; asked from every hook lookup, so the names
+        are there before mypy stores the package or analyzes a module that imports from
+        it. One dict lookup once the tree is done.
+        """
+        modules = self._modules
+        package = self._package
+        if package is None or not modules:
+            return
+        tree = modules.get(package)
+        if tree is None or self._package_tree is tree:
+            return
+        try:
+            if self._package_bound is None:  # read from disk once, not at every lookup
+                self._package_bound = self._package_names(package)
+            if bind_in(tree, self._package_bound, modules):
+                self._package_tree = tree
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            if os.environ.get(RAISE_VARIABLE):
+                raise
+            report_internal_error(exc, f"binding the names of the package {package}")
+            self._package_tree = tree
+
+    def _package_names(self, module: str) -> Bound:
+        """The names Odoo binds on a module, if it is the ``odoo`` namespace package."""
+        odoo = self._models.settings.odoo_path
+        if module != odoo.name or (odoo / "__init__.py").exists():
+            return {}
+        return bound_on_package(odoo, odoo.name)
 
     # -- annotations: odoo.values.* / odoo.model.* -----------------------------------------
 
@@ -425,6 +468,8 @@ class OdooPlugin(Plugin):
 
     def get_type_analyze_hook(self, fullname: str) -> Callable[[AnalyzeTypeContext], Type] | None:
         """Type ``odoo.values.*`` / ``odoo.model.*`` annotations (odoo_typing.annotations)."""
+        if self._package is not None:
+            self._bind_package_names()
         return self._type_hooks.get(fullname)
 
     # -- hook lookup -----------------------------------------------------------------------
@@ -446,6 +491,8 @@ class OdooPlugin(Plugin):
         analyzes a module's classes before their bodies, and defers what it cannot look
         up yet, so the module's functions see the rewritten names on the next pass.
         """
+        if self._package is not None:
+            self._bind_package_names()
         self._rewrite_module_of(fullname)
         found = self._hooks.mro
         if fullname not in found:
@@ -483,6 +530,8 @@ class OdooPlugin(Plugin):
 
     def get_method_hook(self, fullname: str) -> Callable[[MethodContext], Type] | None:
         """Type ``env[...]`` and recordset methods; check vals, domains and field paths."""
+        if self._package is not None:
+            self._bind_package_names()
         found = self._hooks.method
         if fullname not in found:
             self._type_request()
@@ -495,6 +544,8 @@ class OdooPlugin(Plugin):
 
     def get_function_hook(self, fullname: str) -> Callable[[FunctionContext], Type] | None:
         """Bind relational field constructors to their comodel; see through decorators."""
+        if self._package is not None:
+            self._bind_package_names()
         found = self._hooks.function
         if fullname not in found:
             self._type_request()
@@ -543,6 +594,8 @@ class OdooPlugin(Plugin):
 
     def get_attribute_hook(self, fullname: str) -> Callable[[AttributeContext], Type] | None:
         """Resolve record-typed attributes of model classes from the reading addon."""
+        if self._package is not None:
+            self._bind_package_names()
         found = self._hooks.attribute
         if fullname not in found:
             self._type_request()
@@ -552,6 +605,8 @@ class OdooPlugin(Plugin):
                 if kept is None:
                     return None  # asked again once mypy has inferred the attribute's type
                 hook = self._values.kept_record if kept else None
+            if hook is None and self._hook_gives_own_base(fullname):
+                hook = _any_attribute
             found[fullname] = _soft(hook, _default_attribute, f"the hook of {fullname}")
         return found[fullname]
 
@@ -720,6 +775,30 @@ class OdooPlugin(Plugin):
             found = found.func
         return found.type if isinstance(found, FuncDef) else None
 
+    def _hook_gives_own_base(self, fullname: str) -> bool:
+        """Whether a name is read through a ``__getattr__`` declared to return a base class.
+
+        Odoo 20's ``TableSQL`` and ``FieldSQL`` read ``table.order_id.partner_id`` through
+        ``__getattr__``, declared ``-> SQL``, their common base, which has no such hook:
+        the declaration names the family, not the class, and the next attribute of the
+        chain was an error. What such a hook gives has attributes that cannot be told
+        from the declaration (``Any``).
+        """
+        owner, _, name = fullname.rpartition(".")
+        symbol = (
+            lookup_fully_qualified(owner, self._modules, raise_on_missing=False)
+            if self._modules
+            else None
+        )
+        info = symbol.node if symbol is not None else None
+        if not isinstance(info, TypeInfo) or info.get(name) is not None:
+            return False
+        method = info.get_method(GETATTR)
+        function = method.func if isinstance(method, Decorator) else method
+        declared = function.type if isinstance(function, FuncDef) else None
+        given = get_proper_type(declared.ret_type) if isinstance(declared, CallableType) else None
+        return isinstance(given, Instance) and given.type in info.mro[1:-1]
+
     def _declared_records(self, fullname: str) -> bool:
         """Whether an attribute or property is declared as ``BaseModel``: records of no model."""
         symbol = (
@@ -793,6 +872,11 @@ def _default_signature(ctx: MethodSigContext) -> FunctionLike:
 
 def _default_attribute(ctx: AttributeContext) -> Type:
     return ctx.default_attr_type
+
+
+def _any_attribute(ctx: AttributeContext) -> Type:
+    """An attribute whose class cannot be told from its declaration (read: ``Any``)."""
+    return ctx.default_attr_type if ctx.is_lvalue else AnyType(TypeOfAny.special_form)
 
 
 def _any_type(_ctx: AnalyzeTypeContext) -> Type:

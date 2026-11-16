@@ -8,6 +8,11 @@ term: ``append``, ``insert``, ``extend``, ``+=`` and ``+`` of a list whose items
 ``(field, operator, value)`` tuples also take such a tuple with another value, or an
 operator (``"|"``). The list keeps its type; what the terms name is checked where the
 domain is used (:mod:`odoo_typing.hooks.domains`).
+
+The same goes for a list of the commands of a relational field: ``[Command.update(...)]``
+is a list of ``tuple[Command, int, ...]`` (Odoo 19 and 20 type ``Command`` as an ``int``
+enumeration), and ``commands.append((2, line.id))``, the plain tuple Odoo takes as well,
+was an ``arg-type`` error.
 """
 
 from __future__ import annotations
@@ -34,6 +39,8 @@ __all__ = ["is_term_list_method", "term_list_signature"]
 
 LIST: Final = "builtins.list"
 STR: Final = "builtins.str"
+INT: Final = "builtins.int"
+TUPLE: Final = "builtins.tuple"
 # The methods of ``list`` that add items (``+`` gives a list of the same type).
 ADDING_METHODS: Final = frozenset({"append", "insert", "extend", "__iadd__", "__add__"})
 TERM_LENGTH: Final = 3
@@ -56,13 +63,32 @@ def term_list_signature(ctx: MethodSigContext) -> FunctionLike:
     ):
         return signature
     item = get_proper_type(receiver.args[0])
-    if not _is_term(item):
-        return signature
     value = AnyType(TypeOfAny.special_form)
-    term = item.copy_modified(items=[item.items[0], item.items[1], value])
-    added = UnionType([term, ctx.api.named_generic_type(STR, [])])
+    added: Type
+    if _is_term(item):
+        term = item.copy_modified(items=[item.items[0], item.items[1], value])
+        added = UnionType([term, ctx.api.named_generic_type(STR, [])])
+    elif _is_command(item):
+        added = ctx.api.named_generic_type(TUPLE, [value])  # ``(2, id)``, ``(5,)``
+    else:
+        return signature
     arg_types = [_taking(declared, item, added) for declared in signature.arg_types]
     return signature.copy_modified(arg_types=arg_types)
+
+
+def _is_command(item: ProperType) -> bool:
+    """Whether a type is a tuple that starts with a member of an ``int`` enumeration.
+
+    ``Command.create(vals)`` is a ``tuple[Command, int, ...]``: a command of a
+    relational field. Odoo takes the plain tuples too (``(0, 0, vals)``, ``(2, id)``),
+    and a list that starts with one kind is filled with the other.
+    """
+    if not isinstance(item, TupleType) or not item.items:
+        return False
+    first = get_proper_type(item.items[0])
+    if isinstance(first, LiteralType):
+        first = first.fallback
+    return isinstance(first, Instance) and first.type.is_enum and first.type.has_base(INT)
 
 
 def _is_term(item: ProperType) -> TypeGuard[TupleType]:

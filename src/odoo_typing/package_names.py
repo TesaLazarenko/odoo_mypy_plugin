@@ -10,6 +10,12 @@ import in every addon was ``Module "odoo" has no attribute "Command"``, and the 
 that way, and what each is imported from; :func:`import_into` adds the same imports to the
 package's (empty) module, as if it had an ``__init__.py`` with them. Nothing is said about
 which file does it or which names they are.
+
+mypy parses a module again without asking the plugin about it, when another module of its
+import cycle is out of date (a changed option is enough): the package's new tree is empty
+again, and what mypy then stores for it has no names. :func:`bind_in` gives a package
+module the names it lacks, from the modules they come from, whenever the plugin is asked
+anything while that tree is the current one.
 """
 
 from __future__ import annotations
@@ -17,11 +23,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from mypy.nodes import ImportFrom, MypyFile
+from mypy.nodes import GDEF, ImportFrom, MypyFile, PlaceholderNode, SymbolTableNode
 
 from odoo_typing.scanner import SourceError, parse_source
 
-__all__ = ["bound_on_package", "import_into"]
+__all__ = ["Bound", "bind_in", "bound_on_package", "import_into"]
 
 Bound = dict[str, tuple[str, str]]
 """Name on the package -> the module it is imported from and its name there."""
@@ -124,3 +130,23 @@ def import_into(module: MypyFile, bound: Bound) -> list[str]:
         module.defs.append(statement)
         module.imports.append(statement)
     return sorted({source for source, _ in bound.values()} - {module.fullname})
+
+
+def bind_in(module: MypyFile, bound: Bound, modules: dict[str, MypyFile]) -> bool:
+    """Give a package module the bound names it lacks, as the imports would.
+
+    Returns:
+        Whether every name is bound now; ``False`` while a module a name comes from is
+        not analyzed yet (ask again later).
+    """
+    complete = True
+    for name, (source, original) in bound.items():
+        if name in module.names or source == module.fullname:
+            continue
+        origin = modules.get(source)
+        symbol = origin.names.get(original) if origin is not None else None
+        if symbol is None or symbol.node is None or isinstance(symbol.node, PlaceholderNode):
+            complete = False
+            continue
+        module.names[name] = SymbolTableNode(GDEF, symbol.node, module_public=True)
+    return complete
