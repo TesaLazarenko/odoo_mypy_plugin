@@ -39,9 +39,13 @@ __all__ = [
     "EnvHooks",
     "XmlIdUse",
     "add_request_attributes",
+    "env_cursor",
     "request_env",
     "type_request",
 ]
+
+
+EXECUTE: Final = "execute"  # what a cursor class has (see env_cursor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +237,37 @@ def request_env(environment: str, ctx: AttributeContext) -> Type:
     if node is None or not isinstance(node.node, TypeInfo):
         return ctx.default_attr_type
     return instance_of(node.node)
+
+
+def env_cursor(ctx: AttributeContext) -> Type:
+    """``env.cr``: the cursor classes of the module, where Odoo declares an abstract base.
+
+    Odoo 18 annotates ``Environment.cr`` with ``BaseCursor``, a base class that cannot
+    execute a query: ``execute``, ``fetchall`` and ``dbname`` are those of its
+    subclasses (``Cursor``, and ``TestCursor`` in tests), so every
+    ``env.cr.execute(...)`` was an ``attr-defined`` error. The attribute is then one of
+    the classes that the declared class's module derives from it. A declared class
+    that executes queries itself (Odoo 19, 20) stays as declared.
+    """
+    declared = get_proper_type(ctx.default_attr_type)
+    if (
+        not isinstance(declared, Instance)
+        or not isinstance(ctx.api, TypeChecker)
+        or declared.type.get(EXECUTE) is not None
+    ):
+        return ctx.default_attr_type
+    module = ctx.api.modules.get(declared.type.module_name)
+    if module is None:
+        return ctx.default_attr_type
+    concrete = [
+        instance_of(node.node)
+        for node in module.names.values()
+        if isinstance(node.node, TypeInfo)
+        and node.node is not declared.type
+        and node.node.module_name == module.fullname  # defined there, not imported
+        and declared.type in node.node.mro
+    ]
+    return UnionType.make_union(concrete) if concrete else ctx.default_attr_type
 
 
 def type_request(profile: OdooProfile, modules: dict[str, MypyFile]) -> bool:

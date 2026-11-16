@@ -53,7 +53,7 @@ overlay_root = ".odoo-root"
 dynamic_env = "any"
 vals_ignore_keys = ["x_*"]
 literal_selection = false
-required_values = false
+required_values = true
 scan_cache_dir = "~/.cache/odoo-typing/scans"
 ```
 
@@ -72,7 +72,7 @@ contains them.
 | `dynamic_env` | `"any"` | Type of `env[name]` when `name` is not a literal: `"any"` or `"base"` |
 | `vals_ignore_keys` | `["x_*"]` | Glob patterns of `vals` keys never reported as unknown fields |
 | `literal_selection` | `false` | Read `Selection` fields as `Literal[<keys>] \| Literal[False]` |
-| `required_values` | `false` | Read required fields and `display_name` without `\| Literal[False]` |
+| `required_values` | `true` | Read required fields and `display_name` without `\| Literal[False]` |
 | `scan_cache_dir` | `~/.cache/odoo-typing/scans` | Addon scans shared by every project, a subdirectory per interpreter; `""` keeps them in mypy's cache |
 
 **`odoo_version`** is the single source of truth for the version: the plugin picks the
@@ -124,13 +124,14 @@ The same names are not reported where other checks name fields either: domains,
 `@api.depends`. There a near miss of a declared field (`x_scroe` for `x_score`) is
 still reported as a typo.
 
-**`required_values = true`** reads a field that is required (`required=True`, as the
-merged definitions of the model leave it) and `display_name` as their value type without
-`| Literal[False]`: `", ".join(records.mapped("name"))` and `format_date(env, rec.date)`
-then type-check. Odoo does read `False` there for a new record (`new()`, a form's
-onchange) before the value is set, so it is off by default. On the 37 core addons of the
+**`required_values`** (on by default) reads a field that is required (`required=True`,
+as the merged definitions of the model leave it) and `display_name` as their value type
+without `| Literal[False]`: `", ".join(records.mapped("name"))`, `Telegram(bot.token)`
+and `format_date(env, rec.date)` then type-check. On the 37 core addons of the
 benchmark's `big` profile about half of the `... | Literal[False]` errors are of required
-fields or `display_name`.
+fields or `display_name`. Odoo does read `False` there for a new record (`new()`, a
+form's onchange) before the value is set: `required_values = false` reads these fields
+as Odoo declares them, for code that must handle such records.
 
 **`literal_selection = true`** reads a `Selection` field whose keys are literal
 (including the `selection_add` of the addon's view) as

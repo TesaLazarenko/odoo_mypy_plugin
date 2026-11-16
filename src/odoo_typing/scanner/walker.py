@@ -35,7 +35,15 @@ from odoo_typing.scanner.class_bodies import (
     model_name,
 )
 from odoo_typing.scanner.evaluation import UNKNOWN, assign, class_attributes
-from odoo_typing.scanner.field_classes import FieldKind, class_bases, field_kind, origin_of
+from odoo_typing.scanner.field_classes import (
+    FieldKind,
+    bind_assignment,
+    bind_import,
+    class_bases,
+    factory_class,
+    field_kind,
+    origin_of,
+)
 from odoo_typing.scanner.fields import declared_fields
 from odoo_typing.scanner.referenced import referenced_models
 from odoo_typing.scanner.results import (
@@ -45,7 +53,7 @@ from odoo_typing.scanner.results import (
     ModuleScan,
     SourceError,
 )
-from odoo_typing.scanner.syntax import parse_bytes, read_source
+from odoo_typing.scanner.syntax import executed_blocks, parse_bytes, read_source
 from odoo_typing.stamps import UNREADABLE, Stamps, stamp
 from odoo_typing.xmlids import scan_data
 
@@ -207,13 +215,19 @@ class _ImportWalker:
     def _exported_classes(self, file: _File) -> tuple[FieldClass, ...]:
         """The classes of a module that may be field classes, and those it re-exports.
 
-        A name the module imports from another module of the addon is exported as a
-        class whose base is the class it names: ``from odoo.addons.x.models import Big``
-        in another addon then finds what ``models/__init__.py`` imports from ``.fields``.
+        A name the module imports from another module of the addon, or from another
+        addon, is exported as a class whose base is the class it names:
+        ``from odoo.addons.x.models import Big`` in another addon then finds what
+        ``models/__init__.py`` imports from ``.fields``.
         """
         exported = dict(file.classes)
+        own = self.addon.module_prefix + "."
         for name, origin in file.origins.items():
-            if name not in exported and origin in self._field_classes:
+            if name in exported:
+                continue
+            # A class of this addon that may be a field class, or a name of another addon.
+            other = origin.startswith(ADDONS_PREFIX) and not origin.startswith(own)
+            if origin in self._field_classes or other:
                 exported[name] = FieldClass(name, (origin,))
         return tuple(exported.values())
 
@@ -226,12 +240,28 @@ class _ImportWalker:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     self._import(alias.name.split("."))
-                    self._bind_import(alias, file)
+                    bind_import(alias, file.origins)
+            elif isinstance(node, ast.FunctionDef):
+                found = factory_class(
+                    node,
+                    partial(self._origin, file),
+                    self._field_classes,
+                    self._described_elsewhere,
+                )
+                self._describe(file, node.name, found)
             elif isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
                 assign(node, file.names)
-                _bind_alias(node, file.origins)
+                if isinstance(node, ast.Assign):
+                    bind_assignment(
+                        node,
+                        file.origins,
+                        partial(self._origin, file),
+                        self._field_classes,
+                        self._described_elsewhere,
+                        partial(self._describe, file),
+                    )
             else:
-                for block in _executed_blocks(node):
+                for block in executed_blocks(node):
                     self._walk(block, file)
 
     def _import_from(self, node: ast.ImportFrom, file: _File) -> None:
@@ -256,14 +286,6 @@ class _ImportWalker:
             if alias.name != "*":
                 # What the module binds the name to, or the name in it (a submodule).
                 file.origins[name] = origins.get(alias.name, f"{module}.{alias.name}")
-
-    def _bind_import(self, alias: ast.alias, file: _File) -> None:
-        """Bind what ``import a.b`` (the name ``a``) or ``import a.b as c`` names."""
-        if alias.asname is not None:
-            file.origins[alias.asname] = alias.name
-        else:
-            top = alias.name.partition(".")[0]
-            file.origins[top] = top
 
     def _import(self, dotted: list[str]) -> None:
         """Run ``import a.b.c`` if it names this addon: each package, then the module."""
@@ -321,12 +343,17 @@ class _ImportWalker:
         """Remember a class that is no model class, and what may make it a field class."""
         if file.origins.get(node.name) == fullname:
             return  # a second definition: the first one is the class of that name
-        file.origins[node.name] = fullname
         found = class_bases(
             node, partial(self._origin, file), self._field_classes, self._described_elsewhere
         )
+        self._describe(file, node.name, found)
+
+    def _describe(self, file: _File, name: str, found: FieldClass | None) -> None:
+        """Bind a name to the class or function a module defines under it."""
+        fullname = f"{file.module}.{name}"
+        file.origins[name] = fullname
         if found is not None:
-            self._field_classes[fullname] = file.classes[node.name] = found
+            self._field_classes[fullname] = file.classes[name] = found
 
     def _origin(self, file: _File, node: ast.expr) -> str | None:
         """The dotted name an expression names, this addon's package in the scan's spelling."""
@@ -337,14 +364,12 @@ class _ImportWalker:
         return ".".join([self.addon.module_prefix, *parts]) if parts is not None else origin
 
     def _described_elsewhere(self, origin: str) -> bool:
-        """Whether a dotted name may be a class that a scan this one cannot see describes.
+        """Whether a dotted name may be a class that this scan cannot look at.
 
-        A class of another addon (addons import each other as ``odoo.addons.<name>``);
-        one of this addon only when its files are not all walked (:class:`_FileWalker`).
+        A class of another addon, of Odoo's own modules or of a library; one of this
+        addon only when its files are not all walked (:class:`_FileWalker`).
         """
-        if origin.startswith(self.addon.module_prefix + "."):
-            return not self._whole_addon
-        return origin.startswith(ADDONS_PREFIX)
+        return not origin.startswith(self.addon.module_prefix + ".") or not self._whole_addon
 
     def _field_class_of(self, file: _File, call: ast.Call) -> FieldKind | str | None:
         """The field class a call in a model's class body makes a field of.
@@ -360,7 +385,8 @@ class _ImportWalker:
         kind = field_kind(origin, self._field_classes.get)
         if kind is not None:
             return kind
-        # A class of this addon that derives from another addon's, or a class of another.
+        # A class of this addon that derives from one this scan cannot look at, or such
+        # a class itself.
         elsewhere = origin in self._field_classes or self._described_elsewhere(origin)
         return origin if elsewhere else None
 
@@ -394,43 +420,3 @@ def _unbound_fields_class(func: ast.expr) -> FieldKind | None:
     ):
         return FieldKind(func.attr, func.attr)
     return None
-
-
-def _bind_alias(node: ast.stmt, origins: dict[str, str]) -> None:
-    """Follow ``Alias = Class`` (and forget what a rebound name was bound to)."""
-    if not isinstance(node, ast.Assign):
-        return
-    origin = origin_of(node.value, origins)
-    for target in node.targets:
-        if not isinstance(target, ast.Name):
-            continue
-        if origin is not None and isinstance(node.value, ast.Name | ast.Attribute):
-            origins[target.id] = origin
-        else:
-            origins.pop(target.id, None)
-
-
-def _executed_blocks(node: ast.stmt) -> list[list[ast.stmt]]:
-    """The statement lists of a compound statement that may run at import time.
-
-    A static scan cannot tell which branch runs, so both branches of an ``if`` and
-    all clauses of a ``try`` count, in source order. ``if TYPE_CHECKING:`` bodies
-    never run. Function and class bodies are not module-level code, and loops are
-    left out (a class created in a loop needs a computed ``_name`` anyway).
-    """
-    if isinstance(node, ast.If):
-        return [node.orelse] if _is_type_checking(node.test) else [node.body, node.orelse]
-    if isinstance(node, ast.Try | ast.TryStar):
-        handlers = [handler.body for handler in node.handlers]
-        return [node.body, *handlers, node.orelse, node.finalbody]
-    if isinstance(node, ast.With | ast.AsyncWith):
-        return [node.body]
-    if isinstance(node, ast.Match):
-        return [case.body for case in node.cases]
-    return []
-
-
-def _is_type_checking(test: ast.expr) -> bool:
-    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
-        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
-    )

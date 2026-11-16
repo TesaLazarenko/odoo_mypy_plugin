@@ -109,6 +109,7 @@ from odoo_typing.hooks.env import (
     XML_ID_METHODS,
     EnvHooks,
     add_request_attributes,
+    env_cursor,
     request_env,
     type_request,
 )
@@ -624,6 +625,8 @@ class OdooPlugin(Plugin):
             return partial(self._env.record, profile.env_records[fullname])
         if fullname == f"{profile.request_class}.env":
             return partial(request_env, profile.environment)
+        if fullname == f"{profile.environment}.cr":
+            return env_cursor
         if profile.untyped_fields and fullname == f"{profile.base_model}.env":
             return partial(request_env, profile.environment)  # Odoo 17: a bare property
         required = self._models.settings.required_values

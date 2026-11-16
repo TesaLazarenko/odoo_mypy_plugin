@@ -19,8 +19,9 @@ from odoo_typing.frozen import frozen
 from odoo_typing.guards import Guard, is_guarded, model_guards
 from odoo_typing.node_index import index_nodes
 from odoo_typing.records import Record
+from odoo_typing.references import KNOWN_CLASSES
+from odoo_typing.registry.sources import SourceClasses
 from odoo_typing.scanner import (
-    POSITIONAL,
     AddonScan,
     AnnotationAlias,
     Contribution,
@@ -28,13 +29,14 @@ from odoo_typing.scanner import (
     FieldInfo,
     ModuleScan,
     SourceError,
+    UnlinkedField,
     annotation_aliases,
     field_kind,
+    linked_field,
     parse_bytes,
     read_source,
     referenced_models,
     scan_addon,
-    unread_positional,
 )
 from odoo_typing.stamps import UNREADABLE, Stamp, Stamps, matches, read_index, stamp, unchanged
 
@@ -124,6 +126,9 @@ class ScannedAddons:
         self._by_model: dict[str, dict[str, list[Contribution]]] = {}
         # The classes of each addon that may be field classes, by dotted name.
         self._field_classes: dict[str, dict[str, FieldClass]] = {}
+        self._module_paths: dict[str, dict[str, Path]] = {}  # of each addon's modules
+        self._described: dict[str, FieldClass | None] = {}  # by dotted name, once asked
+        self._sources = SourceClasses(settings.odoo_path, self._addon_module_file, scans)
         self._unreached: dict[Path, _UnreachedFile] = {}  # files the addon scans miss
         self._xml_ids: dict[str, Mapping[str, str]] = {}  # of a closure (_ClosureIds)
         self._own_xml_ids: dict[str, Mapping[str, str]] = {}  # of one addon's data files
@@ -178,55 +183,74 @@ class ScannedAddons:
         return self._scan_results[addon_name][0]
 
     def _linked(self, scan: ModuleScan) -> ModuleScan:
-        """A module's scan with the fields of other addons' field classes resolved."""
+        """A module's scan with the fields of classes it could not look at resolved."""
         if not any(_unlinked(item.fields) for item in scan.contributions):
             return scan
         return replace(scan, contributions=self.link_classes(scan.contributions))
 
     def link_classes(self, classes: tuple[Contribution, ...]) -> tuple[Contribution, ...]:
-        """Model classes with the fields of other scans' field classes resolved.
+        """Model classes with the fields of classes their scan could not look at resolved.
 
-        The scan of an addon names a field class of another addon (or, for a file read
-        on its own, of another file) by its dotted name. Here the scan that describes
-        the class is read: the field gets the Odoo class that the class derives from,
-        and a name that is no field class after all is no field.
+        The scan of an addon names a field class of another addon, of Odoo's own modules
+        or of a library (and, for a file read on its own, of another file) by its dotted
+        name (:class:`~odoo_typing.scanner.UnlinkedField`). Here what describes the
+        class is read: the field gets the Odoo class that the class derives from, and a
+        name that is no field class after all is no field. So is a name of
+        ``odoo.fields`` that is no field class (``Domain(...)`` in a class body).
         """
-        return tuple(
+        linked = tuple(
             replace(item, fields=self._linked_fields(item.fields))
             if _unlinked(item.fields)
             else item
             for item in classes
         )
+        self._sources.save()  # what was parsed for them, for the next run
+        return linked
 
     def _linked_fields(self, fields: tuple[FieldInfo, ...]) -> tuple[FieldInfo, ...]:
         linked: list[FieldInfo] = []
         for info in fields:
-            if "." not in info.field_type:
+            if isinstance(info, UnlinkedField):
+                kind = field_kind(info.field_type, self._field_class)
+                if kind is not None:  # else not a field class: the name is no field
+                    linked.append(linked_field(info, kind))
+            elif info.field_type in KNOWN_CLASSES or self._sources.is_odoo_field(info.field_type):
                 linked.append(info)
-                continue
-            kind = field_kind(info.field_type, self._field_class)
-            if kind is None:
-                continue  # not a field class: the name is no field
-            dynamic = info.dynamic
-            if POSITIONAL in dynamic:
-                dynamic = frozen((dynamic - {POSITIONAL}) | unread_positional(kind.base))
-            linked.append(replace(info, field_type=kind.field_type, dynamic=dynamic))
         return tuple(linked)
 
     def _field_class(self, origin: str) -> FieldClass | None:
-        """What an addon's scan says about the class of a dotted name, if it has it."""
+        """What describes the class of a dotted name: an addon's scan, or its source."""
+        if origin not in self._described:
+            self._described[origin] = self._describe(origin)
+        return self._described[origin]
+
+    def _describe(self, origin: str) -> FieldClass | None:
         found = self.addons.resolve_module(origin)
         if found is None:
-            return None
+            return self._sources.describe(origin)
         addon, name = found
-        classes = self._field_classes.get(addon.name)
-        if classes is None:
-            classes = self._field_classes[addon.name] = {
+        self._modules_of(addon.name)
+        # A name the module only passes on (``from requests import Session``) is not in
+        # its scan, which exports the names of addons only.
+        return self._field_classes[addon.name].get(name) or self._sources.passed_on(name)
+
+    def _modules_of(self, addon_name: str) -> dict[str, Path]:
+        """The files of an addon's scanned modules by name (and its field classes, kept)."""
+        paths = self._module_paths.get(addon_name)
+        if paths is None:
+            modules = self._read_scan(addon_name).modules
+            paths = self._module_paths[addon_name] = {item.module: item.path for item in modules}
+            self._field_classes[addon_name] = {
                 f"{module.module}.{item.name}": item
-                for module in self._read_scan(addon.name).modules
+                for module in modules
                 for item in module.classes
             }
-        return classes.get(name)
+        return paths
+
+    def _addon_module_file(self, module: str) -> Path | None:
+        """The file of an addon's module, for the reader of sources outside the scans."""
+        found = self.addons.resolve_module(module)
+        return self._modules_of(found[0].name).get(found[1]) if found is not None else None
 
     def _load_scan(self, addon_name: str) -> tuple[AddonScan, Stamps]:
         """An addon's scan and stamps: stored, or scanned now (and stored).
@@ -483,8 +507,8 @@ class _ClosureIds(Mapping[str, str]):
 
 
 def _unlinked(fields: tuple[FieldInfo, ...]) -> bool:
-    """Whether a field is of a class named by its dotted name (see ``link_classes``)."""
-    return any("." in info.field_type for info in fields)
+    """Whether a field is of a class the plugin does not know yet (see ``link_classes``)."""
+    return any(info.field_type not in KNOWN_CLASSES for info in fields)
 
 
 def _inside(path: Path, directory: Path) -> bool:

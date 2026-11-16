@@ -9,7 +9,16 @@ from typing import Final
 from odoo_typing.guards import Guard
 from odoo_typing.xmlids import DataScan
 
-__all__ = ["AddonScan", "Contribution", "FieldClass", "FieldInfo", "ModuleScan", "SourceError"]
+__all__ = [
+    "AddonScan",
+    "Contribution",
+    "FieldClass",
+    "FieldInfo",
+    "ModuleScan",
+    "Positional",
+    "SourceError",
+    "UnlinkedField",
+]
 
 EMPTY_DATA: Final = DataScan((), ())
 
@@ -25,10 +34,8 @@ class FieldInfo:
 
     Attributes:
         name: Field name.
-        field_type: Name of the field class (``Char``, ``Many2one``). For a class of
-            another addon, which the scan of one addon cannot look at: its dotted name
-            (``odoo.addons.queue_job.fields.JobSerialized``), until the registry links
-            it (:mod:`odoo_typing.registry.scans`).
+        field_type: Name of the field class (``Char``, ``Many2one``); of an
+            :class:`UnlinkedField`, the dotted name of its class.
         comodel: ``comodel_name`` of a relational field.
         inverse_name: ``inverse_name`` of a ``One2many``.
         selection: Keys of a ``selection`` given as a list of pairs.
@@ -68,13 +75,38 @@ class FieldInfo:
     dynamic: frozenset[str] = frozenset()
 
 
+# A positional argument of a field call, read each way a field class may take it: as a
+# text (a comodel, an inverse name, a selection method), as the keys of a selection list,
+# as a method of the class (by name).
+Positional = tuple[str | None, tuple[str, ...] | None, str | None]
+
+
+@dataclass(frozen=True, slots=True)
+class UnlinkedField(FieldInfo):
+    """A field of a class that the scan of its addon cannot look at.
+
+    A class of another addon, of Odoo's own modules or of a library (and, in a file read
+    on its own, of another file): ``field_type`` is its dotted name
+    (``odoo.addons.queue_job.fields.JobSerialized``). The registry reads what describes
+    the class and makes a :class:`FieldInfo` of it, or drops the name if the class is no
+    field class (:meth:`odoo_typing.registry.scans.ScannedAddons.link_classes`).
+
+    Attributes:
+        positional: The positional arguments of the call: which parameters they are
+            depends on the Odoo class the class derives from.
+    """
+
+    positional: tuple[Positional, ...] = ()
+
+
 @dataclass(frozen=True, slots=True)
 class FieldClass:
     """A class that may be a field class: what it derives from.
 
-    See :mod:`odoo_typing.scanner.field_classes`. Also a name a module only imports
-    (``from .fields import BigInteger`` in a package's ``__init__``): its one base is
-    the class it names, so that an import from the package finds it.
+    See :mod:`odoo_typing.scanner.field_classes`. Also a function that returns fields,
+    and a name a module only imports (``from .fields import BigInteger`` in a package's
+    ``__init__``): its one base is the class it names, so that an import from the
+    package finds it.
 
     Attributes:
         name: Name of the class in its module.
@@ -83,8 +115,8 @@ class FieldClass:
             of its own addon have stand for these classes.
         converts: Whether the class or one of its addon's bases defines a
             ``convert_to_*`` method: its values are not those of the Odoo class.
-        arguments: Whether one of them defines ``__init__``: its positional arguments
-            are not those of the Odoo class.
+        arguments: Whether one of them defines ``__init__`` (or is a function): its
+            positional arguments are not those of the Odoo class.
     """
 
     name: str

@@ -40,7 +40,7 @@ def test_log_access_fields_have_odoo_types(run_mypy: RunMypy) -> None:
         '13: note: Revealed type is "datetime.datetime | Literal[False]"',
         '14: note: Revealed type is "datetime.datetime | Literal[False]"',
         '15: note: Revealed type is "int"',
-        '16: note: Revealed type is "str | Literal[False]"',
+        '16: note: Revealed type is "str"',
     ]
     assert len(messages) == 5
     assert 'has no attribute "x_levell"' in messages[4]

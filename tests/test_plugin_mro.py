@@ -539,7 +539,7 @@ def test_core_website_sale_company_and_order_keep_every_extension(run_mypy: RunM
 
     website = "odoo.addons.website_sale.models.website.Website"
     assert result.messages("models.py") == [
-        '9: note: Revealed type is "str | Literal[False]"',
+        '9: note: Revealed type is "str"',
         f'10: note: Revealed type is "{website}"',
         f'11: note: Revealed type is "{website}"',
         f'12: note: Revealed type is "{website}"',

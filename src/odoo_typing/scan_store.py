@@ -33,6 +33,7 @@ from odoo_typing.scanner import (
     FieldInfo,
     ModuleScan,
     SourceError,
+    UnlinkedField,
 )
 from odoo_typing.stamps import Stamp, Stamps, unchanged
 from odoo_typing.xmlids import DataScan, XmlId
@@ -42,7 +43,17 @@ __all__ = ["DecodeError", "ScanStore", "dataclass_fields", "decode", "encode"]
 # The classes a scan is made of, by name (the only ones ``decode`` builds).
 CLASSES: Final[Mapping[str, type]] = {
     cls.__name__: cls
-    for cls in (AddonScan, ModuleScan, Contribution, FieldInfo, FieldClass, Guard, DataScan, XmlId)
+    for cls in (
+        AddonScan,
+        ModuleScan,
+        Contribution,
+        FieldInfo,
+        UnlinkedField,
+        FieldClass,
+        Guard,
+        DataScan,
+        XmlId,
+    )
 }
 
 

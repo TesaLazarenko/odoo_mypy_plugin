@@ -17,6 +17,7 @@ __all__ = [
     "RELATIONAL_FIELDS",
     "callee_name",
     "comodel_argument",
+    "executed_blocks",
     "parse_bytes",
     "parse_source",
     "read_source",
@@ -119,3 +120,29 @@ def single_target(statement: ast.stmt) -> str | None:
     else:
         return None
     return target.id if isinstance(target, ast.Name) else None
+
+
+def executed_blocks(node: ast.stmt) -> list[list[ast.stmt]]:
+    """The statement lists of a compound statement that may run at import time.
+
+    A static scan cannot tell which branch runs, so both branches of an ``if`` and
+    all clauses of a ``try`` count, in source order. ``if TYPE_CHECKING:`` bodies
+    never run. Function and class bodies are not module-level code, and loops are
+    left out (a class created in a loop needs a computed ``_name`` anyway).
+    """
+    if isinstance(node, ast.If):
+        return [node.orelse] if _is_type_checking(node.test) else [node.body, node.orelse]
+    if isinstance(node, ast.Try | ast.TryStar):
+        handlers = [handler.body for handler in node.handlers]
+        return [node.body, *handlers, node.orelse, node.finalbody]
+    if isinstance(node, ast.With | ast.AsyncWith):
+        return [node.body]
+    if isinstance(node, ast.Match):
+        return [case.body for case in node.cases]
+    return []
+
+
+def _is_type_checking(test: ast.expr) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )

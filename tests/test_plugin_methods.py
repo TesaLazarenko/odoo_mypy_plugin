@@ -316,7 +316,7 @@ def test_env_user_and_company_are_records_seen_from_the_addon(run_mypy: RunMypy)
         '18: note: Revealed type is "int"',
         '19: note: Revealed type is "str | Literal[False]"',
         '20: note: Revealed type is "str | Literal[False]"',
-        '21: note: Revealed type is "str | Literal[False]"',
+        '21: note: Revealed type is "str"',
     ]
     assert len(messages) == 5
     assert 'has no attribute "x_levell"' in messages[4]

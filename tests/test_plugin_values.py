@@ -165,10 +165,10 @@ def test_required_values_read_without_false(run_mypy: RunMypy) -> None:
             message.partition('"')[2].rstrip('"') for message in result.messages("t_use/models.py")
         ]
 
-    default = revealed("")
-    required = revealed("required_values = true\n")
+    required = revealed("")
+    declared = revealed("required_values = false\n")
 
-    assert default[0] == default[1] == "str | Literal[False]"
+    assert declared[0] == declared[1] == "str | Literal[False]"
     assert required == [
         "str",
         "str | Literal[False]",  # not required

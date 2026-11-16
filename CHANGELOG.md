@@ -23,9 +23,15 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - A field is a call of a field class, however the file names the class: `fields.Char`,
   `from odoo.fields import Char`, `from odoo import fields as f`, an alias, and the
   subclasses that addons define (`class BigInteger(fields.Integer)`), also those of
-  another addon and those a package re-exports. A subclass is a field of the Odoo class
-  it derives from; one that defines a `convert_to_*` method has values of its own, which
-  are not checked, and one that defines `__init__` takes positional arguments of its own.
+  another addon, of a library and of Odoo's own modules (`odoo.orm.fields_numeric`),
+  through any number of modules that only pass the class on. A function that returns a
+  field (`def money(**kw): return fields.Float(**kw)`) and
+  `functools.partial(fields.Float, ...)` make fields too. A subclass is a field of the
+  Odoo class it derives from, with that class's positional arguments
+  (`Partner("res.partner")`); one that defines a `convert_to_*` method has values of
+  its own, which are not checked, and one that defines `__init__` (or a factory) takes
+  positional arguments of its own. A name of `odoo.fields` that is no field class
+  (`Domain(...)` in a class body) is no field.
 - `env.ref("module.name")` is the record's model, from the XML ids of data files (also
   the ids `_update_xmlids` gives, whose model the data does not say).
 - `odoo.http.request` has the attributes addons set at run time (`request.website`,
@@ -41,8 +47,11 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - A `vals` or domain variable assigned in another arm of the `if` / `match` the call is
   in, or in an arm that returns, is not taken for its value; `match` statements are
   followed like `if`.
-- Option `required_values`: required fields and `display_name` read without
-  `| Literal[False]` (off by default: a new record reads `False`).
+- Required fields and `display_name` read without `| Literal[False]`; option
+  `required_values = false` reads them as Odoo declares them (a new record reads
+  `False`).
+- `env.cr` has the methods of a cursor (`execute`, `fetchall`, `dbname`): Odoo 18 declares
+  it as `BaseCursor`, which has none of them.
 - Fewer false errors: a key that only an addon outside the closure adds to a selection
   (`selection_add`) in domains and vals; `vals_ignore_keys` names (`x_*`) in domains,
   `mapped`, `read`, orders and `@api.depends`; `default_x=False` in a context; assigning

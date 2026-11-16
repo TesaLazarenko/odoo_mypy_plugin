@@ -36,12 +36,24 @@ imports Odoo or touches a database. It mirrors Odoo 18's loading rules:
   `from .fields import BigInteger`, `Alias = BigInteger`) and what each class derives
   from. Odoo's classes are the ones `odoo.fields` has; any other class is a field class
   if one of its bases is, and its fields are fields of that Odoo class (`BigInteger` of
-  `Integer`). The scan of an addon cannot look into another addon, so it names a class
-  of another addon by its dotted name (`odoo.addons.queue_job.fields.JobSerialized`)
-  and records which of its own classes may be field classes; the registry links the
-  two when it reads the scans. A subclass that defines a `convert_to_*` method has
-  values of its own (they are not checked), one that defines `__init__` takes positional
-  arguments of its own (they are not read). A call of anything else is no field.
+  `Integer`). A function whose every `return` calls a field class, and
+  `functools.partial(<class>, ...)`, count as such a class. The scan of an addon cannot
+  look outside the addon, so it names a class of another addon, of a library or of
+  Odoo's own modules by its dotted name
+  (`odoo.addons.queue_job.fields.JobSerialized`), keeps the call's positional arguments,
+  and records which of its own classes and functions may be field classes (and the
+  names it imports from other addons, which it may only pass on). The registry links
+  them when it reads the scans: it follows the dotted name through the scans of the
+  addons, and reads the source of a module outside them
+  ([registry/sources.py](../src/odoo_typing/registry/sources.py): Odoo's own under the
+  configured `odoo` package, a library on the interpreter's search path, never
+  imported; what each module says is kept in the scan store with its file's stamp).
+  There, Odoo's field classes are the names of `odoo.fields` whose classes
+  derive from `Field`, wherever they are defined (Odoo 19 defines them in
+  `odoo.orm.fields_*`), so `Domain` or `Command` is none. A subclass that defines a
+  `convert_to_*` method has values of its own (they are not checked), one that defines
+  `__init__` takes positional arguments of its own (they are not read). A call of
+  anything else is no field.
 - **Every model inherits `base` last**, like `_build_model` does, so methods that addons
   add with `_inherit = "base"` exist on `self` and on extensions of other models.
 - **A model's class chain** is built like Odoo's registry class (`_build_model`'s

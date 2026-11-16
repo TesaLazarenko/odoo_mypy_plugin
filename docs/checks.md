@@ -28,7 +28,8 @@ plugin:
 - **`self.env["res.partner"]`** is `Partner`, with the `_inherit` extensions visible from
   the addon (merged when unrelated addons extend it), not `BaseModel`.
 - **`self.name`** inside `_inherit = "res.partner"` is `str | Literal[False]`, not
-  `has no attribute "name"`.
+  `has no attribute "name"`; a required field (`required=True`) and `display_name` are
+  `str` (option [`required_values`](configuration.md#options)).
 - **`fields.Many2one("res.partner")`** is `Many2one[Partner]`, not `Need type annotation`.
 - **`self.partner_id`, `self.line_ids`** are the comodel's records, with the extensions
   the reading addon sees, not `Any`. So `self.x_score + self.name` is an error
@@ -55,6 +56,9 @@ plugin:
   them (`partner_id` is `tuple[int, str] | Literal[False]`, x2many fields `list[int]`).
 - **`env[records._name]`** has the type of `records` (`self` in a mixin is the model
   that uses it at run time).
+- **`self.env.cr`** has the methods of a cursor (`execute`, `fetchall`, `dbname`): Odoo
+  18 declares it as `BaseCursor`, a base class that has none of them, so every
+  `env.cr.execute(...)` was `"BaseCursor" has no attribute "execute"`.
 - **Controllers**: `odoo.http.request` is a `Request` and `request.env` an
   `Environment`, so `request.env["res.partner"]` is checked like `self.env`, in every
   module, also one without model classes (a controller helper) and on warm runs. (Odoo
@@ -639,8 +643,13 @@ get real model types.
 
 With real recordset types, some plain mypy codes appear more often:
 
-- `union-attr` / `arg-type` with `... | Literal[False]`: a field read as
-  `str | Literal[False]` (Odoo's own typing). Check the value (`if record.name:`) first.
+- `union-attr` / `arg-type` with `... | Literal[False]`: a field that is not required
+  read as `str | Literal[False]` (Odoo's own typing). Check the value
+  (`if record.name:`) first.
+- `assignment` where a variable takes a required field and then one that is not
+  (`name = move.name`, later `name = partner.ref`): the first value makes it `str`.
+  Annotate the variable, or read the fields as Odoo declares them
+  (`required_values = false`).
 - `arg-type` with `int | NewId` (`record.id` of possibly new records, Odoo 17 and 18):
   pass `record.ids` / `record._origin.id`, or check `isinstance(record.id, int)`.
   `Command.link` / `update` / `delete` / `unlink` take one as Odoo does.
