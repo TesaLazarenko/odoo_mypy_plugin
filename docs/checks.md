@@ -66,7 +66,9 @@ plugin:
   with the [overlay root](configuration.md#the-overlay-root), not `import-not-found`.
 - **`mapped("partner_id.name")`** is `list[str | Literal[False]]`, `mapped("line_ids")`
   the comodel's records, and `grouped("partner_id")` a `dict` from the field's values to
-  records.
+  records. `filtered("default_code").mapped("default_code")` is `list[str]`: the
+  records kept have the field set (a path through a relational field maps the values of
+  other records too, so it keeps `False`).
 - **`mapped(lambda r: r.amount)`** is `list[float]`, and the function's records when it
   returns records. Odoo 19 and 20 declare `list[T] | BaseModel` for both, which fits no
   parameter that takes a list (`sum(...)`, `", ".join(...)`). `mapped(name)` of a path

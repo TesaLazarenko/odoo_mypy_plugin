@@ -158,6 +158,8 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   (`Unsupported operand types for >= ("timedelta" and "object")`).
 - `create()` takes any iterable of values (`create({...} for i in range(3))`), which
   Odoo reads once.
+- `filtered("default_code").mapped("default_code")` (one field, no path) gives no
+  `False`: `", ".join(...)` of it is no `arg-type` error.
 - A `Selection` read where its keys are expected as string literals reads as those keys:
   `float_round(..., rounding_method=self.rounding_method)` of Odoo 19+, which declares
   `rounding_method: Literal["UP", "DOWN", "HALF-UP", ...]`.

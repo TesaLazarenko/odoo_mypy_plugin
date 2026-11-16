@@ -6,6 +6,8 @@ from collections.abc import Callable, Mapping
 
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import (
+    CallExpr,
+    Context,
     Expression,
     IndexExpr,
     ListExpr,
@@ -36,7 +38,7 @@ from mypy.types import (
 # After mypy.types: these modules import each other at import time.
 from mypy.checker import TypeChecker
 from mypy.subtypes import is_subtype
-from mypy.typeops import make_simplified_union
+from mypy.typeops import make_simplified_union, true_only
 from mypy.typevars import fill_typevars_with_any
 
 from odoo_typing.classes import receiver_type
@@ -199,6 +201,8 @@ class RecordsetHooks(Hooks):
             return records
         if isinstance(records, AnyType) and self._relational_end(receiver, argument.value, ctx):
             return value  # records of a comodel mypy cannot type, not a list
+        if _filtered_by(ctx.context, argument.value):
+            value = true_only(value)  # ``filtered("code").mapped("code")``: no empty code
         return checker.named_generic_type("builtins.list", [value])
 
     def _mapped_values(self, declared: Type) -> Type:
@@ -630,3 +634,23 @@ def _read_value(
     if info.field_type not in KNOWN_CLASSES:
         return AnyType(TypeOfAny.special_form)
     return None
+
+
+def _filtered_by(call: Context, field: str) -> bool:
+    """Whether a call is made on ``records.filtered(field)`` of one field (no path).
+
+    ``filtered("default_code")`` keeps the records whose field is set, so ``mapped`` of the
+    same field gives no empty value. Through a relational field the values of the other
+    records it holds are mapped too, so a path does not count.
+    """
+    if "." in field or not isinstance(call, CallExpr) or not isinstance(call.callee, MemberExpr):
+        return False
+    receiver = call.callee.expr
+    return (
+        isinstance(receiver, CallExpr)
+        and isinstance(receiver.callee, MemberExpr)
+        and receiver.callee.name == "filtered"
+        and len(receiver.args) == 1
+        and isinstance(receiver.args[0], StrExpr)
+        and receiver.args[0].value == field
+    )

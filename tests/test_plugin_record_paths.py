@@ -265,3 +265,28 @@ def test_field_guard_on_the_records_of_env_covers_a_path(run_mypy: RunMypy) -> N
 
     assert len(messages) == 1, messages
     assert messages[0].startswith('10: error: Odoo model "t.line" has no field "stock_ids"')
+
+
+FILTERED_MAPPED = """
+from odoo import models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self) -> None:
+        reveal_type(self.filtered("name").mapped("name"))
+        reveal_type(self.filtered("amount").mapped("name"))
+        reveal_type(self.filtered("line_ids.label").mapped("line_ids.label"))
+"""
+
+
+def test_mapped_of_the_field_records_are_filtered_by_has_no_empty_value(
+    run_mypy: RunMypy,
+) -> None:
+    """``filtered("default_code").mapped("default_code")`` is a list of ``str``."""
+    assert _messages(run_mypy, FILTERED_MAPPED) == [
+        '8: note: Revealed type is "list[str]"',
+        '9: note: Revealed type is "list[str | Literal[False]]"',
+        # Through a relational field the other lines' labels are mapped too.
+        '10: note: Revealed type is "list[str | Literal[False]]"',
+    ]
