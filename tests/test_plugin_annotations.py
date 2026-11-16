@@ -836,7 +836,8 @@ def test_values_annotation_documented_limits(run_mypy: RunMypy) -> None:
         # A field only the database has: one key set for every addon (README).
         '11: error: TypedDict "t.order values" has no key "x_studio_note"  [typeddict-unknown-key]',
         # Selection keys and comodels are checked in literal create() / write() vals.
-        '14: note: Revealed type is "object"',
+        # A copy is a dict[str, object], whose values read as Any (mixed values).
+        '14: note: Revealed type is "Any"',
         '16: error: Argument 1 to "takes_values" has incompatible type "dict[str, str]"; '
         'expected "t.order values"  [arg-type]',
     ]

@@ -192,6 +192,17 @@ once it can be.
   checked: `env["model"]` and the records kept on a test case take the attribute after
   the question.
 
+- **`__getitem__` and the other reads of `dict` and `list`** (also `defaultdict` and
+  `OrderedDict`; mypy names a method's hook after the receiver's class). mypy calls no
+  hook for a dict or list display (`visit_dict_expr` checks a call of `<dict>` without a
+  name), so the join it makes of mixed values cannot be changed where it is made. The
+  hooks of the reads replace the joined type argument by `Any` in the result
+  (`dict_items[str, object]` gives `dict_items[str, Any]`); `Var.is_inferred` of the
+  variable the container is read from tells an inferred type from a declared one, and
+  the function's bindings (`LocalValues`) tell a local dict display, whose value types
+  mypy has recorded. For such a local dict the signature hook of `__setitem__` takes
+  any value.
+
 - **An exception in the plugin.** mypy calls `get_additional_deps` and
   `report_config_data` outside the context in which it reports the crash of a hook: an
   exception there ends mypy with an INTERNAL ERROR that points at mypy's issue tracker,

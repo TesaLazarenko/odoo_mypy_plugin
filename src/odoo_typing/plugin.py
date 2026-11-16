@@ -139,6 +139,12 @@ from odoo_typing.hooks.env import (
 )
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
 from odoo_typing.hooks.field_values import FieldValueHooks
+from odoo_typing.hooks.mixed_values import (
+    MIXED_ITERATIONS,
+    MIXED_READS,
+    MIXED_WRITES,
+    MixedValueHooks,
+)
 from odoo_typing.hooks.model_classes import ModelClassHooks
 from odoo_typing.hooks.models import ODOO_MODEL, ODOO_MODEL_DEPENDS, Models
 from odoo_typing.hooks.recordsets import RecordsetHooks
@@ -239,6 +245,7 @@ class OdooPlugin(Plugin):
         self._fields = FieldDefinitionHooks(models, self._domains, self._env)
         self._values = FieldValueHooks(models)
         self._asked = AskedFieldHooks(models)
+        self._mixed = MixedValueHooks(models)
         annotations = AnnotationHooks(models)
         self._type_hooks: dict[str, Callable[[AnalyzeTypeContext], Type]] = {
             name: partial(annotations.annotated, name) for name in ANNOTATED_NAMES
@@ -617,6 +624,11 @@ class OdooPlugin(Plugin):
         """Records kept on a class that is no model, with the fields their function asked for."""
         return self._asked.with_asked(self._values.kept_record(ctx), ctx)
 
+    def _dict_get(self, ctx: MethodContext) -> Type:
+        """``get`` of ``odoo.values.*``, and of a dict of mixed values."""
+        found = values_get(ctx)
+        return self._mixed.read(ctx) if found is ctx.default_return_type else found
+
     def _env_records(self, ctx: MethodContext) -> Type:
         """``env["model"]``, with the fields the function asked the model for."""
         return self._asked.with_asked(self._env.getitem(ctx), ctx)
@@ -675,7 +687,11 @@ class OdooPlugin(Plugin):
         """
         profile = self._models.profile
         if fullname == DICT_GET:
-            return values_get
+            return self._dict_get
+        if fullname in MIXED_READS:
+            return self._mixed.read
+        if fullname in MIXED_ITERATIONS:
+            return self._mixed.iterate
         if fullname == profile.env_getitem:
             return self._env_records
         if fullname == f"{profile.environment}.ref":
@@ -747,6 +763,8 @@ class OdooPlugin(Plugin):
             return self._vals.field_set
         if fullname == DICT_GET:
             return values_get_signature
+        if fullname in MIXED_WRITES:
+            return self._mixed.write
         profile = self._models.profile
         if is_create(fullname):
             return partial(create_signature, profile.base_model, untyped=profile.untyped_fields)

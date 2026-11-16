@@ -107,6 +107,11 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   `in partner._fields`) gives `partner` the attribute, as mypy does for `hasattr`; a
   question about the model (`"f" in self.env["model"]`) also covers the records of that
   model the function types after it (`env[...]`, the attributes of a test case).
+- A value read from a dict or a list of mixed values is `Any`, not mypy's join of the
+  values (`object`, a union): `values = {"partner": partner, "amount": 0.0, "lines": []}`,
+  then `values["lines"].append(...)`, `values["amount"] += x`, `for key, value in
+  values.items()`. Such a dict was `dict[str, Any]` while records were untyped. An
+  annotated `dict[str, object]` and values of one type are read as before.
 - Fewer false errors: a key that only an addon outside the closure adds to a selection
   (`selection_add`) in domains and vals; `vals_ignore_keys` names (`x_*`) in domains,
   `mapped`, `read`, orders and `@api.depends`; `default_x=False` in a context; assigning

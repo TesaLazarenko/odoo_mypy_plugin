@@ -592,8 +592,8 @@ Their keys are not checked again there (mypy checked them where the values were 
 **What mypy's `TypedDict` rules mean here:**
 
 - `vals.update({"bad": 1})` is mypy's `Unexpected TypedDict key "bad"` (code `misc`);
-- a copy, `{**vals}` or `dict(vals)`, is `dict[str, object]`: annotate the copy to keep
-  the field types;
+- a copy, `{**vals}` or `dict(vals)`, is `dict[str, object]`, whose values read as `Any`
+  (see the dicts of mixed values below): annotate the copy to keep the field types;
 - a parameter annotated `odoo.values.x` takes a dict literal (checked) and other
   `odoo.values.x` values, but not a plain `dict` variable (`arg-type`): annotate the
   variable too;
@@ -722,6 +722,18 @@ With real recordset types, some plain mypy codes appear more often:
   (with `local_partial_types = true`) lets such a variable take the new type; on the
   37 core addons of the benchmark's `big` profile it takes the plugin-only errors from
   1983 to 1780.
+- A dict or a list of mixed values (`values = {"partner": partner, "amount": 0.0,
+  "lines": []}`): mypy types it by joining the values, `dict[str, object]` or a union,
+  and every use of a value was an error (`"object" has no attribute "append"`). The
+  plugin reads such a value as `Any`: `values["lines"]`, `.get()`, `.pop()`,
+  `.setdefault()`, `.items()`, `.values()`, `rows[0]` and `for row in rows`, when the
+  value type is `object` and the variable has no annotation, or when the variable is a
+  local one whose only value is a dict display of values of different types (then
+  `values[key] = x` takes any value too). A declared `dict[str, object]` stays as
+  declared; values of one type keep it. What mypy reports at the display itself stays:
+  `Need type annotation` when it holds an empty list next to a union, and a list of
+  such dicts passed to a function that declares `list[dict]`: annotate the variable
+  (`values: dict[str, Any] = {...}`).
 
 ## Not yet supported
 
