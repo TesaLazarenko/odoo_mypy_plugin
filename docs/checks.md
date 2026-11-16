@@ -74,6 +74,8 @@ plugin:
 - **`read(["name", "partner_id"])`** and `search_read(domain, ["name"])` with a literal
   list return a list of `TypedDict`s with `id` and those fields, typed as `read()` gives
   them (`partner_id` is `tuple[int, str] | Literal[False]`, x2many fields `list[int]`).
+  A required field reads without `False` there too (`required_values`): a required
+  `Many2one` is `tuple[int, str]` (`int` with `load=None`).
 - **`env[records._name]`** has the type of `records` (`self` in a mixin is the model
   that uses it at run time).
 - **`self.env.cr`** has the methods of a cursor (`execute`, `fetchall`, `dbname`): Odoo

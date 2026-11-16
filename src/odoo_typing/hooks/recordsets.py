@@ -146,7 +146,8 @@ class RecordsetHooks(Hooks):
                     message += did_you_mean(node.value, fields)
                     ctx.api.fail(message, node, code=ODOO_FIELD_REF)
                 return ctx.default_return_type
-            value = _read_value(info, ids_only, checker)
+            required = self._settings.required_values and info.required is True
+            value = _read_value(info, ids_only, checker, required=required)
             items[node.value] = (
                 value
                 or self._path_type(receiver, node.value, ctx)
@@ -599,26 +600,31 @@ def _ids_only(load: Expression | None) -> bool | None:
     return None
 
 
-def _read_value(info: FieldInfo, ids_only: bool, checker: TypeChecker) -> Type | None:
+def _read_value(
+    info: FieldInfo, ids_only: bool, checker: TypeChecker, *, required: bool = False
+) -> Type | None:
     """The type ``read()`` gives a field's value, if it differs from reading the field.
 
     ``Many2one`` is ``(id, display_name)`` (an id with ``load=None``), x2many fields a list
     of ids, ``Reference`` a ``"model,id"`` string; ``Json`` / ``Properties`` / custom
-    classes are ``Any``; ``None`` means the type of ``record.field``.
+    classes are ``Any``; ``None`` means the type of ``record.field``. A ``required`` field
+    (``required_values``) is never ``False``, as reading it is not.
     """
     false = LiteralType(False, checker.named_type("builtins.bool"))
     integer = checker.named_type("builtins.int")
     if info.field_type == "Many2one":
         if ids_only:
-            return UnionType([integer, false])  # simplifying would absorb False in int
+            # Not simplified: a union would absorb ``False`` in ``int``.
+            return integer if required else UnionType([integer, false])
         pair = TupleType(
             [integer, checker.named_type("builtins.str")], checker.named_type("builtins.tuple")
         )
-        return make_simplified_union([pair, false])
+        return pair if required else make_simplified_union([pair, false])
     if info.field_type in {"One2many", "Many2many"}:
         return checker.named_generic_type("builtins.list", [integer])
     if info.field_type == "Reference":
-        return make_simplified_union([checker.named_type("builtins.str"), false])
+        text = checker.named_type("builtins.str")
+        return text if required else make_simplified_union([text, false])
     if info.field_type in {"Json", "Properties", "PropertiesDefinition"}:
         return AnyType(TypeOfAny.special_form)
     if info.field_type not in KNOWN_CLASSES:

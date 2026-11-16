@@ -95,6 +95,7 @@ class Line(models.Model):
     order_id = fields.Many2one("t.order")
     tag_ids = fields.Many2many("t.order")
     count = fields.Integer()
+    owner_id = fields.Many2one("t.order", required=True)
 
     def check(self) -> None:
         rows = self.read(["label", "order_id", "tag_ids", "count"])
@@ -103,6 +104,8 @@ class Line(models.Model):
         reveal_type(self.search_read([("label", "!=", False)], ["count"])[0]["count"])
         self.read(["lable"])
         reveal_type(self.read())
+        reveal_type(self.read(["owner_id"])[0]["owner_id"])
+        reveal_type(self.read(["owner_id"], load="")[0]["owner_id"])
 """
 
 
@@ -117,18 +120,23 @@ def test_read_returns_typed_dicts_of_literal_fields(run_mypy: RunMypy, odoo_vers
     messages = result.messages("t_use/models.py")
 
     assert messages[0] == (
-        "13: note: Revealed type is \"TypedDict({'id': int, 'label': str | Literal[False], "
+        "14: note: Revealed type is \"TypedDict({'id': int, 'label': str | Literal[False], "
         "'order_id': tuple[int, str] | Literal[False], 'tag_ids': list[int], 'count': int})\""
     )
     assert messages[1:3] == [
-        '14: note: Revealed type is "int"',  # int | Literal[False]: False is an int
-        '15: note: Revealed type is "int"',
+        '15: note: Revealed type is "int"',  # int | Literal[False]: False is an int
+        '16: note: Revealed type is "int"',
     ]
     assert messages[3].split(";")[0] == (
-        '16: error: Odoo model "t.line" has no field "lable" in read()'
+        '17: error: Odoo model "t.line" has no field "lable" in read()'
     )
     unread = "Any" if odoo_version == 17 else "list[dict[str, Any]]"  # 17: unannotated
-    assert messages[4] == f'17: note: Revealed type is "{unread}"'
+    assert messages[4] == f'18: note: Revealed type is "{unread}"'
+    # A required many2one is never False, as reading the field is not (required_values).
+    assert messages[5:] == [
+        '19: note: Revealed type is "tuple[int, str]"',
+        '20: note: Revealed type is "int"',
+    ]
 
 
 REQUIRED = """
