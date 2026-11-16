@@ -163,6 +163,11 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - Odoo 20: the parameters that Odoo annotates `dict[str, ...]` take `env.context`, a
   `frozendict`, which is no `dict`: `clean_context(self.env.context)`,
   `with_context(self.env.context)`.
+- Values that Odoo converts to the value the code means are no `odoo-vals-type` errors:
+  numbers, ids, `bytes` and containers of plain values in a `Char` / `Text` (`str(value)`:
+  `"code": 99998`, a domain in `assignment_domain`), a string literal `float()` parses in a
+  `Float` / `Monetary` (`"21.00"`), a whole `float` literal in an `Integer` (`5.0`). Records
+  in a container stay an error, with their own message.
 - `browse()` takes the operands of an `and` chain before the last one, which reach it
   only when they are falsy: `browse(request and request.pricelist.id)` on Odoo 20.
 - `Many2one`, `Integer`, `Many2oneReference`, `Float` and `Monetary` values take the empty

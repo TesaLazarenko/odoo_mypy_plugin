@@ -18,6 +18,13 @@ empty string; a ``Many2one`` takes it as no record, numbers as ``0`` (``int(valu
 so they take ``""`` too (a ``Selection`` or an x2many field rejects it). ``Boolean``
 takes any value (``bool(value)``), and a computed ``Binary`` that is not stored often
 holds other data (widget dicts), so neither is checked.
+
+A value that Odoo converts to the one the code means is taken too: ``Char`` and ``Text``
+store ``str(value)`` (``bytes`` decoded), so a number, an id and a container of plain
+values (a domain, a list of ids, which Odoo code reads back with ``literal_eval``) fit,
+records inside a container do not; ``Float`` / ``Monetary`` take a string literal that
+``float()`` parses (``"21.00"``), ``Integer`` a whole ``float`` literal (``5.0``) or one
+that ``int()`` parses, also through a local name bound only to such literals.
 """
 
 from __future__ import annotations
@@ -38,14 +45,17 @@ from mypy.nodes import (
     Context,
     DictExpr,
     Expression,
+    FloatExpr,
     IntExpr,
     ListExpr,
     MemberExpr,
     NameExpr,
     RefExpr,
+    SetExpr,
     StrExpr,
     TupleExpr,
     TypeInfo,
+    UnaryExpr,
 )
 from mypy.subtypes import is_subtype
 from mypy.types import (
@@ -54,9 +64,11 @@ from mypy.types import (
     LiteralType,
     NoneType,
     ProperType,
+    TupleType,
     Type,
     TypedDictType,
     TypeOfAny,
+    TypeVarType,
     UnionType,
     get_proper_type,
 )
@@ -111,6 +123,17 @@ NONE: Final = "None"
 RECORDS: Final = "records"  # a recordset (of the field's comodel, checked by model name)
 NEW_ID: Final = "NewId"  # an id of a new record: ``record.id`` is ``int | NewId``
 _TEXT = ("builtins.str", FALSE, NONE)
+# What ``Char`` / ``Text`` also take as values: ``str(value)`` stores the value meant (see
+# the module docstring). Not in VALUE_TYPES, which also types what ``odoo.values`` reads.
+STRING_CONVERTED: Final = (
+    "builtins.int",
+    "builtins.float",
+    NEW_ID,
+    "builtins.bytes",
+    "builtins.list",
+    "builtins.tuple",
+    "builtins.dict",
+)
 _INTEGER = ("builtins.int", NEW_ID, FALSE, NONE)
 _FLOAT = ("builtins.float", FALSE, NONE)  # mypy promotes int to float
 _DATE = ("datetime.date", "builtins.str", FALSE, NONE)  # datetime is a date
@@ -144,6 +167,8 @@ EMPTY_STRING_CLASSES: Final = frozenset(
     {"Many2one", "Integer", "Many2oneReference", "Float", "Monetary"}
 )
 BINARY_CLASSES: Final = frozenset({"Binary", "Image"})
+STRING_CLASSES: Final = frozenset({"Char", "Text"})  # ``str(value)`` (see STRING_CONVERTED)
+FLOAT_CLASSES: Final = frozenset({"Float", "Monetary"})
 SHOWN_KEYS: Final = 8  # selection keys listed in a message
 X2MANY_CLASSES: Final = frozenset({"One2many", "Many2many"})
 # x2many commands that carry the vals of a comodel record: ``Command`` method and the
@@ -281,6 +306,8 @@ class ValsChecker:
             a key only an addon outside the closure adds is not reported.
         read_type: What reading a field of a class gives, as Odoo declares it
             (``Field[T]``); ``None`` if it is not declared or names a type variable.
+        bindings: The values a local name of the checked function is bound to
+            (:meth:`odoo_typing.local_values.LocalValues.bindings`).
     """
 
     checker: TypeChecker
@@ -293,6 +320,7 @@ class ValsChecker:
     values_of: Callable[[str], frozenset[str]]
     selection_elsewhere: Callable[[str, str], frozenset[str]] = lambda _model, _field: frozenset()
     read_type: Callable[[str], Type | None] = lambda _field_class: None
+    bindings: Callable[[NameExpr], list[Expression | None]] = lambda _name: []
 
     def typed(self, node: Expression) -> bool:
         """Whether an expression's type is the values of a model (``odoo.values.*``).
@@ -382,12 +410,23 @@ class ValsChecker:
         accepted = self._accepted(info.field_type)
         if accepted is None or (info.field_type in BINARY_CLASSES and not stored(info)):
             return
-        # Every listed class takes False: also take ``bool`` (see the module docstring).
-        falsy: list[Type] = [self.checker.named_type("builtins.bool")]
+        # Every listed class takes False: also take ``bool``, and what Odoo converts as
+        # meant (see the module docstring).
+        also: list[Type] = [self.checker.named_type("builtins.bool")]
         if info.field_type in EMPTY_STRING_CLASSES:
-            falsy.append(LiteralType("", self.checker.named_type("builtins.str")))
-        widened = UnionType.make_union([accepted, *falsy])
-        if not is_subtype(value_type, widened):
+            also.append(LiteralType("", self.checker.named_type("builtins.str")))
+        if info.field_type in STRING_CLASSES:
+            also.extend(filter(None, map(self._named, STRING_CONVERTED)))
+        widened = UnionType.make_union([accepted, *also])
+        if info.field_type in STRING_CLASSES and self._holds_records(value, value_type):
+            self.checker.fail(
+                f'Incompatible type for field "{info.name}" of Odoo model "{model}" (records '
+                f"in a container, which {info.field_type} stores as their text)",
+                value,
+                code=ODOO_VALS_TYPE,
+            )
+            return
+        if not is_subtype(value_type, widened) and not self._converted(info.field_type, value):
             options = self.checker.options
             self.checker.fail(
                 f'Incompatible type for field "{info.name}" of Odoo model "{model}" '
@@ -488,6 +527,78 @@ class ValsChecker:
                 value,
                 code=ODOO_VALS_TYPE,
             )
+
+    def _converted(self, field_type: str, value: Expression) -> bool:
+        """Whether Odoo converts a literal value to the number it is written as.
+
+        ``"amount": "21.00"`` (``float(value or 0.0)``), ``"sale_delay": 5.0`` and
+        ``"count": "3"`` (``int(value or 0)``); also a local name bound only to such
+        literals (``sale_delay = 10.0``).
+        """
+        literals = self._literals(value)
+        if not literals:
+            return False
+        if field_type in FLOAT_CLASSES:
+            return all(isinstance(item, str) and _parses(float, item) for item in literals)
+        if field_type == "Integer":
+            return all(
+                (isinstance(item, float) and item.is_integer())
+                or (isinstance(item, str) and _parses(int, item))
+                for item in literals
+            )
+        return False
+
+    def _literals(self, value: Expression) -> list[object]:
+        """The literal values an expression is: itself, or every binding of a local name."""
+        if isinstance(value, NameExpr):
+            bound = self.bindings(value)
+            nodes: list[Expression | None] = list(bound) if bound else [None]
+        else:
+            nodes = [value]
+        found: list[object] = []
+        for node in nodes:
+            negative = isinstance(node, UnaryExpr) and node.op == "-"
+            literal = node.expr if isinstance(node, UnaryExpr) and negative else node
+            if isinstance(literal, StrExpr) and not negative:
+                found.append(literal.value)
+            elif isinstance(literal, FloatExpr | IntExpr):
+                found.append(-literal.value if negative else literal.value)
+            else:
+                return []
+        return found
+
+    def _holds_records(self, value: Expression, value_type: Type) -> bool:
+        """Whether a container holds records (whose text is no value).
+
+        Read from the type, and from the items of a display (typed in an ``Any`` context,
+        ``[self]`` is ``list[Any]``).
+        """
+        pending = [get_proper_type(value_type)]
+        displays = [value]
+        while displays:
+            node = displays.pop()
+            if isinstance(node, ListExpr | TupleExpr | SetExpr):
+                items = node.items
+            elif isinstance(node, DictExpr):
+                items = [item for _, item in node.items]
+            else:
+                continue
+            displays.extend(items)
+            for item in items:
+                typ = self.checker.lookup_type_or_none(item)
+                if typ is not None:
+                    pending.append(get_proper_type(typ))
+        while pending:
+            typ = pending.pop()
+            if isinstance(typ, Instance):
+                if typ.type.has_base(self.base_model):
+                    return True
+                pending.extend(get_proper_type(arg) for arg in typ.args)
+            elif isinstance(typ, UnionType | TupleType):
+                pending.extend(get_proper_type(item) for item in typ.items)
+            elif isinstance(typ, TypeVarType):  # ``[self]`` of a method typed ``Self``
+                pending.append(get_proper_type(typ.upper_bound))
+        return False
 
     def _accepted(self, field_type: str) -> Type | None:
         """The type of the values a field class takes; ``None``: not checked."""
@@ -664,3 +775,12 @@ def _dict_defaults(value: Expression, local: LocalValues | None) -> list[Context
         for key, item in display.items
         if isinstance(key, StrExpr) and key.value.startswith(DEFAULT_PREFIX)
     ]
+
+
+def _parses(convert: Callable[[str], object], text: str) -> bool:
+    """Whether ``float(text)`` / ``int(text)`` gives a number (as Odoo converts it)."""
+    try:
+        convert(text)
+    except ValueError:
+        return False
+    return True

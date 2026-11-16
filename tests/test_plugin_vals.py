@@ -101,9 +101,9 @@ class Order(models.Model):
 
     def check(self) -> None:
         self.write({
-            "name": 1,
-            "count": "1",
-            "amount": "1.5",
+            "name": [self],
+            "count": "1.5",
+            "amount": "1,5",
             "done": "yes",  # Boolean takes anything
             "day": 20240101,
             "data": 1,
@@ -130,10 +130,41 @@ def test_vals_values_of_wrong_type_reported(run_mypy: RunMypy) -> None:
             (18, "ref"),
         )
     ]
-    assert messages[0].endswith(
-        '(expression has type "int", Char field takes "str | Literal[False] | None")  '
-        "[odoo-vals-type]"
-    )
+    assert "(records in a container, which Char stores as their text)" in messages[0]
+    assert 'expression has type "str", Integer field takes "int' in messages[1]
+
+
+CONVERTED = """
+from odoo import models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self, ratio: float) -> None:
+        delay = 10.0
+        self.write({
+            "name": 99998, "note": [("id", "!=", self.id)], "body": 1,
+            "amount": "21.00", "price": "-0.5", "count": 5.0,
+        })
+        self.write({"count": "3", "name": self.id, "note": self.ids})
+        self.count = delay
+        self.count = 2.5
+        self.count = ratio
+        self.amount = "abc"
+"""
+
+
+def test_vals_values_odoo_converts_as_written_are_accepted(run_mypy: RunMypy) -> None:
+    """``"code": 99998`` in a Char, ``"amount": "21.00"`` in a Float, ``5.0`` in an Integer."""
+    messages = [message.split(" (expression")[0] for message in _messages(run_mypy, CONVERTED)]
+
+    # Html sanitizes its value, a fraction would be cut, a float variable may hold one.
+    assert messages == [
+        '10: error: Incompatible type for field "body" of Odoo model "t.order"',
+        '15: error: Incompatible type for field "count" of Odoo model "t.order"',
+        '16: error: Incompatible type for field "count" of Odoo model "t.order"',
+        '17: error: Incompatible type for field "amount" of Odoo model "t.order"',
+    ]
 
 
 SELECTION = """
@@ -234,7 +265,7 @@ class Early(models.Model):
     _inherit = "t.order"
 
     def check(self) -> None:
-        self.write({"later": 1, "inherited": "x"})
+        self.write({"later": self, "inherited": "x"})
 
 class Later(models.Model):
     _inherit = "t.order"
@@ -270,13 +301,14 @@ def test_vals_error_codes_can_be_disabled_together(run_mypy: RunMypy) -> None:
 
 
 CACHED = """
+import datetime
 from odoo import models
 
 class Order(models.Model):
     _inherit = "t.order"
 
     def check(self) -> None:
-        self.write({"name": 1})
+        self.write({"name": datetime.date.today()})
 """
 
 
@@ -284,7 +316,7 @@ def test_vals_cache_field_class_changed_in_dependency_rechecks(run_mypy: RunMypy
     # Cross-cutting rule 1: the warm run gives what a cold run gives.
     addons = {"t_use": {"depends": ["t_base"], "models.py": CACHED}}
     first = run_mypy({"t_base": {"models.py": T_BASE}, **addons}, check=["t_use"])
-    changed = T_BASE.replace("name = fields.Char()", "name = fields.Integer()")
+    changed = T_BASE.replace("name = fields.Char()", "name = fields.Date()")
 
     second = run_mypy({"t_base": {"models.py": changed}}, check=["t_use"])
 
@@ -311,7 +343,7 @@ class Order(models.Model):
             order.state = "done"
             order.line_ids = self.env["t.line"]
             order.extra = {"a": 1}
-            order.count = "1"
+            order.count = "one"
             order.state = "cancel"
             order.partner_id = "abc"
             order.partner_id = self.env.user
@@ -367,7 +399,7 @@ class Order(models.Model):
     _inherit = "t.order"
 
     def check(self) -> None:
-        copied = self.copy({"name": 1})
+        copied = self.copy({"name": self})
         self.copy(default={"nmae": "x"})
         self.copy()
         reveal_type(copied)

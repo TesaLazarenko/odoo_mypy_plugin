@@ -610,9 +610,9 @@ an error. So:
 
 | Field class | Takes |
 |---|---|
-| `Char`, `Text`, `Html`, `Selection` | `str \| bool \| None` |
-| `Integer`, `Many2oneReference` | `int \| NewId \| bool \| None \| Literal[""]` |
-| `Float`, `Monetary` | `float \| bool \| None \| Literal[""]` |
+| `Char`, `Text`, `Html`, `Selection` | `str \| bool \| None`; `Char` and `Text` also `int \| float \| NewId \| bytes \| list \| tuple \| dict` (no records inside a container) |
+| `Integer`, `Many2oneReference` | `int \| NewId \| bool \| None \| Literal[""]`; `Integer` also a whole `float` literal and a string literal `int()` parses |
+| `Float`, `Monetary` | `float \| bool \| None \| Literal[""]`, a string literal `float()` parses |
 | `Date`, `Datetime` | `date \| str \| bool \| None` |
 | `Binary`, `Image` | `bytes \| str \| bool \| None` |
 | `Many2one` | `int \| NewId \| BaseModel \| tuple \| bool \| None \| Literal[""]` |
@@ -622,6 +622,14 @@ an error. So:
 
 A field of a subclass that an addon defines takes what the Odoo class it derives from
 takes (`class BigInteger(fields.Integer)`: the `Integer` row).
+
+A value Odoo converts to the one the code means fits: `Char` and `Text` store
+`str(value)`, so `"code": 99998`, `"assignment_domain": [("probability", ">=", 10)]` and
+`wizard.res_ids = moves.ids` (read back with `literal_eval`) are no errors, records in a
+container are (`str([partner])` is no value). `"amount": "21.00"` is `float("21.00")`,
+`"sale_delay": 5.0` is `int(5.0)`, also through a local name bound only to such literals
+(`delay = 10.0`); `2.5` or a `float` variable in an `Integer` would lose the fraction, and
+`"abc"` in a `Float` raises, so they stay errors.
 
 `Literal[""]` is what mypy gives a string condition: `model.mapped_partner_id =
 model.match_label and partner.id` is `Literal[""] | int`. Odoo converts it as any falsy

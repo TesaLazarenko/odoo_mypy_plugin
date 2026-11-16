@@ -8,7 +8,7 @@ from __future__ import annotations
 from functools import partial
 
 from mypy.lookup import lookup_fully_qualified
-from mypy.nodes import CallExpr, MemberExpr, NameExpr, TempNode, TypeInfo
+from mypy.nodes import CallExpr, Expression, MemberExpr, NameExpr, TempNode, TypeInfo
 from mypy.plugin import CheckerPluginInterface, MethodContext, MethodSigContext
 from mypy.types import AnyType, FunctionLike, Instance, Type, get_proper_type, has_type_vars
 
@@ -106,7 +106,13 @@ class ValsHooks(Hooks):
             partial(self._accepted_values, addon_name=addon_name, api=api),
             self._selection_elsewhere(addon_name),
             partial(self._read_type, type_checker(api)),
+            partial(self._bindings, api=api),
         )
+
+    def _bindings(self, name: NameExpr, api: CheckerPluginInterface) -> list[Expression | None]:
+        """The values a local name of the function being checked is bound to."""
+        local = self._local_values(api)
+        return local.bindings(name) if local is not None else []
 
     def _read_type(self, checker: TypeChecker, field_class: str) -> Type | None:
         """What reading a field of an Odoo field class gives (the ``T`` of ``Field[T]``)."""
