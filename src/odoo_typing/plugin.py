@@ -126,7 +126,12 @@ from odoo_typing.hooks.annotations import (
 from odoo_typing.hooks.asked_fields import HASATTR, AskedFieldHooks
 from odoo_typing.hooks.built_classes import inherit_built_class
 from odoo_typing.hooks.class_attributes import define_through_cls, readable_on_class
-from odoo_typing.hooks.comparisons import COMPARISON_HOOKS, ComparisonHooks
+from odoo_typing.hooks.comparisons import (
+    COMPARISON_HOOKS,
+    FALSE_OPERATORS,
+    ComparisonHooks,
+    false_operand,
+)
 from odoo_typing.hooks.domains import (
     DomainHooks,
     domain_parameters,
@@ -811,6 +816,8 @@ class OdooPlugin(Plugin):
             return partial(self._recordsets.read_result, name)
         if fullname in COMPARISON_HOOKS:
             return self._comparisons.selection_keys
+        if fullname in FALSE_OPERATORS:
+            return partial(false_operand, name)  # ``record.date - other`` of an empty date
         if name == CONTAINS:
             return self._asked.contains  # ``"f" in records``
         if name == "fetch":

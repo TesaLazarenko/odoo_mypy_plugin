@@ -247,6 +247,12 @@ once it can be.
   map a class of the model that the reading addon's view extends to that view
   (`Models.view_type`); a type variable (`Self` of an override) is left alone.
 
+- **Operators of `False`** (`odoo_typing.hooks.comparisons.false_operand`). mypy names
+  the hook of a literal's method after the class that defines the method, so `False - x`
+  asks for `builtins.int.__sub__`. When the receiver is the literal `False` and the
+  operand fits none of the method's signatures, the hook gives `Any`: mypy has reported
+  the operand, and would otherwise go on with the return type of the method that failed.
+
 - **Dependency edges weigh as imports inside functions** (`DEPENDENCY_PRIORITY`,
   mypy's `PRI_LOW`): within an import cycle mypy orders modules by their imports'
   weight, dropping the lightest edges first. A plugin edge from a helper module to the

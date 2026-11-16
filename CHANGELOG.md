@@ -145,6 +145,10 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   "mail.template"`, also in a method of the class it passes the parameter to) takes
   the records of those models: `message_post_with_source(template)` on Odoo 20, which
   declares `source_ref: str | IrUiView`.
+- An operator that the `False` of an empty value does not support
+  (`abs(picking.scheduled_date - out_date) <= delta`) is one error, about the operand:
+  mypy went on with `int`, what `int.__sub__` returns, and reported the comparison too
+  (`Unsupported operand types for >= ("timedelta" and "object")`).
 - `create()` takes any iterable of values (`create({...} for i in range(3))`), which
   Odoo reads once.
 - A container of records without an annotation takes records of no model too

@@ -833,6 +833,13 @@ With real recordset types, some plain mypy codes appear more often:
   tests `source_ref._name == "mail.template"`. The scan reads `p._name == "m"` (`!=`,
   `in (...)`) of a parameter in the methods of a model class, also through the methods of
   the class it passes the parameter to.
+- An **operator that `False` does not support** is one error. A field that is not
+  required reads as `datetime | Literal[False]`, and `abs(picking.scheduled_date -
+  out_date) <= timedelta(seconds=1)` is reported for the operand (`Unsupported operand
+  types for - ("Literal[False]" and "datetime")`), which is what the declaration says.
+  mypy then went on with the type `int.__sub__` returns: `timedelta | int` is an `object`
+  for `abs`, and the comparison was a second error on the line (`Unsupported operand
+  types for >= ("timedelta" and "object")`). What such an operation gives is `Any`.
 - `filter(None, [prefix, record.name])` takes values that may be `False`: `None` as the
   function drops every falsy item.
 - `Command.set(["account.tag_x", "own_record_1", tag.id])` (Odoo 19, 20 declare

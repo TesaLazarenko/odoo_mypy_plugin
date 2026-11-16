@@ -283,3 +283,35 @@ def test_a_tuple_annotated_with_field_classes_holds_their_values(run_mypy: RunMy
     assert result.messages("later.py") == []  # through the class that inherits the alias
     (message,) = result.messages("models.py")
     assert message.startswith('23: error: Argument 3 to "Procurement" has incompatible type')
+
+
+FALSE_OPERAND = """
+from datetime import timedelta
+
+from odoo import fields, models
+
+class Picking(models.Model):
+    _name = "t.picking"
+
+    scheduled = fields.Datetime()
+    deadline = fields.Datetime(required=True)
+    delay = fields.Integer()
+
+    def on_time(self) -> bool:
+        late = abs(self.scheduled - self.deadline) <= timedelta(seconds=1)
+        reveal_type(self.delay - 1)
+        reveal_type(False - 1)
+        return late
+"""
+
+
+def test_an_operator_false_does_not_support_is_one_error(run_mypy: RunMypy) -> None:
+    """``abs(date - other) <= delta`` of an empty date: the operand, no error about ``int``."""
+    messages = run_mypy({"my_mod": {"models.py": FALSE_OPERAND}}).messages("models.py")
+
+    assert messages == [
+        '14: error: Unsupported operand types for - ("Literal[False]" and "datetime")  [operator]',
+        '14: note: Left operand is of type "datetime | Literal[False]"',
+        '15: note: Revealed type is "int"',
+        '16: note: Revealed type is "int"',
+    ], messages
