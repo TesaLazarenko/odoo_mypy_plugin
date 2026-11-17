@@ -46,7 +46,11 @@ from odoo_typing.hooks.models import (
 )
 from odoo_typing.hooks.nodes import class_infos, field_sources, incomplete_modules, lookup_class
 from odoo_typing.hooks.passed import widen_passed
-from odoo_typing.methods import annotate_self_overrides
+from odoo_typing.methods import (
+    annotate_inherited_returns,
+    annotate_self_overrides,
+    is_identity_decorator,
+)
 from odoo_typing.records import digest
 from odoo_typing.references import (
     META_FIELD_ATTRIBUTES,
@@ -75,6 +79,9 @@ class ModelClassHooks(Hooks):
         # ``__odoo_fields`` per module, kept with the scan it was made from: each model
         # class of a module, and each analysis pass, asks again.
         self._fields_digests: dict[str, tuple[ModuleScan, str]] = {}
+        # The MRO each model class got from its registry chain, by class: a pass that
+        # deferred the merge leaves the class with the MRO of its Python bases.
+        self._merged: dict[str, list[TypeInfo]] = {}
 
     def comodel_generic(self, ctx: ClassDefContext) -> None:
         """Give a relational field class a type variable for its comodel."""
@@ -109,6 +116,7 @@ class ModelClassHooks(Hooks):
         written = {base.type: base for base in info.bases}
         own = [written.pop(base) if base in written else instance_of(base) for base in bases]
         install_mro(info, merge.order, [*own, *written.values()], partial=chain.missing)
+        self._merged[info.fullname] = info.mro
         if merge.conflict or self.registry.mro_conflict(contribution):
             ctx.api.msg.note(_conflict_message(ctx.cls.name), ctx.cls, code=ODOO_MODEL)
 
@@ -150,6 +158,16 @@ class ModelClassHooks(Hooks):
             if self.registry.log_access(contribution):
                 add_log_access_fields(ctx.cls.info, _log_access_types(ctx, self._profile))
             self._add_fields_digest(ctx)
+            if self._merged.get(ctx.cls.info.fullname) is ctx.cls.info.mro:
+                # Not with the MRO of the Python bases of a pass that deferred the merge.
+                names = frozenset(contribution.super_returns)
+                annotate_inherited_returns(ctx, names, self._keeps_signature)
+
+    def _keeps_signature(self, decorator: Expression) -> bool:
+        """Whether a decorator of a method returns the method (``api.model``, ``api.depends``)."""
+        profile = self._profile
+        names = profile.identity_decorators | profile.identity_factories
+        return is_identity_decorator(decorator, names | frozenset(profile.field_decorators))
 
     def _check_meta_references(self, contribution: Contribution, ctx: ClassDefContext) -> None:
         """Report the fields that ``_order``, ``_rec_name`` and the like name but are not there.
@@ -223,9 +241,17 @@ class ModelClassHooks(Hooks):
         details = [[item.log_access, item.abstract] for item in scan.contributions]
         fields = [item.fields for item in scan.contributions]
         # What the methods assign decides whether a computed field may be empty; which
-        # class defines the compute method last, which of them assign on every path.
+        # class defines the compute method last, which of them assign on every path; which
+        # ones return their super() call, what the methods return.
         assigned = [
-            [item.assigned, item.assigned_any, item.assigned_through, item.filled, item.methods]
+            [
+                item.assigned,
+                item.assigned_any,
+                item.assigned_through,
+                item.filled,
+                item.methods,
+                item.super_returns,
+            ]
             for item in scan.contributions
         ]
         value = digest(

@@ -41,6 +41,9 @@ plugin:
 - **`self.sudo()`, `.with_context(...)`, `.filtered(...)`, `.search([])`, `.copy()`**
   keep the receiver's model, also through unannotated overrides of `create`, `copy`,
   `search`...
+- **An unannotated override that returns its `super()` call** returns what the method it
+  overrides declares: `env["product.product"]._search(...)` is a `Query` (Odoo 18+),
+  `write(...)` `Literal[True]`, though `product` overrides both without annotations.
 - **`self.env.user`, `self.env.company`** are `res.users` / `res.company` records as the
   addon sees them; so is `self.env.website` on Odoo 20 (declared as `BaseModel`: an
   attribute of the environment declared as records of no model is the model it is named

@@ -176,7 +176,8 @@ def test_unannotated_overrides_of_self_methods_keep_receiver_type(
         f'33: note: Revealed type is "{thing}"',
         f'34: note: Revealed type is "{thing}"',
         f'35: note: Revealed type is "{thing}"',
-        '36: note: Revealed type is "Any"',  # unannotated, not a -> Self method
+        # Not a -> Self method: what Odoo 19+ declares (``int``), passed on by super().
+        f'36: note: Revealed type is "{"int" if names.version >= 19 else "Any"}"',
         '37: note: Revealed type is "Any"',
     ]
 
@@ -595,6 +596,209 @@ def test_self_override_returning_other_records_stays_unannotated(run_mypy: RunMy
         '19: note: Revealed type is "my_mod.models.Thing"',
         '20: note: Revealed type is "my_mod.models.Thing"',
     ]
+
+
+# -- an unannotated override that returns its super() call -------------------------------------
+
+DECLARED = """
+from typing import overload
+
+from odoo import api, fields, models
+
+class Thing(models.Model):
+    _name = "t.thing"
+
+    name = fields.Char()
+
+    def _total(self) -> int:
+        return 0
+
+    @api.model
+    def _count(self) -> int:
+        return 0
+
+    def _size(self) -> int:
+        return 0
+
+    def _label(self) -> str:
+        return ""
+
+    def _nothing(self) -> None:
+        pass
+
+    def _untyped(self):
+        return 1
+
+    def _other(self) -> int:
+        return 0
+
+    def _maybe(self) -> int:
+        return 0
+
+    @property
+    def _prop(self) -> int:
+        return 0
+
+    @overload
+    def _pick(self, key: int) -> int: ...
+    @overload
+    def _pick(self, key: str) -> str: ...
+    def _pick(self, key: int | str) -> int | str:
+        return key
+
+class Line(models.Model):
+    _name = "t.line"
+
+    thing_id = fields.Many2one("t.thing")
+"""
+
+OVERRIDES = """
+from odoo import api, models
+
+class Thing(models.Model):
+    _inherit = "t.thing"
+
+    @api.model
+    def _search(self, domain, *args, **kwargs):
+        if self.env.context.get("x"):
+            domain = [*domain, ("name", "=", "x")]
+        return super()._search(domain, *args, **kwargs)
+
+    def write(self, vals):
+        result = super().write(vals)
+        self.flush_recordset()
+        return result
+
+    def _total(self):
+        seen = []  # stays a dynamic function: no "Need type annotation"
+        total = super()._total()
+        total += 1
+        return total
+
+    @api.model
+    def _count(self):
+        return super()._count()
+
+    def _size(self, extra=None):
+        return super(Thing, self)._size()
+
+    def _label(self, short=False):
+        if short:
+            return super()._label()
+        raise ValueError("long")
+
+    def _nothing(self):
+        return super()._nothing()
+
+    def _untyped(self):
+        return super()._untyped()
+
+    def _other(self):
+        return super()._total()
+
+    def _maybe(self, flag=False):
+        if flag:
+            return super()._maybe()
+
+    @property
+    def _prop(self):
+        return super()._prop
+
+    def _pick(self, key):
+        return super()._pick(key)
+"""
+
+CHAINED = """
+from odoo import models
+
+class Thing(models.Model):
+    _inherit = "t.thing"
+
+    def _total(self):
+        return super()._total()
+
+    def _count(self):
+        found = super()._count()
+        if not found:
+            found = 1
+        return found
+
+class Line(models.Model):
+    _inherit = "t.line"
+
+    def check(self) -> None:
+        things = self.env["t.thing"]
+        reveal_type(things._search([("name", "=", "y")]))
+        reveal_type(things.write({}))
+        reveal_type(things._total())
+        reveal_type(things._count())
+        reveal_type(things._size(1))
+        reveal_type(things._label())
+        reveal_type(things._nothing())
+        reveal_type(things._untyped())
+        reveal_type(things._other())
+        reveal_type(things._maybe())
+        reveal_type(things._prop)
+        reveal_type(things._pick(1))
+        subquery = things._search([("name", "=", "y")])
+        rows = self.search_read([("thing_id", "in", subquery)], ["thing_id"])
+        rows[0]["thing_id"][1]
+"""
+
+# mypy keeps no method bodies of a module whose errors it does not report.
+SILENT = """
+[[tool.mypy.overrides]]
+module = ["t_more", "t_more.*"]
+follow_imports = "silent"
+"""
+
+
+@pytest.mark.parametrize("silent", [False, True], ids=["checked", "silent"])
+def test_override_returning_its_super_call_returns_the_declared_type(
+    run_mypy: RunMypy, names: OdooNames, silent: bool
+) -> None:
+    """``product.product`` overrides ``_search`` without annotations: the subquery was ``Any``."""
+    result = run_mypy(
+        {
+            "t_base": {"models.py": DECLARED},
+            "t_more": {"depends": ["t_base"], "models.py": OVERRIDES},
+            "t_use": {"depends": ["t_more"], "models.py": CHAINED},
+        },
+        check=["t_use"] if silent else ["t_more", "t_use"],
+        options=SILENT if silent else "",
+    )
+
+    # The overrides' bodies are checked as before: unannotated functions.
+    assert result.messages("t_more/models.py") == []
+    messages = result.messages("t_use/models.py")
+    notes = [line for line in messages if "Revealed type" in line]
+    revealed = [line.partition('"')[2].rstrip('"') for line in notes]
+    # Odoo 17 annotates neither ``_search`` nor ``write``: the overrides stay ``Any``.
+    query = {17: "Any", 18: "odoo.tools.query.Query", 19: "odoo.tools.query.Query"}
+    assert revealed[:2] == [
+        query.get(names.version, "odoo.orm.query.Query"),
+        "Any" if names.version == 17 else "Literal[True]",
+    ]
+    assert revealed[2:] == [
+        "int",  # through two overrides
+        "Any",  # the second override returns another value too
+        "int",  # super(Thing, self), another signature
+        "str",  # returns or raises
+        "Any",  # the declared None is no use to a caller
+        "Any",  # the overridden method is unannotated
+        "Any",  # super() of another method
+        "Any",  # may end without a return
+        "Any",  # a property
+        "Any",  # an overload
+    ]
+    # The domain of the subquery's search sets the field (odoo_typing.searched).
+    errors = [line.partition(": error: ")[2] for line in messages if ": error: " in line]
+    assert errors == (
+        ['Value of type "tuple[int, str] | Literal[False]" is not indexable  [index]']
+        if names.version == 17
+        else []
+    )
+    assert len(messages) == len(notes) + len(errors)
 
 
 @pytest.mark.odoo(19, 20)

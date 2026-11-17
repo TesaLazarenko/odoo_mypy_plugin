@@ -158,6 +158,19 @@ once it can be.
   annotations returns the receiver's model; `create` also accepts one dict, as
   `model_create_multi` does at runtime.
 
+- **Overrides that return their `super()` call**: `product.product` overrides `_search`
+  without annotations and returns `super()._search(domain, ...)`, which made every
+  `_search` of products `Any` where Odoo declares `Query`. A method without annotations
+  every `return` of which gives `super().<the same method>(...)`, or a local bound once
+  to it, and that ends in a `return` or `raise` on every path, gets the return type of
+  the definition that `super()` reaches: the next class of its MRO that has the method,
+  annotated there, or such an override typed the same way (a chain), undecorated or
+  with decorators that keep the signature (`api.model`). The scan reads those methods
+  from the source (mypy keeps no bodies of the modules it does not report on). The
+  signature stays implicit (parameters `Any`, the body checked as an unannotated
+  function's); a declared `None`, `Any`, an overload, a property or a type variable
+  (`-> Self`, see above) gives no type.
+
 - **`env.user` / `env.company` / `env.companies`**: records of `res.users` /
   `res.company` as the file's addon sees them. `env[NAME]` accepts a `Final` string
   constant (a plain variable stays `BaseModel`).
