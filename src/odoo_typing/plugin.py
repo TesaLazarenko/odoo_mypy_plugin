@@ -144,7 +144,6 @@ from odoo_typing.hooks.domains import (
     wrapper_signature,
 )
 from odoo_typing.hooks.env import (
-    CONTEXT_GETS,
     XML_ID_METHODS,
     EnvHooks,
     add_request_attributes,
@@ -828,7 +827,7 @@ class OdooPlugin(Plugin):
         profile = self._models.profile
         if fullname == DICT_GET:
             return self._dict_get
-        if fullname in CONTEXT_GETS or self._is_context_get(fullname):
+        if self._is_context_get(fullname):
             return lambda ctx: self._env.context_get(ctx.default_return_type, ctx)
         if fullname in MAPPING_ITEMS:
             return partial(_first_of, (self._recordsets.declared_field, self._mixed.read))

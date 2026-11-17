@@ -67,7 +67,6 @@ from odoo_typing.xmlids import ODOO_XMLID, ODOO_XMLID_DEPENDS, automatic_model
 
 __all__ = [
     "CONTEXT",
-    "CONTEXT_GETS",
     "GROUPS",
     "REQUEST_ATTRIBUTES",
     "XML_ID_METHODS",
@@ -85,8 +84,6 @@ __all__ = [
 
 
 EXECUTE: Final = "execute"  # what a cursor class has (see env_cursor)
-# ``get`` of the classes Odoo 20's ``frozendict`` context is made of (built_classes).
-CONTEXT_GETS: Final = frozenset({"types.MappingProxyType.get", "typing.Mapping.get"})
 CONTEXT: Final = "context"
 DICT: Final = "builtins.dict"
 

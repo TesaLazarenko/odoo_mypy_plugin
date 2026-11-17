@@ -203,6 +203,7 @@ class Order(models.Model):
         )
         reveal_type(rows[0]["partner_id"])
         reveal_type(rows[0]["name"])
+        reveal_type(rows[0].get("partner_id"))  # mypy's own get of a TypedDict
         found = self.search([("name", "ilike", "x")])
         reveal_type(found.name)
         for order in found:
@@ -224,6 +225,7 @@ def test_fields_the_search_domain_sets_have_no_false(run_mypy: RunMypy) -> None:
     assert revealed == [
         "tuple[int, str]",
         "str | Literal[False]",
+        "tuple[int, str]",  # a key of a total TypedDict
         "str",
         "str",
         "str | Literal[False]",
