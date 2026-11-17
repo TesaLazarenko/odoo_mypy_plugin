@@ -24,6 +24,7 @@ from odoo_typing.frozen import frozen
 from odoo_typing.guards import model_guards
 from odoo_typing.node_index import index_nodes
 from odoo_typing.scanner.annotations import annotation_aliases
+from odoo_typing.scanner.assigned import assigned_values
 from odoo_typing.scanner.class_bodies import (
     NAME_TEST,
     abstract,
@@ -328,6 +329,7 @@ class _ImportWalker:
         methods = defined_methods(node)
         inherits = attrs.get("_inherits")
         scope = ChainMap(attrs, file.names)
+        assigned, assigned_any = assigned_values(node)
         file.contributions.append(
             Contribution(
                 addon=self.addon.name,
@@ -348,6 +350,8 @@ class _ImportWalker:
                 value_keys=read_value_keys(node),
                 dispatches=record_dispatches(node) if file.tests_names else (),
                 passed=passed_containers(node),
+                assigned=assigned,
+                assigned_any=assigned_any,
             )
         )
 

@@ -278,24 +278,34 @@ def stored(info: FieldInfo) -> bool:
 
 
 def value_required(
-    info: FieldInfo, model: str, fields_of: Callable[[str], Mapping[str, FieldInfo]], depth: int = 0
+    info: FieldInfo,
+    model: str,
+    fields_of: Callable[[str], Mapping[str, FieldInfo]],
+    computed: Callable[[str, FieldInfo], bool] | None = None,
+    depth: int = 0,
 ) -> bool:
     """Whether a field of a saved record always has a value: required, or related to one.
 
     Odoo copies ``required`` only to the fields delegated through ``_inherits``. A
     ``related=`` path whose hops are required ``Many2one`` fields and whose last field is
     required (``product.template.attribute.value.name``, related to
-    ``product_attribute_value_id.name``) reads a value just as surely.
+    ``product_attribute_value_id.name``) reads a value just as surely. So does a field
+    that ``computed`` says its compute methods always give a value
+    (:mod:`odoo_typing.computed`), also as the last field of such a path.
     """
+    if info.required is True:
+        return True
+    if computed is not None and computed(model, info):
+        return True
     if info.required is not None or depth > MAX_RELATED:
-        return info.required is True
+        return False
     if not info.related or "related" in info.dynamic:
         return False
     current = model
     hops = info.related.split(".")
     for index, hop in enumerate(hops):
         field = fields_of(current).get(hop)
-        if field is None or not value_required(field, current, fields_of, depth + 1):
+        if field is None or not value_required(field, current, fields_of, computed, depth + 1):
             return False
         if index < len(hops) - 1:
             if field.field_type != "Many2one" or not field.comodel or "comodel" in field.dynamic:

@@ -378,6 +378,49 @@ def test_dmypy_field_arguments_of_another_module_are_followed(
     assert [line for line in again if "error" in line] == []
 
 
+COMPUTED = """
+
+class Computed(models.Model):
+    _inherit = "x.thing"
+
+    summary = fields.Text(compute="_compute_summary")
+
+    def _compute_summary(self) -> None:
+        for record in self:
+            record.summary = "{}"
+"""
+READ_SUMMARY = """
+
+class Reader(models.Model):
+    _name = "x.reader"
+
+    def check(self) -> None:
+        reveal_type(self.env["x.thing"].summary)
+"""
+
+
+def test_dmypy_computed_values_of_another_module_are_followed(
+    daemon: Daemon, tmp_path: Path
+) -> None:
+    """What a compute method assigns decides the field's type (``odoo_typing.computed``)."""
+    root = tmp_path / "addons"
+    models = root / "dep_mod/models.py"
+    _append(models, COMPUTED)
+    _append(root / "my_mod/user.py", READ_SUMMARY)
+    text = daemon.check()
+    models.write_text(models.read_text().replace('record.summary = "{}"', "record.summary = False"))
+    empty = daemon.check()
+    models.write_text(models.read_text().replace("record.summary = False", 'record.summary = "{}"'))
+    again = daemon.check()
+
+    def revealed(lines: list[str]) -> list[str]:
+        return [line.split('"', 1)[1] for line in lines if "x.reader" not in line][-1:]
+
+    assert revealed(text) == ['str"']
+    assert revealed(empty) == ['str | Literal[False]"']
+    assert revealed(again) == ['str"']
+
+
 VARIABLES = """
 
 class Built(models.Model):

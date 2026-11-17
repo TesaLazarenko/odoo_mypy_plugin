@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from odoo_typing.scanner import SourceError, parse_bytes, parse_source, referenced_models
+from odoo_typing.scanner.assigned import ANY_NAME, ANY_VALUE, TEXT, assigned_values
 from odoo_typing.scanner.class_bodies import passed_containers
 
 NESTED = """
@@ -167,3 +168,75 @@ def test_a_class_without_container_annotations_passes_nothing() -> None:
     assert isinstance(node, ast.ClassDef)
 
     assert passed_containers(node) == ()
+
+
+ASSIGNED = """
+class Wizard(models.TransientModel):
+    _name = "t.wizard"
+
+    def _compute_data(self):
+        for record in self:
+            if record.action == "a":
+                record.data = json.dumps({})
+            elif record.action == "b":
+                record.data = "{}"
+            else:
+                raise UserError("no action")
+            record.label = _("Total: %s") % record.total
+            record.note = "a" + record.name if record.name else f"{record.id}"
+            record.joined = ", ".join(record.mapped("name")) or False
+            record.code, record.other = "x", self.env.user.name
+            record.count += 1
+
+    def _compute_names(self):
+        url = urlparse("/")
+        with self.env.cr.savepoint():
+            self.update({"name": "x".format(), "label": url.geturl(), **self._values()})
+            self["title"] = "%s" % self.id
+            self[key] = False
+        try:
+            setattr(self, "ref", self._ref())
+        except ValueError:
+            setattr(self, name, "x")
+
+    def _compute_local(self):
+        def text(value):
+            return None
+        self.local = text(1)
+        self.outer = str(self.id)
+
+    def _search_results(self, rows):
+        lines = self.line_ids
+        for line in lines.filtered("name"):
+            line["state"] = "done"
+        values = {}
+        values["data"] = False
+        values.update({"note": False, **rows[0]})
+        for record, row in zip(self, rows):
+            row["title"] = None
+
+    def helper(self):
+        return 1
+"""
+
+
+def test_the_kinds_of_the_values_methods_assign_to_attributes() -> None:
+    """Strings by their syntax, calls of the module's names, and what is neither."""
+    node = ast.parse(ASSIGNED).body[0]
+    assert isinstance(node, ast.ClassDef)
+
+    known, unknown = assigned_values(node)
+
+    assert set(known) == {
+        ("_compute_data", "data", (TEXT, "json.dumps")),
+        ("_compute_data", "label", ("_",)),
+        ("_compute_data", "note", (TEXT,)),
+        ("_compute_data", "code", (TEXT,)),
+        ("_compute_names", "name", (TEXT,)),
+        ("_compute_names", ANY_NAME, (ANY_VALUE,)),
+        ("_compute_names", "title", (TEXT,)),
+        ("_compute_local", "outer", ("str",)),
+        ("_search_results", "state", (TEXT,)),  # an item of records; not those of dicts
+    }
+    # ``or False``, an attribute's value, ``+=``, calls of a local name and of ``self``.
+    assert unknown == ("count", "joined", "label", "local", "other", "ref")

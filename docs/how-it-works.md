@@ -238,6 +238,22 @@ once it can be.
   of `search_read`, read the domain's top-level conjunction (a prefix parse: `&` keeps
   both sides, `|` and `!` keep nothing) for terms that set a field of the model.
 
+- **Computed text fields** (`odoo_typing.computed`, `scanner.assigned`). The scan of a
+  class keeps, per method and attribute name, the kinds of the values assigned
+  (`x.name = v`, `setattr(x, "name", v)`; `x["name"] = v` and `x.update({"name": v})` /
+  `x.write({...})` with a dict display where `x` starts at the method's first parameter
+  or at a name bound to an expression that does, since most such writes are a dict's):
+  a string by its syntax, the dotted name of a called name of the module (`json.dumps`),
+  or unknown (then only the attribute's name, per class). A call of a name the method
+  binds itself (`url.geturl()`, `self._label()`) is unknown. `value_required` asks for
+  a `Char` / `Text` / `Html` field that is computed at each read (not stored, no
+  `inverse`, not `readonly=False`: `Field.__get__` raises for a record without a value)
+  whether the classes of the model's view assign only such values, at least once in the
+  compute method; the called names are looked up in mypy's symbol table of the module
+  that calls them (then in `builtins`) and must be declared to return `str` (a class
+  derived from `str` counts). The assigned kinds are part of the addon's scan digest
+  and of `__odoo_fields`, so an edit of a compute method checks the readers again.
+
 - **Guards of Odoo functions** (`odoo_typing.falsy_guards`, `hooks.falsy_parameters`).
   mypy drops the bodies of the modules whose errors it does not show, so the signature
   and return-type hooks of a function or method that Odoo defines outside the addons

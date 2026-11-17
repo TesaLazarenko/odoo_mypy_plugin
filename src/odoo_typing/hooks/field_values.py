@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TypeGuard
 
 from mypy.lookup import lookup_fully_qualified
-from mypy.nodes import Context, Expression, MemberExpr, TypeInfo, Var
+from mypy.nodes import Context, Expression, FuncDef, MemberExpr, TypeInfo, Var
 from mypy.plugin import (
     AttributeContext,
     CheckerPluginInterface,
@@ -256,12 +256,25 @@ class FieldValueHooks(Hooks):
     def _value_required(
         self, info: FieldInfo | None, records: Instance, api: CheckerPluginInterface
     ) -> bool:
-        """Whether a field read always has a value (:func:`value_required`)."""
+        """Whether a field read always has a value (:func:`value_required`).
+
+        Not a computed field read in its own compute method: it reads ``False`` there
+        until the method assigns it (:mod:`odoo_typing.computed`).
+        """
         model = self._models.model_of(records.type)
         addon_name = self.registry.addon_name_for_path(api.path)
         if info is None or model is None or addon_name is None:
             return False
-        return value_required(info, model, self._fields_of(addon_name, api))
+        computed = None if self._computing(info, model, api) else self._computed_of(addon_name, api)
+        return value_required(info, model, self._fields_of(addon_name, api), computed)
+
+    def _computing(self, info: FieldInfo, model: str, api: CheckerPluginInterface) -> bool:
+        """Whether the function being checked is the compute method of a field of a model."""
+        function = checked_function(api)
+        if not isinstance(function, FuncDef) or function.name != info.compute:
+            return False
+        # ``info`` of a function that is no method is mypy's false placeholder.
+        return not function.info or self._models.model_of(function.info) in {model, None}
 
     def _read_field(self, records: Instance, ctx: MethodSigContext) -> FieldInfo | None:
         """The field read by ``record.name`` (``ctx.context``), as the reading addon sees it."""

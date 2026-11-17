@@ -225,6 +225,14 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   (`account["company_id"][0]`). A `related=` path of required `Many2one` fields to a
   required field reads as required (`ptav.name`, related to
   `product_attribute_value_id.name`); Odoo copies `required` only through `_inherits`.
+  A `Char` / `Text` / `Html` field that every read computes (a `compute` method, not
+  stored, no `inverse`, not `readonly=False`) reads as `str` when all that the methods of
+  the model's classes assign to it is a string: a literal, an f-string, `"%s" % x`, or
+  the call of a function declared to return `str` (`record.move_data = json.dumps(...)`,
+  then `json.loads(record.move_data)`). A compute method that leaves a record without a
+  value does not make such a field `False`: Odoo raises "Compute method failed to
+  assign". An override of the compute method counts for the addons that see it; inside
+  its own compute method the field keeps the declared type.
 - `env.cr` has the methods of a cursor (`execute`, `fetchall`, `dbname`): Odoo 18 declares
   it as `BaseCursor`, which has none of them.
 - A model of an addon outside the dependencies is not reported in code written for that

@@ -222,7 +222,11 @@ class ModelClassHooks(Hooks):
         ]
         details = [[item.log_access, item.abstract] for item in scan.contributions]
         fields = [item.fields for item in scan.contributions]
-        value = digest([encode(tuple(map(tuple, parts))), details, encode(tuple(fields))])[:16]
+        # What the methods assign decides whether a computed field may be empty.
+        assigned = [[item.assigned, item.assigned_any] for item in scan.contributions]
+        value = digest(
+            [encode(tuple(map(tuple, parts))), details, encode(tuple(fields)), assigned]
+        )[:16]
         self._fields_digests[scan.module] = (scan, value)
         return value
 

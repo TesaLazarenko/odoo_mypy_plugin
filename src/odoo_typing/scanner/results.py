@@ -163,6 +163,12 @@ class Contribution:
         passed: The containers its methods pass its own annotated parameters where the
             annotations name others (``odoo_typing.scanner.class_bodies.passed_containers``):
             ``(method, parameter, path, kind)``.
+        assigned: The kinds of the values its methods assign to attributes, where the
+            scan knows them all (``odoo_typing.scanner.assigned.assigned_values``):
+            ``(method, attribute, kinds)``; also ``(method, ANY_NAME, (ANY_VALUE,))`` of a
+            method that assigns to a name the scan cannot read.
+        assigned_any: The attributes some method of the class assigns a value the scan
+            cannot tell, sorted.
     """
 
     addon: str
@@ -181,6 +187,8 @@ class Contribution:
     value_keys: tuple[str, ...] = ()
     dispatches: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
     passed: tuple[tuple[str, str, tuple[str, ...], str], ...] = ()
+    assigned: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+    assigned_any: tuple[str, ...] = ()
 
     @property
     def fullname(self) -> str:

@@ -12,6 +12,7 @@ from dataclasses import replace
 from types import MappingProxyType
 
 from odoo_typing.addons import BASE
+from odoo_typing.computed import Call, computed_calls, recomputed_text
 from odoo_typing.config import Settings
 from odoo_typing.model_fields import (
     chain_definitions,
@@ -53,6 +54,7 @@ class ModelFields(ModelViews):
         # themselves took more memory than the maps it pooled).
         self._fields_pool: dict[int, list[Mapping[str, FieldInfo]]] = {}
         self._passed: dict[str, Passed] = {}
+        self._computed: dict[tuple[str, str, str], tuple[Call, ...] | None] = {}
 
     def value_keys(self, model: str, addon_name: str) -> frozenset[str]:
         """The keys the ``create`` / ``write`` of a model's classes read from their values.
@@ -237,6 +239,24 @@ class ModelFields(ModelViews):
         for name, info in inherited.items():
             fields.setdefault(name, info)
         return fields
+
+    def computed_calls(
+        self, model: str, addon_name: str, info: FieldInfo
+    ) -> tuple[Call, ...] | None:
+        """The calls whose results a field always holds, ``None`` if it may be empty.
+
+        For a text field that each read computes, as an addon sees the model's classes
+        (:func:`odoo_typing.computed.computed_calls`). The few fields that are such are
+        kept; the others cost the test of their arguments.
+        """
+        if not recomputed_text(info):
+            return None
+        key = (model, addon_name, info.name)
+        if key not in self._computed:
+            view = self.view_class(model, addon_name)
+            chain = view.chain if view is not None else ()
+            self._computed[key] = computed_calls(info, chain)
+        return self._computed[key]
 
     def has_method(self, model: str, addon_name: str, name: str) -> bool:
         """Whether a class of a model's view defines a method (not BaseModel's).

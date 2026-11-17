@@ -137,6 +137,7 @@ class RecordsetHooks(Hooks):
         if model is None or addon_name is None:
             return ctx.default_return_type
         fields_of = self._fields_of(addon_name, ctx.api)
+        computed = self._computed_of(addon_name, ctx.api)
         fields = fields_of(model)
         checker = type_checker(ctx.api)
         items: dict[str, Type] = {"id": checker.named_type("builtins.int")}
@@ -159,7 +160,7 @@ class RecordsetHooks(Hooks):
                     ctx.api.fail(message, node, code=ODOO_FIELD_REF)
                 return ctx.default_return_type
             required = (
-                self._settings.required_values and value_required(info, model, fields_of)
+                self._settings.required_values and value_required(info, model, fields_of, computed)
             ) or node.value in searched
             value = _read_value(info, ids_only, checker, required=required)
             items[node.value] = (

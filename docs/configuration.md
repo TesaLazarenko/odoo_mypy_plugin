@@ -131,7 +131,8 @@ still reported as a typo.
 **`required_values`** (on by default) reads a field that is required (`required=True`,
 as the merged definitions of the model leave it, also a field delegated through
 `_inherits` from a required one, and a `related=` path of required `Many2one` fields to a
-required field, such as `product.template.attribute.value.name`), `display_name`, `create_date` and `write_date` as
+required field, such as `product.template.attribute.value.name`), a text field whose
+compute methods always assign a string (below), `display_name`, `create_date` and `write_date` as
 their value type without `| Literal[False]`: `", ".join(records.mapped("name"))`, `Telegram(bot.token)`,
 `format_date(env, rec.date)` and `rows[0]["partner_id"][0]` of a `read()` then type-check. On the 37 core addons of the
 benchmark's `big` profile about half of the `... | Literal[False]` errors are of required
@@ -148,6 +149,25 @@ first one is reported where it is appended. A variable that `rebound_variables` 
 `False`. Odoo does read `False` for a required field of a new record
 (`new()`, a form's onchange) before the value is set: `required_values = false` reads
 these fields as Odoo declares them, for code that must handle such records.
+
+A computed text field counts as set when Odoo cannot read `False` from it. That is a
+`Char`, `Text` or `Html` field with a `compute` method that is not stored, has no
+`inverse` and is not `readonly=False`: each read computes it, and for a record the
+compute method gave no value Odoo raises "Compute method failed to assign" instead of
+reading `False`. Such a field reads as `str` when a class of the model defines the
+compute method and assigns the field in it, and every value that the methods of the
+model's classes assign to the field's name is a string: a literal, an f-string,
+`"%s" % x`, `"a" + x`, `"{}".format(x)`, `", ".join(x)`, or the call of a name of the
+module that is declared to return `str` (`json.dumps(...)`, `str(...)`, a function of
+the addon annotated `-> str`). `record.data = json.dumps(values)` in two branches of an
+`if` / `elif` is enough; `record.data = values and json.dumps(values)`, `record.data =
+False` in any method of the model (also `record["data"] = False` and
+`record.update({"data": False})`), or `record.update({**values})` in the compute method
+leave the field `str | Literal[False]`. The classes are those the reading addon sees: an
+override of the compute method in an addon outside its dependencies does not count.
+Inside its own compute method the field reads `False` until it is assigned, so reads
+there keep the declared type; a value given from outside the model's classes
+(`create({"data": False})`) is not seen, as with a required field.
 
 **`rebound_variables`** (on by default) gives a local variable without an annotation
 that its function binds more than once (`products = []` then records,

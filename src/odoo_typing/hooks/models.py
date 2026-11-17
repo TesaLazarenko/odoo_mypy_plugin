@@ -33,6 +33,7 @@ from odoo_typing.classes import (
     view_class_origin,
 )
 from odoo_typing.compat import OdooProfile
+from odoo_typing.computed import returns_text
 from odoo_typing.config import Settings
 from odoo_typing.guards import field_guard
 from odoo_typing.hooks.nodes import (
@@ -412,6 +413,24 @@ class Hooks:
             return self.registry.fields(model, addon_name)
 
         return fields_of
+
+    def _computed_of(
+        self, addon_name: str, api: CheckerPluginInterface
+    ) -> Callable[[str, FieldInfo], bool]:
+        """Whether the compute methods of a field always give it a value, as an addon sees it.
+
+        :mod:`odoo_typing.computed`: what the methods assign is known from the scan, what
+        the functions they call return from mypy.
+        """
+
+        def computed(model: str, info: FieldInfo) -> bool:
+            calls = self.registry.computed_calls(model, addon_name, info)
+            if calls is None:
+                return False
+            modules = type_checker(api).modules
+            return all(returns_text(modules, module, name) for module, name in calls)
+
+        return computed
 
     def _depend_on(self, model: str, addon_name: str, api: CheckerPluginInterface) -> None:
         """Make the daemon check the current target again when a model's fields change.
