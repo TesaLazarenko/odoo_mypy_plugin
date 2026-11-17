@@ -959,6 +959,17 @@ With real recordset types, some plain mypy codes appear more often:
   attribute of a field reads). A `Selection` field with a literal selection there is
   `Any`: Odoo declares `selection` as a list, a method name or a callable, and the field
   holds the list.
+- An attribute of such a field object has the type of the argument the field is defined
+  with: `records._fields["code"].size` is `int` for `code = fields.Char(size=5)` and
+  `records._fields["credit"].groups` is `str` for a field defined with `groups="..."`,
+  where Odoo declares `None` or `str | None`. The argument must be a true literal (a
+  `str`, an `int` or a `float`; a constant of the module counts) in the definitions of
+  the field as the reading addon sees them: a later definition that passes it again
+  (`groups=False`) replaces it. The field is named by a literal, also through a local
+  variable bound to it once (`field = records._fields["code"]`). Arguments that Odoo's
+  setup of the field rewrites (`ondelete`, `depends`, `group_operator`) keep the declared
+  type. In Odoo 17 the field classes annotate no attribute, and in Odoo 18 `size` is not
+  declared on `Field`: these read `Any` there, as before.
 
 ## Not yet supported
 

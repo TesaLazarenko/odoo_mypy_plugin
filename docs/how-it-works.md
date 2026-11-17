@@ -254,6 +254,21 @@ once it can be.
   derived from `str` counts). The assigned kinds are part of the addon's scan digest
   and of `__odoo_fields`, so an edit of a compute method checks the readers again.
 
+- **Attributes of field objects** (`odoo_typing.field_setup`, `hooks.field_objects`). The
+  scan keeps, for each field definition, the names of the arguments it passes, with the
+  type of a true `str` / `int` / `float` literal (`FieldInfo.given`: `size=int`, the bare
+  name for another value, `*` for `**kwargs`, positional arguments the class does not
+  name, a class with an `__init__` of its own and a factory); the definitions of a field
+  merge by name, and unnamed arguments hide the earlier ones. The attribute hook of the
+  field classes (asked last, after the hooks of records) looks at an attribute declared
+  `None` or `... | None` whose receiver is `records._fields["name"]` or a local bound to
+  it once: where the field passes the attribute's name as such a literal, the attribute
+  has the literal's type. `Field.__init__` keeps its arguments and the setup gives the
+  object one attribute for each; the arguments the setup rewrites are left as declared:
+  the keys that `_get_attrs` and `_setup_attrs` / `_setup_attrs__` of the field class and
+  of its bases assign, delete or pop and the attributes they assign on `self`, read from
+  the source files of these classes, once per file.
+
 - **Guards of Odoo functions** (`odoo_typing.falsy_guards`, `hooks.falsy_parameters`).
   mypy drops the bodies of the modules whose errors it does not show, so the signature
   and return-type hooks of a function or method that Odoo defines outside the addons

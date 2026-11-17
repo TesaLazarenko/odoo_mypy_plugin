@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
+from conftest import without_given
 from pytest_mock import MockerFixture
 from test_registry_mro import BASE
 from test_registry_semantics import _build, _get
@@ -111,7 +112,7 @@ def _scan(tmp_path: Path, files: dict[str, str]) -> Contribution:
 
 def _own(tmp_path: Path) -> dict[str, FieldInfo]:
     files = {"__init__.py": "from . import m\n", "f.py": FIELD_CLASSES, "m.py": MODELS}
-    return {info.name: info for info in _scan(tmp_path, files).fields}
+    return {info.name: without_given(info) for info in _scan(tmp_path, files).fields}
 
 
 def test_scan_fields_classes_of_odoo_fields_however_they_are_named(tmp_path: Path) -> None:
@@ -173,7 +174,7 @@ def test_scan_fields_unbound_fields_name_is_odoo_fields(tmp_path: Path) -> None:
 
     order = _scan(tmp_path, {"__init__.py": "from . import m\n", "m.py": source})
 
-    assert order.fields == (FieldInfo("name", "Char"),)
+    assert tuple(map(without_given, order.fields)) == (FieldInfo("name", "Char"),)
 
 
 def test_scan_fields_rebound_name_is_not_the_class_it_was(tmp_path: Path) -> None:
@@ -266,7 +267,7 @@ def _linked(tmp_path: Path) -> dict[str, FieldInfo]:
     registry = _build(
         tmp_path, base=BASE, addons={"t_core": ([], core), "t_other": (["t_core"], other)}
     )
-    return {info.name: info for info in _get(registry, "t_other.m.Line").fields}
+    return {info.name: without_given(info) for info in _get(registry, "t_other.m.Line").fields}
 
 
 def test_link_fields_class_of_another_addon_is_the_odoo_class_it_derives_from(
@@ -362,7 +363,8 @@ def test_link_fields_class_another_addon_only_passes_on(tmp_path: Path) -> None:
         },
     )
 
-    fields = {info.name: info for info in _get(registry, "t_third.m.Third").fields}
+    third_fields = _get(registry, "t_third.m.Third").fields
+    fields = {info.name: without_given(info) for info in third_fields}
 
     assert fields == {"big": FieldInfo("big", "Integer"), "name": FieldInfo("name", "Char")}
 
@@ -432,7 +434,8 @@ def test_link_fields_classes_of_odoo_modules_and_libraries_are_read_from_source(
     (odoo / "orm" / "fields_numeric.py").write_text(ORM_NUMERIC)
     (odoo / "orm" / "domains.py").write_text("class Domain:\n    pass\n")
 
-    fields = {info.name: info for info in _get(registry, "t_core.m.Order").fields}
+    order_fields = _get(registry, "t_core.m.Order").fields
+    fields = {info.name: without_given(info) for info in order_fields}
 
     assert fields == {
         # Odoo's class, however it is reached: the name odoo.fields has it under.

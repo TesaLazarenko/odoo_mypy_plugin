@@ -20,7 +20,13 @@ from odoo_typing.scanner.field_classes import POSITIONAL, FieldKind
 from odoo_typing.scanner.results import FieldInfo, Positional, UnlinkedField
 from odoo_typing.scanner.syntax import single_target
 
-__all__ = ["POSITIONAL_PARAMETERS", "FieldClassOf", "declared_fields", "linked_field"]
+__all__ = [
+    "ANY_ARGUMENT",
+    "POSITIONAL_PARAMETERS",
+    "FieldClassOf",
+    "declared_fields",
+    "linked_field",
+]
 
 # The field class a call in a class body makes a field of: its kind, the dotted name of a
 # class that another scan describes (the registry links it), or ``None`` if the callee is
@@ -48,9 +54,40 @@ POSITIONAL_ATTRIBUTES: Final = {
 FIELD_ATTRIBUTES: Final = tuple(item.name for item in dataclasses.fields(FieldInfo))
 # The attributes that arguments of a field call give, by the argument's name.
 ARGUMENT_ATTRIBUTES: Final = {
-    **{name: name for name in FIELD_ATTRIBUTES if name not in {"name", "field_type", "dynamic"}},
+    **{
+        name: name
+        for name in FIELD_ATTRIBUTES
+        if name not in {"name", "field_type", "dynamic", "given"}
+    },
     "comodel_name": "comodel",
 }
+
+
+# The literals whose type an attribute of the field object has (``FieldInfo.given``).
+LITERALS: Final = (str, int, float)
+# The expressions that may evaluate to one (a display or a call never does).
+SCALARS: Final = (ast.Constant, ast.Name, ast.BinOp, ast.JoinedStr)
+ANY_ARGUMENT: Final = "*"  # arguments the scan cannot name
+
+
+def _given(
+    arguments: Mapping[str, ast.expr] | None, call: ast.Call, scope: Mapping[str, object]
+) -> tuple[str, ...]:
+    """What a call passes, for ``FieldInfo.given``; ``arguments`` is ``None`` if unknown."""
+    if arguments is None or any(keyword.arg is None for keyword in call.keywords):
+        return (ANY_ARGUMENT,)
+    if any(isinstance(node, ast.Starred) for node in call.args):
+        return (ANY_ARGUMENT,)
+    found: list[str] = []
+    for name, node in arguments.items():
+        value = evaluate(node, scope) if isinstance(node, SCALARS) else None
+        literal = type(value) in LITERALS and bool(value)  # ``bool`` is no ``int`` here
+        found.append(sys.intern(f"{name}={type(value).__name__}" if literal else name))
+    return _GIVEN.setdefault(tuple(sorted(found)), tuple(sorted(found)))
+
+
+# One object per combination: most fields pass ``string``, ``help`` and little else.
+_GIVEN: Final[dict[tuple[str, ...], tuple[str, ...]]] = {}
 
 
 def _passed_unknown(kind: FieldKind, values: Mapping[str, object]) -> set[str]:
@@ -155,6 +192,7 @@ def _field_info(
 ) -> FieldInfo:
     """What one call of a field class passes, as far as the scan can evaluate it."""
     dynamic: set[str] = set()
+    named: Mapping[str, ast.expr] | None = None  # the arguments, where each has its name
     if isinstance(kind, str):  # a class another scan describes: linked by the registry
         field_type, arguments = kind, _field_arguments(None, call)
     elif kind.arguments:  # an ``__init__`` of its own
@@ -163,6 +201,9 @@ def _field_info(
             dynamic.update(_unread_positional(kind.base))
     else:
         field_type, arguments = kind.field_type, _field_arguments(kind.base, call)
+        parameters = POSITIONAL_PARAMETERS.get(kind.base, ("string",))
+        if not kind.passes and len(call.args) <= len(parameters):
+            named = arguments
 
     def text(key: str) -> str | None:
         return _text_argument(arguments, key, scope, dynamic)
@@ -209,6 +250,7 @@ def _field_info(
         compute_sql=True if "compute_sql" in arguments else None,
         attachment=flag("attachment"),
         dynamic=frozen(dynamic),
+        given=_given(named, call, scope),
     )
     if isinstance(kind, str) or not kind.passes:
         return info

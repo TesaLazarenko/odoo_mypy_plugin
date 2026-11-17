@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from conftest import without_given
 from test_registry_mro import BASE, _files
 from test_registry_semantics import _build, _get
 
@@ -60,7 +61,12 @@ def _scan(tmp_path: Path, fullname: str) -> Contribution:
 
 
 def _field(contribution: Contribution, name: str) -> FieldInfo:
-    return next(info for info in contribution.fields if info.name == name)
+    """A field of a class, without the list of its arguments (``_given`` reads that)."""
+    return without_given(next(info for info in contribution.fields if info.name == name))
+
+
+def _given(contribution: Contribution, name: str) -> tuple[str, ...]:
+    return next(info for info in contribution.fields if info.name == name).given
 
 
 def test_scan_fields_relational_arguments_positional_and_keyword(tmp_path: Path) -> None:
@@ -109,7 +115,8 @@ def test_scan_fields_values_from_imports_are_dynamic(tmp_path: Path) -> None:
 def test_scan_fields_name_assigned_twice_keeps_last_definition(tmp_path: Path) -> None:
     order = _scan(tmp_path, "t_core.m.Order")
 
-    assert [info for info in order.fields if info.name == "note"] == [FieldInfo("note", "Html")]
+    notes = [without_given(info) for info in order.fields if info.name == "note"]
+    assert notes == [FieldInfo("note", "Html")]
     assert order.field_names[-2:] == ("note", "parent_id")
 
 
@@ -232,3 +239,38 @@ def test_scan_fields_compute_sql_is_passed_and_attachment_is_a_flag(tmp_path: Pa
     assert _field(doc, "total").dynamic == frozenset()  # passed, its value does not matter
     assert _field(doc, "datas").attachment is False
     assert _field(doc, "plain") == FieldInfo("plain", "Char")
+
+
+GIVEN = """
+from odoo import fields, models
+from .consts import IMPORTED
+
+GROUPS = "base.group_user"
+OPTIONS = {"size": 5}
+
+
+class Journal(models.Model):
+    _name = "t.journal"
+
+    code = fields.Char("Code", size=5, groups=GROUPS + ",base.group_system", copy=False)
+    name = fields.Char(string="", size=0, help=IMPORTED, digits=0.5, index=True)
+    spread = fields.Char(size=5, **OPTIONS)
+    starred = fields.Char(*["Label"], size=5)
+    partner_id = fields.Many2one("res.partner", "Partner", ondelete="cascade")
+    extra = fields.Many2one("res.partner", "Partner", "more")
+    plain = fields.Char()
+"""
+
+
+def test_scan_fields_arguments_given_with_the_type_of_a_true_literal(tmp_path: Path) -> None:
+    """``size=int`` for ``size=5``; the bare name for any other value; ``*`` for unnamed ones."""
+    registry = _build(tmp_path, base=BASE, addons={"t_core": ([], _files(GIVEN))})
+    journal = _get(registry, "t_core.m.Journal")
+
+    assert _given(journal, "code") == ("copy", "groups=str", "size=int", "string=str")
+    assert _given(journal, "name") == ("digits=float", "help", "index", "size", "string")
+    assert _given(journal, "spread") == ("*",)
+    assert _given(journal, "starred") == ("*",)
+    assert _given(journal, "partner_id") == ("comodel_name=str", "ondelete=str", "string=str")
+    assert _given(journal, "extra") == ("*",)  # more positional arguments than the class has
+    assert _given(journal, "plain") == ()

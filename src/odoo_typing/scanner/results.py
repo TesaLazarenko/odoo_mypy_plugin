@@ -53,6 +53,11 @@ class FieldInfo:
             lambda, so only that it is passed).
         attachment: ``attachment`` flag (``Binary``).
         dynamic: Arguments passed with values the scan cannot evaluate.
+        given: The arguments the definition passes, by name and sorted: ``size=int`` for
+            one that is a true literal of a ``str``, an ``int`` or a ``float``, the bare
+            name for any other value; ``*`` for arguments the scan cannot name
+            (``**kwargs``, a class with an ``__init__`` of its own). What the attributes
+            of the field object hold (:mod:`odoo_typing.field_setup`).
     """
 
     name: str
@@ -73,6 +78,7 @@ class FieldInfo:
     compute_sql: bool | None = None
     attachment: bool | None = None
     dynamic: frozenset[str] = frozenset()
+    given: tuple[str, ...] = ()
 
 
 # A positional argument of a field call, read each way a field class may take it: as a

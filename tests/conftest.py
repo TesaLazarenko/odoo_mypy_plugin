@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import gc
 import json
 import os
@@ -20,6 +21,7 @@ from mypy import api as mypy_api
 from odoo_typing.compat import SUPPORTED_VERSIONS, OdooProfile, profile_for
 from odoo_typing.errors import RAISE_VARIABLE
 from odoo_typing.odoo_version import read_odoo_version
+from odoo_typing.scanner import FieldInfo
 
 # A hook that raises must fail the test, not fall back to mypy's result (also in the mypy
 # subprocesses, which inherit the environment).
@@ -440,6 +442,15 @@ def run_mypy(
 
 def _toml_paths(paths: list[Path]) -> str:
     return json.dumps([str(path) for path in paths])  # a JSON string list is valid TOML
+
+
+def without_given(info: FieldInfo) -> FieldInfo:
+    """A scanned field without the list of the arguments it passes (``FieldInfo.given``).
+
+    For the tests of what the scan reads of the other arguments: they compare whole
+    fields, and each passes arguments of its own.
+    """
+    return dataclasses.replace(info, given=())
 
 
 def write_addon(path: Path, spec: dict[str, object]) -> None:

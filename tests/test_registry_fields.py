@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+from conftest import without_given
 from test_registry_mro import BASE, _cls, _files
 from test_registry_semantics import _build
 
-from odoo_typing.model_fields import merge_keys
+from odoo_typing.model_fields import literal_argument, merge_keys
 from odoo_typing.registry import Registry
 from odoo_typing.scanner import FieldInfo
 
@@ -67,7 +68,7 @@ def _registry(tmp_path: Path) -> Registry:
 def test_fields_redefinition_overrides_only_its_arguments(tmp_path: Path) -> None:
     fields = _registry(tmp_path).fields("t.order", "t_ext")
 
-    assert fields["partner_id"] == FieldInfo(
+    assert without_given(fields["partner_id"]) == FieldInfo(
         "partner_id", "Many2one", comodel="res.partner", readonly=True, required=True
     )
 
@@ -75,8 +76,9 @@ def test_fields_redefinition_overrides_only_its_arguments(tmp_path: Path) -> Non
 def test_fields_redefinition_with_other_class_drops_earlier_arguments(tmp_path: Path) -> None:
     fields = _registry(tmp_path).fields("t.order", "t_ext")
 
-    assert fields["code"] == FieldInfo("code", "Text")
-    assert fields["image"] == FieldInfo("image", "Image", store=False)  # Image is a Binary
+    assert without_given(fields["code"]) == FieldInfo("code", "Text")
+    # Image is a Binary
+    assert without_given(fields["image"]) == FieldInfo("image", "Image", store=False)
 
 
 def test_fields_selection_add_extends_per_view(tmp_path: Path) -> None:
@@ -253,3 +255,49 @@ def test_service_fields_of_odoo_17_have_no_display_name_search(tmp_path: Path) -
 
     assert registry.fields("t.grand", "t_core")["display_name"].search == "_search_display_name"
     assert registry_17.fields("t.grand", "t_core")["display_name"].search is None
+
+
+GIVEN_CORE = _cls(
+    "Journal",
+    model="t.journal",
+    body=(
+        '    code = fields.Char(size=5, groups="base.group_user", help="Code")\n'
+        "    name = fields.Char(size=5, **{})\n"
+        "    note = fields.Char(size=5)\n"
+    ),
+)
+GIVEN_EXTENSION = _cls(
+    "Journal",
+    inherit=["t.journal"],
+    body=(
+        '    code = fields.Char(groups=False, string="Code")\n'
+        '    name = fields.Char(help="Name")\n'
+        '    note = fields.Text(help="Note")\n'
+    ),
+)
+
+
+def test_fields_given_arguments_merge_by_name(tmp_path: Path) -> None:
+    """A later definition replaces the argument it passes; unnamed ones hide the earlier."""
+    registry = _build(
+        tmp_path,
+        base=BASE,
+        addons={
+            "t_core": ([], _files(GIVEN_CORE)),
+            "t_ext": (["t_core"], _files(GIVEN_EXTENSION)),
+        },
+    )
+    core, extended = registry.fields("t.journal", "t_core"), registry.fields("t.journal", "t_ext")
+
+    assert core["code"].given == ("groups=str", "help=str", "size=int")
+    assert extended["code"].given == ("groups", "help=str", "size=int", "string=str")
+    assert (literal_argument(core["code"], "groups"), literal_argument(core["code"], "size")) == (
+        "str",
+        "int",
+    )
+    assert literal_argument(extended["code"], "groups") is None  # passed again, as False
+    assert literal_argument(extended["code"], "size") == "int"
+    assert literal_argument(extended["code"], "comodel_name") is None  # not passed
+    assert literal_argument(core["name"], "size") is None  # ``**{}`` may pass it too
+    assert extended["name"].given == ("help=str",)  # what the unnamed ones hid stays unknown
+    assert extended["note"].given == ("help=str",)  # another class: the earlier are dropped

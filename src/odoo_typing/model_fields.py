@@ -25,6 +25,7 @@ from typing import Final, TypeVar
 
 from odoo_typing.frozen import frozen
 from odoo_typing.scanner import Contribution, FieldInfo
+from odoo_typing.scanner.fields import ANY_ARGUMENT
 
 __all__ = [
     "LOG_ACCESS_FIELDS",
@@ -33,6 +34,7 @@ __all__ = [
     "chain_definitions",
     "delegated_field",
     "delegation_fields",
+    "literal_argument",
     "merge_definitions",
     "merge_keys",
     "service_definitions",
@@ -198,7 +200,35 @@ def _override(merged: FieldInfo | None, definition: FieldInfo) -> FieldInfo:
         compute_sql=take(merged.compute_sql, definition.compute_sql, "compute_sql"),
         attachment=take(merged.attachment, definition.attachment, "attachment"),
         dynamic=frozen(dynamic - {"selection_add"}),
+        given=_merged_given(merged.given, definition.given),
     )
+
+
+def _merged_given(earlier: tuple[str, ...], later: tuple[str, ...]) -> tuple[str, ...]:
+    """``FieldInfo.given`` of two definitions: an argument passed again replaces the first.
+
+    Arguments the later definition passes without names (``*``) may be any of them: what
+    the earlier ones passed is not known to hold then.
+    """
+    if not earlier or ANY_ARGUMENT in later or ANY_ARGUMENT in earlier:
+        return later  # no literal of the earlier ones is known to hold
+    if not later:
+        return earlier
+    merged = {item.partition("=")[0]: item for item in earlier}
+    merged.update((item.partition("=")[0], item) for item in later)
+    return tuple(sorted(merged.values()))
+
+
+def literal_argument(info: FieldInfo, name: str) -> str | None:
+    """The type of the true literal a field's definitions pass for an argument, if they do.
+
+    ``"int"`` for ``size`` of ``fields.Char(size=5)``; ``None`` for an argument that is
+    not passed, passed another value, or that may be among unnamed ones (``**kwargs``).
+    """
+    prefix = f"{name}="
+    if ANY_ARGUMENT in info.given:
+        return None
+    return next((item[len(prefix) :] for item in info.given if item.startswith(prefix)), None)
 
 
 def _arguments(info: FieldInfo) -> dict[str, str | bool | None]:

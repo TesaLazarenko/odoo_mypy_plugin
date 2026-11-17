@@ -158,6 +158,7 @@ from odoo_typing.hooks.env import (
 )
 from odoo_typing.hooks.falsy_parameters import guarded_result, guarded_signature
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
+from odoo_typing.hooks.field_objects import FieldObjectHooks
 from odoo_typing.hooks.field_values import FILTER, FieldValueHooks, falsy_filter_signature
 from odoo_typing.hooks.mixed_values import (
     MIXED_CALLS,
@@ -286,6 +287,7 @@ class OdooPlugin(Plugin):
         self._env = EnvHooks(models)
         self._vals = ValsHooks(models)
         self._recordsets = RecordsetHooks(models)
+        self._field_objects = FieldObjectHooks(models)
         self._domains = DomainHooks(models, self._recordsets)
         self._comparisons = ComparisonHooks(models)
         self._fields = FieldDefinitionHooks(models, self._domains, self._env)
@@ -748,6 +750,8 @@ class OdooPlugin(Plugin):
                 hook = self._kept_records if kept else None
             if hook is None and self._hook_gives_own_base(fullname):
                 hook = _any_attribute
+            if hook is None and self._models.profile.is_field_class(fullname):
+                hook = self._field_objects.attribute  # ``_fields["code"].size``
             found[fullname] = _soft(hook, _default_attribute, f"the hook of {fullname}")
         return found[fullname]
 

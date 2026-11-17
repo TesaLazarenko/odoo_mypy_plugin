@@ -233,6 +233,15 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   value does not make such a field `False`: Odoo raises "Compute method failed to
   assign". An override of the compute method counts for the addons that see it; inside
   its own compute method the field keeps the declared type.
+- An attribute of a field object holds the argument of the field's definition:
+  `journal._fields["code"].size - len(counter)` of `code = fields.Char(size=5)` and
+  `partner._fields["credit"].groups.split(",")` of a field defined with `groups="..."`
+  type-check. Odoo declares `size` and `groups` with `None`, the value of a field that
+  passes none; where the merged definitions of the field pass the argument as a true
+  literal (a `str`, an `int` or a `float`, also a constant of the module), the attribute
+  has the literal's type. Not the arguments Odoo's own setup of the field rewrites
+  (`ondelete`, `depends`, `group_operator`), which are read from the source of the field
+  classes; the field is named by a literal, also through a local bound to it once.
 - `env.cr` has the methods of a cursor (`execute`, `fetchall`, `dbname`): Odoo 18 declares
   it as `BaseCursor`, which has none of them.
 - A model of an addon outside the dependencies is not reported in code written for that
