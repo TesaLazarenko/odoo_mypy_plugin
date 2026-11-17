@@ -11,6 +11,11 @@ with (after its docstring) that are ``if <test>: return <value>`` without ``else
 the tests ``not p``, ``p is None``, ``isinstance(p, bool)`` and ``type(p) is bool`` of a
 parameter ``p``.
 
+A parameter is handled as well when every read of it only tests its truth or runs once
+such a test passed: ``get_lang(env, lang_code: str | None = None)`` reads ``lang_code``
+in ``if lang_code and lang_code in langs: lang = lang_code`` alone, so ``False`` does
+what ``None`` does (:func:`guarded_parameters`).
+
 Each file is indexed once (one pass over its lines for ``class`` and ``def`` lines); a
 function's own text is parsed only when a hook asks for it.
 """
@@ -24,13 +29,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-__all__ = ["FalsyGuards", "Guard"]
+__all__ = ["FalsyGuards", "Guard", "guarded_parameters"]
 
 DEFINITION: Final = re.compile(r"^(?P<indent>[ \t]*)(?:async\s+)?def\s+(?P<name>\w+)\s*\(")
 CLASS: Final = re.compile(r"^class\s+(?P<name>\w+)\b")
 ALIAS: Final = re.compile(r"^[ \t]+(?P<name>\w+)\s*=\s*(?P<target>\w+)\s*(?:#.*)?$")
 MAX_ALIASES: Final = 4  # ``from_string = to_date``: aliases followed to a ``def``
 NESTED: Final = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+EXITS: Final = (ast.Return, ast.Raise, ast.Continue, ast.Break)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +44,8 @@ class Guard:
     """What a function does first with its empty parameters.
 
     Attributes:
-        falsy: Parameters it returns early for when they are false (``if not p:``).
+        falsy: Parameters it returns early for when they are false (``if not p:``), and
+            those it only reads where it found them true.
         booleans: Parameters it returns as they are when they are a ``bool``.
         none_only_for: Parameters whose false value is the only way the function returns
             ``None`` / ``False``: for a true argument the result is neither.
@@ -184,7 +191,147 @@ def _guard(text: str) -> Guard:
         isinstance(last, ast.Return) and not _is_empty_value(last.value)
     )
     single = len(empty_returns) == 1 and not other_empty and ends
+    falsy |= guarded_parameters(function, parameters)
     return Guard(frozenset(falsy), frozenset(booleans), frozenset(empty_returns if single else ()))
+
+
+def guarded_parameters(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, parameters: set[str]
+) -> set[str]:
+    """The parameters every read of which tests their truth, or runs once a test passed.
+
+    A false value of such a parameter does what any other false value does: the
+    function never reads which one it got. A read counts as a test where only its truth
+    is used (``if p``, ``not p``, an operand of ``and`` / ``or`` there, ``p or default``)
+    and as proven where a test of the parameter passed before it runs: the body of
+    ``if p:`` / ``if p and ...:``, the later operands of ``p and ...``, the ``else`` of
+    ``if not p:``, the statements after ``if not p: return`` and after ``assert p``.
+    Not: a parameter the function binds again, never reads, compares (``p is None``
+    tells ``None`` from ``False``), passes on or returns as it is (``return p and
+    p.strip()``), or reads in a function defined inside.
+    """
+    found: set[str] = set()
+    for name in parameters:
+        reads = _Reads(name)
+        reads.block(function.body, False)
+        if reads.count and not reads.other:
+            found.add(name)
+    return found
+
+
+class _Reads:
+    """The reads of one parameter in a function body (see :func:`guarded_parameters`)."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.count = 0
+        self.other = False  # a read of the value as it is, or a binding of the name
+
+    def block(self, statements: list[ast.stmt], proven: bool) -> None:
+        for statement in statements:
+            proven = self.statement(statement, proven)
+
+    def statement(self, node: ast.stmt, proven: bool) -> bool:
+        """Visit a statement; whether the parameter is true for the statements after it."""
+        if isinstance(node, ast.If):
+            self.expression(node.test, proven, True)
+            self.block(node.body, proven or self._implies(node.test))
+            self.block(node.orelse, proven or self._refutes(node.test))
+            leaves = bool(node.body) and isinstance(node.body[-1], EXITS)
+            return proven or (self._refutes(node.test) and not node.orelse and leaves)
+        if isinstance(node, ast.While):
+            self.expression(node.test, proven, True)
+            self.block(node.body, proven or self._implies(node.test))
+            self.block(node.orelse, proven)
+            return proven
+        if isinstance(node, ast.Assert):
+            self.expression(node.test, proven, True)
+            if node.msg is not None:
+                self.expression(node.msg, proven, False)
+            return proven or self._implies(node.test)
+        if isinstance(node, NESTED):
+            self._closed(node)
+            return proven
+        self._parts(node, proven)
+        return proven
+
+    def _parts(self, node: ast.AST, proven: bool) -> None:
+        """The statements and expressions of another node (a ``for``, an ``except``, a ``case``)."""
+        if self.name in {getattr(node, "name", None), getattr(node, "rest", None)}:
+            self.other = True  # ``except E as p``, ``case {**p}``, ``case x as p``
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.stmt):
+                self.statement(child, proven)
+            elif isinstance(child, ast.expr):
+                self.expression(child, proven, False)
+            else:
+                self._parts(child, proven)
+
+    def expression(self, node: ast.expr, proven: bool, test: bool) -> None:
+        """Visit an expression; ``test`` if only its truth is used."""
+        if isinstance(node, ast.Name):
+            if node.id == self.name:
+                self.count += 1
+                if not isinstance(node.ctx, ast.Load) or not (test or proven):
+                    self.other = True
+        elif isinstance(node, ast.BoolOp):
+            last = len(node.values) - 1
+            for index, value in enumerate(node.values):
+                # ``p or default`` gives the parameter only when it is true; ``p and x``
+                # gives it when it is false, so there only its truth may be used.
+                kept = isinstance(node.op, ast.Or) and index < last
+                self.expression(value, proven, test or kept)
+                reached = self._implies if isinstance(node.op, ast.And) else self._refutes
+                proven = proven or reached(value)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            self.expression(node.operand, proven, True)
+        elif isinstance(node, ast.IfExp):
+            self.expression(node.test, proven, True)
+            self.expression(node.body, proven or self._implies(node.test), test)
+            self.expression(node.orelse, proven or self._refutes(node.test), test)
+        elif isinstance(node, NESTED):
+            self._closed(node)
+        else:
+            self._operands(node, proven)
+
+    def _operands(self, node: ast.expr, proven: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.expr):
+                self.expression(child, proven, False)
+            elif isinstance(child, ast.comprehension):
+                self.expression(child.target, proven, False)
+                self.expression(child.iter, proven, False)
+                for condition in child.ifs:
+                    self.expression(condition, proven, True)
+            elif isinstance(child, ast.keyword):
+                self.expression(child.value, proven, False)
+
+    def _closed(self, node: ast.AST) -> None:
+        """A function or class defined inside: it may run where nothing is proven."""
+        for child in ast.walk(node):
+            named = child.id if isinstance(child, ast.Name) else None
+            named = child.arg if isinstance(child, ast.arg) else named
+            if named == self.name:
+                self.count += 1
+                self.other = True
+
+    def _implies(self, test: ast.expr) -> bool:
+        """Whether a test that passed proves the parameter true."""
+        if isinstance(test, ast.Name):
+            return test.id == self.name
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+            return any(map(self._implies, test.values))
+        if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+            return self._refutes(test.operand)
+        return False
+
+    def _refutes(self, test: ast.expr) -> bool:
+        """Whether a test that failed proves the parameter true."""
+        if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+            return self._implies(test.operand)
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or):
+            return any(map(self._refutes, test.values))
+        return False
 
 
 def _leading_guard(

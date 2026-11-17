@@ -102,7 +102,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   lead in team2_leads:`); `x |= v` binds the local again.
 - An Odoo function that handles an empty argument itself takes it (`format_date(env,
   line.date_maturity)`, `str2bool(config.value)`), and `fields.Date.to_date(value)` gives
-  a `date` for a true argument: the guards are read from Odoo's source.
+  a `date` for a true argument: the guards are read from Odoo's source. So does one that
+  only reads the parameter where it found it true: `get_lang(env, partner.lang)` (declared
+  `lang_code: str | None`, read in `if lang_code and lang_code in langs:` alone).
 - A read of the environment that the function proved true before is true again:
   `self.env.context.get("active_ids")` after `if not self.env.context.get("active_ids"):
   raise`, `env.ref(x, raise_if_not_found=False)` after the same call was tested.

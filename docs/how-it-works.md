@@ -314,7 +314,10 @@ once it can be.
   `class` / `def` lines, following `from_string = to_date`; only the function's own text
   is parsed): `if not p: return ...` gives `p` `Literal[False] | None`, `if type(p) is
   bool: return p` gives it `bool`, and a `return None` that only `if not p:` makes is
-  left out of the result for a true argument.
+  left out of the result for a true argument. The whole body is walked once more per
+  parameter (`guarded_parameters`): a parameter every read of which is a truth test, or
+  runs where a test of it passed (tracked through `if` / `while` / `assert`, `and` /
+  `or`, conditional expressions and early exits), takes `Literal[False] | None` too.
 
 - **Reads proven true** (`odoo_typing.proven`). The hooks of `get` of the class
   `Environment.context` is declared with (named after the receiver's class,

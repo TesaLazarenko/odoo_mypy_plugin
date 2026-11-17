@@ -811,7 +811,14 @@ With real recordset types, some plain mypy codes appear more often:
   context found true before (`if self.env.context.get("k"):`), the result is a `date`.
   The guards are read from the source of Odoo's own functions (the statements a function
   starts with: `if not p:` / `p is None` / `isinstance(p, bool)` / `type(p) is bool`,
-  each `return ...`), not from an addon's.
+  each `return ...`), not from an addon's. A parameter also takes `False` and `None`
+  when the function never reads which false value it got: every read of it tests its
+  truth (`if p`, `not p`, `p or default`) or runs once such a test passed (the body of
+  `if p and ...:`, the later operands of `p and ...`, the code after `if not p:
+  return`). `get_lang(env, lang_code: str | None = None)` reads `lang_code` in `if
+  lang_code and lang_code in langs: lang = lang_code` alone, so `get_lang(self.env,
+  partner.lang)` is no error. Not where the value is compared (`p is None`), passed on,
+  returned (`return p and p.strip()`), bound again or read in a nested function.
 - A **read of the environment proven true before** is true again: after `if not
   self.env.context.get("active_ids"): raise ...` (or `if len(... or []) < 2: raise`, or
   inside `if self.env.context.get("k"):`) the same `get` (or `["k"]`) is not `None`, and

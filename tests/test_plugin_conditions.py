@@ -239,7 +239,7 @@ def test_a_read_of_env_proven_true_before_is_true_again(run_mypy: RunMypy) -> No
 
 GUARDED = """
 from odoo import fields, models
-from odoo.tools import format_date, format_datetime, str2bool
+from odoo.tools import format_date, format_datetime, get_lang, str2bool
 
 class Order(models.Model):
     _inherit = "t.order"
@@ -248,6 +248,7 @@ class Order(models.Model):
         format_date(self.env, self.day)  # ``if not value: return ''``
         str2bool(self.name)  # ``if type(s) is bool: return s``
         format_datetime(self.env, self.day)  # no such guard
+        get_lang(self.env, self.name)  # ``if lang_code and lang_code in langs:`` alone
 
     def dates(self, text: str) -> None:
         if self.env.context.get("date"):
@@ -280,7 +281,7 @@ def test_odoo_functions_take_the_empty_values_they_handle(
         ]
     assert messages[1:] == [
         f'{line}: note: Revealed type is "{date}"'
-        for line, date in zip((16, 17, 18), dates, strict=True)
+        for line, date in zip((17, 18, 19), dates, strict=True)
     ]
 
 
