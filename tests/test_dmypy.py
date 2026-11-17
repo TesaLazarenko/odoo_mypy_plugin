@@ -639,3 +639,56 @@ def test_dmypy_attributes_of_class_methods_follow_edits(daemon: Daemon, tmp_path
         [*typed, missing, undefined],
         [*typed, missing],
     ]
+
+
+SUPER_RETURN = """
+from .helpers import helper
+
+class ThingTotal(models.Model):
+    _inherit = "x.thing"
+
+    def _total(self) -> int:
+        return 1
+
+class ThingMore(models.Model):
+    _inherit = "x.thing"
+
+    def _total(self):
+        helper()
+        return super()._total()
+"""
+
+READ_TOTAL = """
+
+class Totals(models.Model):
+    _name = "x.totals"
+
+    def action(self) -> None:
+        reveal_type(self.env["x.thing"]._total())
+"""
+
+
+def test_dmypy_returns_of_super_overrides_survive_rechecks(daemon: Daemon, tmp_path: Path) -> None:
+    """A call of an override that passes ``super()`` on keeps its type through rechecks."""
+    root = tmp_path / "addons"
+    models = root / "dep_mod/models.py"
+    helpers = root / "dep_mod/helpers.py"
+    helpers.write_text("def helper() -> int:\n    return 1\n")
+    _append(models, SUPER_RETURN)
+    _append(root / "my_mod/user.py", READ_TOTAL)
+
+    def total(lines: list[str]) -> str:
+        return lines[-1].split('"', 1)[1]
+
+    assert total(daemon.check()) == 'int"'
+    # What the override's body calls changes: mypy rechecks the method alone, not its class.
+    helpers.write_text("def helper() -> str:\n    return ''\n")
+    assert total(daemon.check()) == 'int"'
+    helpers.write_text("def helper(flag: bool = False) -> str:\n    return ''\n")
+    assert total(daemon.check()) == 'int"'
+    # The override returns something else too: no longer what the overridden method declares.
+    other = "if helper():\n            return 2\n"
+    models.write_text(models.read_text().replace("helper()\n", other))
+    assert total(daemon.check()) == 'Any"'
+    models.write_text(models.read_text().replace(other, "helper()\n"))
+    assert total(daemon.check()) == 'int"'

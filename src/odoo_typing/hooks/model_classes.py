@@ -17,8 +17,16 @@ from mypy.nodes import (
     TypeInfo,
     Var,
 )
-from mypy.plugin import ClassDefContext
-from mypy.types import AnyType, Instance, LiteralType, TypeOfAny
+from mypy.plugin import ClassDefContext, MethodContext
+from mypy.types import (
+    AnyType,
+    Instance,
+    LiteralType,
+    Type,
+    TypeOfAny,
+    TypeVarType,
+    get_proper_type,
+)
 
 from odoo_typing.classes import (
     Lookup,
@@ -47,8 +55,8 @@ from odoo_typing.hooks.models import (
 from odoo_typing.hooks.nodes import class_infos, field_sources, incomplete_modules, lookup_class
 from odoo_typing.hooks.passed import widen_passed
 from odoo_typing.methods import (
-    annotate_inherited_returns,
     annotate_self_overrides,
+    inherited_return,
     is_identity_decorator,
 )
 from odoo_typing.records import digest
@@ -79,9 +87,6 @@ class ModelClassHooks(Hooks):
         # ``__odoo_fields`` per module, kept with the scan it was made from: each model
         # class of a module, and each analysis pass, asks again.
         self._fields_digests: dict[str, tuple[ModuleScan, str]] = {}
-        # The MRO each model class got from its registry chain, by class: a pass that
-        # deferred the merge leaves the class with the MRO of its Python bases.
-        self._merged: dict[str, list[TypeInfo]] = {}
 
     def comodel_generic(self, ctx: ClassDefContext) -> None:
         """Give a relational field class a type variable for its comodel."""
@@ -116,7 +121,6 @@ class ModelClassHooks(Hooks):
         written = {base.type: base for base in info.bases}
         own = [written.pop(base) if base in written else instance_of(base) for base in bases]
         install_mro(info, merge.order, [*own, *written.values()], partial=chain.missing)
-        self._merged[info.fullname] = info.mro
         if merge.conflict or self.registry.mro_conflict(contribution):
             ctx.api.msg.note(_conflict_message(ctx.cls.name), ctx.cls, code=ODOO_MODEL)
 
@@ -158,10 +162,39 @@ class ModelClassHooks(Hooks):
             if self.registry.log_access(contribution):
                 add_log_access_fields(ctx.cls.info, _log_access_types(ctx, self._profile))
             self._add_fields_digest(ctx)
-            if self._merged.get(ctx.cls.info.fullname) is ctx.cls.info.mro:
-                # Not with the MRO of the Python bases of a pass that deferred the merge.
-                names = frozenset(contribution.super_returns)
-                annotate_inherited_returns(ctx, names, self._keeps_signature)
+
+    def inherited_return(self, name: str, ctx: MethodContext) -> Type:
+        """A call of an override that only returns its ``super()`` call: the declared type.
+
+        Where mypy has ``Any`` for the call of an unannotated method of a model class
+        (:func:`odoo_typing.methods.inherited_return`). The caller is checked again in
+        the daemon when a class of the model changes what its methods return.
+        """
+        default = ctx.default_return_type
+        returned = get_proper_type(default)
+        if not isinstance(returned, AnyType) or returned.type_of_any != TypeOfAny.unannotated:
+            return default
+        receiver = get_proper_type(ctx.type)
+        if isinstance(receiver, TypeVarType):
+            receiver = get_proper_type(receiver.upper_bound)
+        if not isinstance(receiver, Instance) or not receiver.type.has_base(
+            self._profile.base_model
+        ):
+            return default
+        info = receiver.type
+        model = self._models.model_of(info)
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if model is not None and addon_name is not None:
+            self._depend_on(model, addon_name, ctx.api)
+        found = inherited_return(
+            info, name, partial(self._passes_super, name), self._keeps_signature
+        )
+        return found if found is not None else default
+
+    def _passes_super(self, name: str, info: TypeInfo) -> bool:
+        """Whether a class defines a method that only returns its ``super()`` call (the scan)."""
+        contribution = self.registry.contribution(info.fullname)
+        return contribution is not None and name in contribution.super_returns
 
     def _keeps_signature(self, decorator: Expression) -> bool:
         """Whether a decorator of a method returns the method (``api.model``, ``api.depends``)."""

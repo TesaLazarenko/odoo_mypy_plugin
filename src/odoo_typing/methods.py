@@ -6,7 +6,7 @@ Odoo 18 declares ``sudo``, ``with_context``, ``filtered``, ``search``, ``copy``.
 Addons then override ``create``, ``copy``, ``search``... without annotations, which
 also gives ``Any``. These hooks restore the declared signatures and the receiver type,
 and an override that only passes its ``super()`` call on returns what the overridden
-method declares (:func:`annotate_inherited_returns`).
+method declares (:func:`inherited_return`).
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ from mypy.typevars import fill_typevars
 from mypy.checker import TypeChecker
 from mypy.expandtype import expand_type_by_instance
 from mypy.semanal_shared import has_placeholder
-from mypy.typeops import callable_type, make_simplified_union
+from mypy.typeops import make_simplified_union
 
 from odoo_typing.classes import receiver_type
 from odoo_typing.local_values import MAX_DEPTH, LocalValues
@@ -73,20 +73,19 @@ from odoo_typing.vals import values_model_of
 __all__ = [
     "COMMAND_ID_METHODS",
     "SELF_METHODS",
-    "annotate_inherited_returns",
     "annotate_self_overrides",
     "browse_signature",
     "command_id_signature",
     "create_signature",
     "identity_decorator",
     "identity_factory",
+    "inherited_return",
     "is_browse",
     "is_command_id_method",
     "is_create",
     "is_identity_decorator",
     "is_self_method",
     "keep_receiver",
-    "overridden_return",
     "returns_own_records",
 ]
 
@@ -477,74 +476,59 @@ def _self_signature(func: FuncDef, info: TypeInfo, fallback: Instance) -> Callab
     )
 
 
-def annotate_inherited_returns(
-    ctx: ClassDefContext, names: frozenset[str], identity: Callable[[Expression], bool]
-) -> None:
-    """Give an override that passes its ``super()`` call on the return type it overrides.
+def inherited_return(
+    info: TypeInfo,
+    name: str,
+    passes: Callable[[TypeInfo], bool],
+    identity: Callable[[Expression], bool],
+) -> Type | None:
+    """What a method returns whose first definitions only pass their ``super()`` call on.
 
     ``product.product`` overrides ``_search`` without annotations and returns
     ``super()._search(domain, ...)``, so mypy typed every ``_search`` of products ``Any``
-    where Odoo declares ``Query`` (and so on for ``write``, ``name_search``...). An
-    unannotated method every ``return`` of which gives ``super().<the method>(...)``
-    (``names``: the scan reads them, :mod:`odoo_typing.scanner.super_returns`, as mypy
-    keeps no bodies of the modules it does not report on) gets the return type of the
-    definition its ``super()`` call reaches: the next class of the MRO that has the
-    method (:func:`overridden_return`). That definition may be such an override of an
-    earlier class, typed so when its class was analyzed: a chain of them returns the
-    type declared at its end.
+    where Odoo declares ``Query`` (and so on for ``write``, ``name_search``...). The
+    classes of ``info``'s MRO that define the name are followed while each defines it
+    as an unannotated method every ``return`` of which gives ``super().<the method>(...)``
+    (``passes``: the scan reads them, :mod:`odoo_typing.scanner.super_returns`, as mypy
+    keeps no bodies of the modules it does not report on), undecorated or with
+    decorators that keep the signature (``identity``). The first other definition gives
+    the type, if it declares one (:func:`_declared_return`): a chain of such overrides
+    returns the type declared at its end.
 
-    The type is the implicit signature mypy gives an unannotated def
-    (``callable_type``) with that return type: the parameters stay ``Any`` and the
-    function stays dynamic (``FuncItem.is_dynamic``), so its body is checked as before
-    (an empty ``[]`` stays ``list[Any]``), and its returns, checked against the type,
-    give it by construction. ``-> Self`` methods are typed by
+    ``None`` if the first definition is no such override (mypy has its type), or the
+    chain ends at none that declares a type. Asked where the method is called
+    (:meth:`odoo_typing.hooks.models.Hooks.inherited_return`), not written into the
+    methods: an annotated override of a later class is then compared with what its
+    bases declare themselves, once, the classes of one import cycle have their
+    signatures analyzed, and the daemon, which resets a method it rechecks to the type
+    of its source, has nothing to lose. ``-> Self`` methods are typed by
     :func:`annotate_self_overrides`.
-
-    Runs after the class body, once the class has the MRO of its registry chain
-    (``identity`` tells the decorators that keep a method's signature); a class whose
-    MRO misses classes of the chain (``fallback_to_any``) is left alone.
     """
-    info = ctx.cls.info
-    if not names or info.fallback_to_any:
-        return
-    fallback: Instance | None = None
-    for statement in ctx.cls.defs.body:
-        func = statement.func if isinstance(statement, Decorator) else statement
-        if (
-            not isinstance(func, FuncDef)
-            or func.name not in names
-            or func.name in SELF_METHODS
-            or func.type is not None
-            or func.is_property
-            or func.is_static
-            or func.is_class
-            or not func.arg_names
-        ):
-            continue
-        returned = overridden_return(info, func.name, identity)
-        if returned is not None:
-            fallback = fallback or ctx.api.named_type("builtins.function")
-            func.type = callable_type(func, fallback, returned)
-
-
-def overridden_return(
-    info: TypeInfo, name: str, identity: Callable[[Expression], bool]
-) -> Type | None:
-    """The return type of the method a ``super().<name>(...)`` call of a class reaches.
-
-    The first class after it in its MRO that defines the name: a method annotated
-    there (or typed by :func:`annotate_inherited_returns` when that class was
-    analyzed), undecorated or decorated only by decorators that keep its signature
-    (``identity``). ``None`` for anything else: an unannotated method, an overload, a
-    property, an attribute, a return type that is ``Any`` or ``None`` (no use to a
-    caller), or one that holds type variables (``Self``: see
-    :func:`annotate_self_overrides`).
-    """
-    for base in info.mro[1:]:
+    passed = False
+    for base in info.mro:
         symbol = base.names.get(name)
-        if symbol is not None:
-            return _declared_return(symbol.node, info, base, identity)
+        if symbol is None:
+            continue
+        if not _passes_on(symbol.node, identity) or not passes(base):
+            return _declared_return(symbol.node, info, base, identity) if passed else None
+        passed = True
     return None
+
+
+def _passes_on(node: SymbolNode | None, identity: Callable[[Expression], bool]) -> bool:
+    """Whether a definition may be an override that only returns its ``super()`` call."""
+    if isinstance(node, Decorator):
+        if node.var.is_property or not all(map(identity, node.decorators)):
+            return False
+        node = node.func
+    return (
+        isinstance(node, FuncDef)
+        and node.type is None
+        and not node.is_property
+        and not node.is_static
+        and not node.is_class
+        and bool(node.arg_names)
+    )
 
 
 def _declared_return(

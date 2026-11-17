@@ -7,8 +7,8 @@
             domain = Domain(domain) & Domain(...)
         return super()._search(domain, *args, **kwargs)
 
-Such an override returns what the method it overrides returns, so the plugin gives it
-that method's return type (:func:`odoo_typing.methods.annotate_inherited_returns`). The
+Such an override returns what the method it overrides returns, so the plugin gives a
+call of it that method's return type (:func:`odoo_typing.methods.inherited_return`). The
 scan reads it from the source: mypy keeps no bodies of the methods of a module whose
 errors it does not report (Odoo's addons outside the checked ones), nor of a module it
 loads from its cache.

@@ -954,3 +954,43 @@ def test_browse_takes_what_odoo_takes(run_mypy: RunMypy) -> None:
         '16: error: Argument 1 to "browse" of "BaseModel" has incompatible type "float"'
     )
     assert messages[2].startswith('19: error: Argument 1 to "browse" of "BaseModel"'), messages
+
+
+ANNOTATED_OVERRIDE = """
+from odoo import models
+
+class Thing(models.Model):
+    _name = "t.thing"
+
+    def _total(self) -> int:
+        return 1
+
+class ThingMore(models.Model):
+    _inherit = "t.thing"
+
+    def _total(self):
+        return super()._total()
+
+class ThingText(models.Model):
+    _inherit = "t.thing"
+
+    def _total(self) -> str:
+        return "1"
+
+    def check(self) -> None:
+        reveal_type(self.env["t.thing"]._total())
+"""
+
+
+def test_an_override_that_passes_super_on_adds_no_override_error(run_mypy: RunMypy) -> None:
+    """An annotated override is compared with what its bases declare themselves, once.
+
+    The classes are in one module: their signatures are analyzed after the class bodies.
+    """
+    result = run_mypy({"t_base": {"models.py": ANNOTATED_OVERRIDE}}, check=["t_base"])
+
+    assert [line.partition(": ")[2] for line in result.messages("t_base/models.py")] == [
+        'error: Return type "str" of "_total" incompatible with return type "int" in supertype'
+        ' "Thing"  [override]',
+        'note: Revealed type is "str"',
+    ]

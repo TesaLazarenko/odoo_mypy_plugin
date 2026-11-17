@@ -635,12 +635,28 @@ class OdooPlugin(Plugin):
             self._type_request()
             method = self._method_fullname(fullname)
             hook = self._with_own_view(method, self._find_method_hook(method))
+            hook = _result_then(hook, self._inherited_return_hook(method))
             found[fullname] = _soft(
                 _result_then(hook, self._guard_result_hook(method, method=True)),
                 _default_return,
                 f"the hook of {fullname}()",
             )
         return found[fullname]
+
+    def _inherited_return_hook(self, fullname: str) -> Callable[[MethodContext], Type] | None:
+        """An unannotated method of a class: it may only return its ``super()`` call.
+
+        See :meth:`ModelClassHooks.inherited_return`. A receiver that is a type variable
+        (``self`` in a method) gives only the method's name.
+        """
+        owner, _, name = fullname.rpartition(".")
+        if name in SELF_METHODS or name.startswith("__"):
+            return None
+        if owner:
+            function = self._declared_function(fullname, method=True)
+            if function is None or function.type is not None or function.info is None:
+                return None
+        return partial(self._classes.inherited_return, name)
 
     def _with_own_view(
         self, fullname: str, hook: Callable[[MethodContext], Type] | None
