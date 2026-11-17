@@ -55,6 +55,7 @@ vals_ignore_keys = ["x_*"]
 literal_selection = false
 required_values = true
 rebound_variables = true
+new_record_ids = false
 scan_cache_dir = "~/.cache/odoo-typing/scans"
 ```
 
@@ -75,6 +76,7 @@ contains them.
 | `literal_selection` | `false` | Read `Selection` fields as `Literal[<keys>] \| Literal[False]` |
 | `required_values` | `true` | Read required fields and `display_name` without `\| Literal[False]` |
 | `rebound_variables` | `true` | A local variable bound more than once has the type of each value at its binding |
+| `new_record_ids` | `false` | Read `record.id` as `int \| NewId` (Odoo 17, 18), not as `int` |
 | `scan_cache_dir` | `~/.cache/odoo-typing/scans` | Addon scans shared by every project, a subdirectory per interpreter; `""` keeps them in mypy's cache |
 
 **`odoo_version`** is the single source of truth for the version: the plugin picks the
@@ -149,6 +151,16 @@ first one is reported where it is appended. A variable that `rebound_variables` 
 `False`. Odoo does read `False` for a required field of a new record
 (`new()`, a form's onchange) before the value is set: `required_values = false` reads
 these fields as Odoo declares them, for code that must handle such records.
+
+**`new_record_ids`** (off by default) is the same choice for `record.id`. Odoo 18
+declares it `int | NewId | Literal[False]` (the plugin declares the same for Odoo 17,
+which has no annotation): the id of a record of `new()` or of a form's onchange is a
+`NewId`. Every `values[record.id]` of a `dict[int, ...]`, `int(record.id)` and call of a
+function that takes `id: int` is then an `arg-type` error, though the records of
+`search`, `browse` and `create` have an `int`. By default `record.id` reads as `int`;
+`new_record_ids = true` reads it as Odoo declares it, for code that must handle new
+records (use `record._origin.id`, `record.ids`, or test `isinstance(record.id, int)`).
+Odoo 19 and 20 leave `record.id` untyped (`Any`), with or without the option.
 
 A computed text field counts as set when Odoo cannot read `False` from it. That is a
 `Char`, `Text` or `Html` field with a `compute` method that is not stored, has no

@@ -165,6 +165,32 @@ class FieldValueHooks(Hooks):
             return ctx.default_attr_type
         return make_simplified_union([item for item in value.items if not _is_false(item)])
 
+    def saved_id(self, ctx: AttributeContext) -> Type:
+        """``record.id`` without ``NewId``, unless ``new_record_ids``: the id of a saved record.
+
+        Odoo 18 declares ``id: int | NewId | Literal[False]`` (the plugin declares the
+        same for Odoo 17): the ``NewId`` is that of a record of ``new()`` or of a form's
+        onchange, and with it every ``values[record.id]`` of a ``dict[int, ...]`` and
+        every ``id: int`` parameter is an error for the records of ``search``,
+        ``browse`` and ``create`` too. Like ``required_values``, the default reads the
+        value a saved record has.
+        """
+        value = get_proper_type(ctx.default_attr_type)
+        if not isinstance(value, UnionType):
+            return ctx.default_attr_type
+        new_id = self._profile.new_id
+        kept = [
+            item
+            for item in value.items
+            if not (
+                isinstance(proper := get_proper_type(item), Instance)
+                and proper.type.fullname == new_id
+            )
+        ]
+        if len(kept) == len(value.items):
+            return ctx.default_attr_type
+        return make_simplified_union(kept)
+
     def _stored(self, expression: Context, api: CheckerPluginInterface) -> bool:
         """Whether a value read types a variable that later values are checked against.
 

@@ -102,8 +102,8 @@ class Thing(models.Model):
 def test_a_local_dict_of_mixed_values_takes_and_gives_any_value(
     run_mypy: RunMypy, odoo_version: int
 ) -> None:
-    """``record.id`` is a union on Odoo 17 and 18: mypy joins the values into a union."""
-    result = run_mypy({"my_mod": {"models.py": UNION}})
+    """``record.id`` as Odoo 17 and 18 declare it is a union: mypy joins the values into one."""
+    result = run_mypy({"my_mod": {"models.py": UNION}}, options="new_record_ids = true\n")
 
     # Values of one type keep it: ``int | NewId`` on 17 and 18, whose items have no such
     # attribute; an untyped id on 19+, which has any.

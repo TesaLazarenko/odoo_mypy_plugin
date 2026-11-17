@@ -1234,6 +1234,8 @@ class OdooPlugin(Plugin):
         required = self._models.settings.required_values
         if required and fullname == f"{profile.base_model}.display_name":
             return self._values.display_name  # Odoo 17, 18 annotate it on BaseModel
+        if not self._models.settings.new_record_ids and fullname == f"{profile.base_model}.id":
+            return self._values.saved_id  # Odoo 17, 18: ``int | NewId``
         owner, _, name = fullname.rpartition(".")
         if owner == profile.environment and self._declared_records(fullname):
             return partial(self._env.named_record, name)  # ``env.website`` (Odoo 20)

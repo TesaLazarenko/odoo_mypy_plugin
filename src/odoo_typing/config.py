@@ -58,6 +58,7 @@ OPTIONS = (
     "literal_selection",
     "required_values",
     "rebound_variables",
+    "new_record_ids",
     "scan_cache_dir",
 )
 # Options that are lists; in an INI file, entries separated by commas or newlines.
@@ -98,6 +99,10 @@ class Settings:
         rebound_variables: Give a local variable that its function binds more than
             once the type of each value at its binding (the default; ``False``: the
             type of its first value, as mypy infers it), see :mod:`odoo_typing.rebound`.
+        new_record_ids: Read ``record.id`` as ``int | NewId``, as Odoo 18 declares it
+            (the id of a record of ``new()`` or of a form's onchange); ``False`` (the
+            default): as ``int``, the id of the records of ``search``, ``browse`` and
+            ``create``.
         scan_cache_dir: Where addon scans are kept for every project and mypy cache
             (:class:`odoo_typing.scan_store.ScanStore`); ``None``: only in mypy's cache.
     """
@@ -111,6 +116,7 @@ class Settings:
     literal_selection: bool = False
     required_values: bool = True
     rebound_variables: bool = True
+    new_record_ids: bool = False
     scan_cache_dir: Path | None = None
 
     def option_data(self) -> list[str]:
@@ -122,6 +128,7 @@ class Settings:
             f"literal_selection={self.literal_selection}",
             f"required_values={self.required_values}",
             f"rebound_variables={self.rebound_variables}",
+            f"new_record_ids={self.new_record_ids}",
         ]
 
     @property
@@ -163,6 +170,7 @@ def load_settings(
         literal_selection=_flag("literal_selection", table.get("literal_selection", False)),
         required_values=_flag("required_values", table.get("required_values", True)),
         rebound_variables=_flag("rebound_variables", table.get("rebound_variables", True)),
+        new_record_ids=_flag("new_record_ids", table.get("new_record_ids", False)),
         scan_cache_dir=_scan_cache_dir(table, base_dir),
     )
 

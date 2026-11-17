@@ -465,3 +465,32 @@ def test_scan_cache_dir_in_a_home_that_cannot_be_found_keeps_scans_in_mypy_cache
 
     assert settings.scan_cache_dir is None
     assert "scan_cache_dir ~nosuchuser-odoo-typing/scans names a home" in capsys.readouterr().err
+
+
+# -- new_record_ids: record.id as Odoo declares it ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("options", "name", "expected"),
+    [
+        ("", "pyproject.toml", False),
+        ("new_record_ids = true\n", "pyproject.toml", True),
+        ("new_record_ids = yes\n", "mypy.ini", True),
+    ],
+)
+def test_load_settings_new_record_ids(
+    tmp_path: Path, options: str, name: str, expected: bool
+) -> None:
+    assert load_settings(_options_config(tmp_path, options, name)).new_record_ids is expected
+
+
+def test_load_settings_new_record_ids_invalid_raises_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="new_record_ids must be true or false"):
+        load_settings(_options_config(tmp_path, 'new_record_ids = "maybe"\n'))
+
+
+def test_settings_option_data_changes_with_new_record_ids(tmp_path: Path) -> None:
+    default = load_settings(_options_config(tmp_path / "a", ""))
+    strict = load_settings(_options_config(tmp_path / "b", "new_record_ids = true\n"))
+
+    assert default.option_data() != strict.option_data()

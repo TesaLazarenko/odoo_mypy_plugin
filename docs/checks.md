@@ -781,8 +781,9 @@ With real recordset types, some plain mypy codes appear more often:
 - `union-attr` / `arg-type` with `... | Literal[False]`: a field that is not required
   read as `str | Literal[False]` (Odoo's own typing). Check the value
   (`if record.name:`) first.
-- `arg-type` with `int | NewId` (`record.id` of possibly new records, Odoo 17 and 18):
-  pass `record.ids` / `record._origin.id`, or check `isinstance(record.id, int)`.
+- `arg-type` with `int | NewId` (`record.id` of possibly new records, Odoo 17 and 18),
+  only with `new_record_ids = true` (by default `record.id` is an `int`): pass
+  `record.ids` / `record._origin.id`, or check `isinstance(record.id, int)`.
   `Command.link` / `update` / `delete` / `unlink` and `browse` take one as Odoo does;
   `browse` also takes `None` and `False` (`browse(context.get("active_id"))`), which
   give no records, and the operands of an `and` chain before the last one, which reach

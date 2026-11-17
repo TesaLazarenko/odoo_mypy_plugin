@@ -91,6 +91,10 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - A field delegated through `_inherits` is required when the parent's field is, as in
   Odoo; `create_date` and `write_date` read without `| Literal[False]`
   (`required_values`).
+- `record.id` is an `int` (Odoo 17, 18): Odoo 18 declares `int | NewId`, the id of a
+  record of `new()` or of a form's onchange, which made every `values[record.id]` of a
+  `dict[int, ...]` and every `id: int` parameter an error for saved records too. Option
+  `new_record_ids = true` reads it as Odoo declares it.
 - A field that the domain of the search sets has no `False` in what the search gives:
   `search_read([("product_id", "in", subquery)], ["product_id"])`, the records of
   `search([("email_from", "ilike", "x")])` and the variable of a `for` over them, also

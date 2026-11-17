@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import OdooNames, RunMypy
 
 T_BASE = """
@@ -389,4 +390,49 @@ def test_an_operator_false_does_not_support_is_one_error(
     assert [message for message in messages if ": note: Revealed" in message] == [
         '15: note: Revealed type is "int"',
         '16: note: Revealed type is "int"',
+    ]
+
+
+RECORD_IDS = """
+from odoo import models
+
+def label(record_id: int) -> str:
+    return str(record_id)
+
+class Thing(models.Model):
+    _name = "t.thing"
+
+    def check(self, totals: dict[int, float]) -> None:
+        reveal_type(self.id)
+        for record in self.search([]):
+            reveal_type(record._origin.id)
+            totals.get(record.id)
+            label(record.id)
+"""
+
+
+@pytest.mark.parametrize("new", [False, True], ids=["saved", "new_record_ids"])
+def test_record_id_is_an_int_unless_new_record_ids(
+    run_mypy: RunMypy, names: OdooNames, new: bool
+) -> None:
+    """Odoo 17 and 18: ``int | NewId``, the id of a record of ``new()`` or of an onchange."""
+    result = run_mypy(
+        {"my_mod": {"models.py": RECORD_IDS}}, options="new_record_ids = true\n" if new else ""
+    )
+
+    messages = [line.partition(": ")[2] for line in result.messages("my_mod/models.py")]
+    declared = names.version < 19  # Odoo 19 and 20 leave the field's ``__get__`` untyped
+    new_id = "odoo.models.NewId" if names.version == 17 else "odoo.api.NewId"
+    read = "Any" if not declared else f"int | {new_id}" if new else "int"
+    origin = "Any" if names.version == 17 else read  # 17: ``_origin`` is untyped
+    errors = [
+        'error: Argument 1 to "get" of "dict" has incompatible type "int | NewId"; expected "int"'
+        "  [arg-type]",
+        'error: Argument 1 to "label" has incompatible type "int | NewId"; expected "int"'
+        "  [arg-type]",
+    ]
+    assert messages == [
+        f'note: Revealed type is "{read}"',
+        f'note: Revealed type is "{origin}"',
+        *(errors if new and declared else []),
     ]
