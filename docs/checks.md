@@ -787,6 +787,16 @@ With real recordset types, some plain mypy codes appear more often:
   request.pricelist.id)` on Odoo 20, which declares `request: Request`.
 - `assignment` between two classes of the same model (`AccountMoveLine` of two addons):
   use another variable name, or annotate it.
+- An **Odoo function that handles an empty argument itself** takes it: Odoo starts
+  `format_date(env, value: datetime | date | str, ...)` with `if not value: return ''`
+  and `str2bool(s: str)` with `if type(s) is bool: return s`, so `format_date(self.env,
+  line.date_maturity)` and `str2bool(config.value)` are no `arg-type` errors.
+  `fields.Date.to_date(value)` / `from_string` returns `None` only from `if not value:
+  return None`, so for an argument that cannot be false (a `date`), or a read of the
+  context found true before (`if self.env.context.get("k"):`), the result is a `date`.
+  The guards are read from the source of Odoo's own functions (the statements a function
+  starts with: `if not p:` / `p is None` / `isinstance(p, bool)` / `type(p) is bool`,
+  each `return ...`), not from an addon's.
 - A **read of the environment proven true before** is true again: after `if not
   self.env.context.get("active_ids"): raise ...` (or `if len(... or []) < 2: raise`, or
   inside `if self.env.context.get("k"):`) the same `get` (or `["k"]`) is not `None`, and

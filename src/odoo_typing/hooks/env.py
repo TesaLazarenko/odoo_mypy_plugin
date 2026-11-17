@@ -12,6 +12,7 @@ from mypy.nodes import (
     CallExpr,
     Expression,
     FuncItem,
+    IndexExpr,
     LambdaExpr,
     ListExpr,
     MemberExpr,
@@ -170,6 +171,16 @@ class EnvHooks(Hooks):
         if not self._is_context(call.callee.expr, ctx.api):
             return found
         return _without_empty(found, _proof(ctx))
+
+    def proven_context_item(self, expression: Expression, api: CheckerPluginInterface) -> bool:
+        """``env.context["k"]`` / ``.get("k")`` that the function has found true before."""
+        if isinstance(expression, IndexExpr):
+            mapping = expression.base
+        elif isinstance(expression, CallExpr) and isinstance(expression.callee, MemberExpr):
+            mapping = expression.callee.expr
+        else:
+            return False
+        return self._is_context(mapping, api) and proof_of(expression, api) == "truthy"
 
     def _is_context(self, expression: Expression, api: CheckerPluginInterface) -> bool:
         """``<environment>.context``, or ``<records>._context`` (Odoo 17, 18)."""
@@ -632,7 +643,12 @@ def _string_dict(typ: ProperType) -> bool:
 
 def _proof(ctx: MethodContext) -> Proof | None:
     """What the function being checked proves about the call of a method hook."""
-    stack = getattr(type_checker(ctx.api).scope, "stack", [])
+    return proof_of(ctx.context, ctx.api)
+
+
+def proof_of(expression: object, api: CheckerPluginInterface) -> Proof | None:
+    """What the innermost function being checked (not a lambda) proves about an expression."""
+    stack = getattr(type_checker(api).scope, "stack", [])
     function = next(
         (
             item
@@ -641,9 +657,9 @@ def _proof(ctx: MethodContext) -> Proof | None:
         ),
         None,
     )
-    if function is None or not isinstance(ctx.context, Expression):
+    if function is None or not isinstance(expression, Expression):
         return None
-    return proven(function, ctx.context)
+    return proven(function, expression)
 
 
 def _without_empty(found: Type, proof: Proof | None) -> Type:

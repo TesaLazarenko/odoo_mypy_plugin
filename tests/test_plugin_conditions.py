@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import RunMypy
 
 T_BASE = """
@@ -146,3 +147,45 @@ def test_a_read_of_env_proven_true_before_is_true_again(run_mypy: RunMypy) -> No
         '32: error: Item "None" of "ResPartner | None" has no attribute "name"  [union-attr]',
         '38: error: Argument 1 to "set" of "Command" has incompatible type "Any | None"',
     ]
+
+
+GUARDED = """
+from odoo import fields, models
+from odoo.tools import format_date, format_datetime, str2bool
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def labels(self) -> None:
+        format_date(self.env, self.day)  # ``if not value: return ''``
+        str2bool(self.name)  # ``if type(s) is bool: return s``
+        format_datetime(self.env, self.day)  # no such guard
+
+    def dates(self, text: str) -> None:
+        if self.env.context.get("date"):
+            day = fields.Date.from_string(self.env.context["date"])
+            reveal_type(day)
+        reveal_type(fields.Date.to_date(text))
+        reveal_type(fields.Date.to_date(self.day))
+"""
+
+
+@pytest.mark.odoo(18, 19, 20)
+def test_odoo_functions_take_the_empty_values_they_handle(
+    run_mypy: RunMypy, odoo_version: int
+) -> None:
+    """``format_date(env, line.date_maturity)``: Odoo starts it with ``if not value:``."""
+    base = T_BASE.replace("day = fields.Datetime()", "day = fields.Date()")
+    result = run_mypy(
+        {"t_base": {"models.py": base}, "t_use": {"depends": ["t_base"], "models.py": GUARDED}},
+        check=["t_use"],
+    )
+
+    messages = [line.split(";")[0] for line in result.messages("t_use/models.py")]
+    assert messages[0].startswith('11: error: Argument 2 to "format_datetime" has incompatible')
+    if odoo_version >= 19:  # Odoo 18 does not annotate to_date
+        assert messages[1:] == [
+            '16: note: Revealed type is "datetime.date"',  # the context value was found true
+            '17: note: Revealed type is "datetime.date | None"',  # "" gives None
+            '18: note: Revealed type is "datetime.date | None"',
+        ]

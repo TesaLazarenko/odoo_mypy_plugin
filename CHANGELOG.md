@@ -84,6 +84,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - A field delegated through `_inherits` is required when the parent's field is, as in
   Odoo; `create_date` and `write_date` read without `| Literal[False]`
   (`required_values`).
+- An Odoo function that handles an empty argument itself takes it (`format_date(env,
+  line.date_maturity)`, `str2bool(config.value)`), and `fields.Date.to_date(value)` gives
+  a `date` for a true argument: the guards are read from Odoo's source.
 - A read of the environment that the function proved true before is true again:
   `self.env.context.get("active_ids")` after `if not self.env.context.get("active_ids"):
   raise`, `env.ref(x, raise_if_not_found=False)` after the same call was tested.

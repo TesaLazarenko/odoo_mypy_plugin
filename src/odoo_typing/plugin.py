@@ -63,6 +63,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
+from pathlib import Path
 from typing import TypeVar
 
 from mypy.checker import TypeChecker
@@ -117,6 +118,7 @@ from odoo_typing.conditions import narrow_conditions
 from odoo_typing.config import ConfigError, Settings, load_settings
 from odoo_typing.domains import DOMAIN_METHODS, PARAMETER_DOMAIN_METHODS
 from odoo_typing.errors import RAISE_VARIABLE, fail_soft, report_internal_error
+from odoo_typing.falsy_guards import NO_GUARD, FalsyGuards, Guard
 from odoo_typing.fingerprint import Fingerprints
 from odoo_typing.hooks.annotations import (
     DICT_GET,
@@ -155,6 +157,7 @@ from odoo_typing.hooks.env import (
     test_cursor,
     type_request,
 )
+from odoo_typing.hooks.falsy_parameters import guarded_result, guarded_signature
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
 from odoo_typing.hooks.field_values import FILTER, FieldValueHooks, falsy_filter_signature
 from odoo_typing.hooks.mixed_values import (
@@ -214,6 +217,7 @@ __all__ = ["ODOO_MODEL", "ODOO_MODEL_DEPENDS", "OdooPlugin", "plugin"]
 # package makes a change of any plugin file check everything again, also the modules
 # outside addons (Odoo's own), which report no config data.
 ContextT = TypeVar("ContextT")
+SigContextT = TypeVar("SigContextT", MethodSigContext, FunctionSigContext)
 ResultT = TypeVar("ResultT")
 
 __version__ = records.source_digest()
@@ -290,6 +294,7 @@ class OdooPlugin(Plugin):
         self._asked = AskedFieldHooks(models)
         self._mixed = MixedValueHooks(models)
         self._rebound = ReboundVariables()
+        self._falsy_guards = FalsyGuards()  # see _guard_of
         self._rebound_tree: MypyFile | None = None  # prepared last, see _prepare_rebound
         # The classes Odoo registers BaseModel with (``Sequence``, ``Set``), once read.
         self._registered: frozenset[str] | None = None
@@ -628,8 +633,9 @@ class OdooPlugin(Plugin):
         if fullname not in found:
             self._type_request()
             method = self._method_fullname(fullname)
+            hook = self._with_own_view(method, self._find_method_hook(method))
             found[fullname] = _soft(
-                self._with_own_view(method, self._find_method_hook(method)),
+                _result_then(hook, self._guard_result_hook(method, method=True)),
                 _default_return,
                 f"the hook of {fullname}()",
             )
@@ -662,9 +668,10 @@ class OdooPlugin(Plugin):
         found = self._hooks.function
         if fullname not in found:
             self._type_request()
-            found[fullname] = _soft(
-                self._find_function_hook(fullname), _default_return, f"the hook of {fullname}()"
+            hook = _result_then(
+                self._find_function_hook(fullname), self._guard_result_hook(fullname, method=False)
             )
+            found[fullname] = _soft(hook, _default_return, f"the hook of {fullname}()")
         return found[fullname]
 
     def get_function_signature_hook(
@@ -681,11 +688,16 @@ class OdooPlugin(Plugin):
             return wrapper_signature
         found = self._hooks.function_signature
         if fullname not in found:
-            hook = self._field_tuple_hook(fullname) or self._registered_hook(fullname)
-            context = self._context_hook(fullname, method=False)
-            found[fullname] = (
-                partial(_signature_then, hook, context) if hook and context else hook or context
-            )
+            hooks = [
+                self._field_tuple_hook(fullname) or self._registered_hook(fullname),
+                self._context_hook(fullname, method=False),
+                self._guard_signature_hook(fullname, method=False),
+            ]
+            chained: Callable[[FunctionSigContext], FunctionLike] | None = None
+            for then in hooks:
+                if then is not None:
+                    chained = partial(_signature_then, chained, then) if chained else then
+            found[fullname] = chained
         return found[fullname]
 
     def get_method_signature_hook(
@@ -935,6 +947,7 @@ class OdooPlugin(Plugin):
         chained: list[Callable[[MethodSigContext], FunctionLike] | None] = [
             self._dispatch_hook(fullname),
             self._context_hook(fullname, method=True),
+            self._guard_signature_hook(fullname, method=True),
         ]
         for then in chained:
             if then is not None:
@@ -1007,6 +1020,47 @@ class OdooPlugin(Plugin):
         if isinstance(found, Decorator):
             found = found.func
         return found if isinstance(found, FuncDef) else None
+
+    def _guard_of(self, fullname: str, method: bool) -> Guard:
+        """What an Odoo function does first with its empty parameters (odoo_typing.falsy_guards).
+
+        Only for Odoo's own functions and the methods of its classes outside the addons:
+        the guards correct what Odoo declares, not what an addon's author declares.
+        """
+        modules = self._modules
+        if not modules:
+            return NO_GUARD
+        if method:
+            owner, _, name = fullname.rpartition(".")
+            node = lookup_fully_qualified(owner, modules, raise_on_missing=False)
+            info = node.node if node is not None else None
+            if not isinstance(info, TypeInfo):
+                return NO_GUARD
+            defining = next((item for item in info.mro if name in item.names), None)
+            if defining is None or defining.fullname != f"{defining.module_name}.{defining.name}":
+                return NO_GUARD  # a nested class: not indexed
+            module, class_name, declared = defining.module_name, defining.name, defining.fullname
+        else:
+            module, _, name = fullname.rpartition(".")
+            class_name, declared = "", fullname
+        tree = modules.get(module)
+        if tree is None or not tree.path or not self._declared_by_odoo(declared):
+            return NO_GUARD
+        return self._falsy_guards.of(Path(tree.path), class_name, name)
+
+    def _guard_signature_hook(
+        self, fullname: str, method: bool
+    ) -> Callable[[MethodSigContext | FunctionSigContext], FunctionLike] | None:
+        guard = self._guard_of(fullname, method) if "." in fullname else NO_GUARD
+        return partial(guarded_signature, guard) if guard.falsy or guard.booleans else None
+
+    def _guard_result_hook(
+        self, fullname: str, method: bool
+    ) -> Callable[[MethodContext | FunctionContext], Type] | None:
+        guard = self._guard_of(fullname, method) if "." in fullname else NO_GUARD
+        if not guard.none_only_for:
+            return None
+        return partial(guarded_result, guard, self._env.proven_context_item)
 
     def _context_hook(
         self, fullname: str, method: bool
@@ -1194,16 +1248,32 @@ def _first_of(hooks: tuple[Callable[[MethodContext], Type], ...], ctx: MethodCon
     return ctx.default_return_type
 
 
+def _result_then(
+    first: Callable[[ContextT], Type] | None, then: Callable[[ContextT], Type] | None
+) -> Callable[[ContextT], Type] | None:
+    """Two return-type hooks of one call, the second given what the first gave."""
+    if first is None or then is None:
+        return first or then
+    return partial(_run_result_then, first, then)
+
+
+def _run_result_then(
+    first: Callable[[ContextT], Type], then: Callable[[ContextT], Type], ctx: ContextT
+) -> Type:
+    found = first(ctx)
+    return then(ctx._replace(default_return_type=found))  # type: ignore[attr-defined]
+
+
 def _signature_then(
-    first: Callable[[MethodSigContext], FunctionLike],
-    then: Callable[[MethodSigContext], FunctionLike],
-    ctx: MethodSigContext,
+    first: Callable[[SigContextT], FunctionLike],
+    then: Callable[[SigContextT], FunctionLike],
+    ctx: SigContextT,
 ) -> FunctionLike:
-    """Two signature hooks of one method, the second given what the first made."""
+    """Two signature hooks of one method or function, the second given what the first made."""
     signature = first(ctx)
     if not isinstance(signature, CallableType):
         return signature
-    return then(MethodSigContext(ctx.type, ctx.args, signature, ctx.context, ctx.api))
+    return then(ctx._replace(default_signature=signature))
 
 
 def _default_signature(ctx: MethodSigContext) -> FunctionLike:

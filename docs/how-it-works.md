@@ -232,6 +232,15 @@ once it can be.
   functions mypy has not reached yet change; in the function being checked, only the
   variables whose first binding it has not checked (`Var.type` is still `None`).
 
+- **Guards of Odoo functions** (`odoo_typing.falsy_guards`, `hooks.falsy_parameters`).
+  mypy drops the bodies of the modules whose errors it does not show, so the signature
+  and return-type hooks of a function or method that Odoo defines outside the addons
+  read the statements it starts with from its source file (indexed once per file by its
+  `class` / `def` lines, following `from_string = to_date`; only the function's own text
+  is parsed): `if not p: return ...` gives `p` `Literal[False] | None`, `if type(p) is
+  bool: return p` gives it `bool`, and a `return None` that only `if not p:` makes is
+  left out of the result for a true argument.
+
 - **Reads proven true** (`odoo_typing.proven`). The hooks of `get` of the class
   `Environment.context` is declared with (named after the receiver's class,
   `odoo.tools.misc.frozendict.get`) and of `env.ref` ask what the innermost function
