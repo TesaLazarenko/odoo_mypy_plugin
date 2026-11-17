@@ -180,6 +180,8 @@ class Contribution:
         filled: The attributes with known values each method assigns to each of its
             records on every path (``odoo_typing.scanner.assigned.filled_attributes``):
             ``(method, attributes)``, with ``OVERRIDDEN`` for a ``super()`` call.
+        super_returns: The methods without annotations that return their ``super()``
+            call and nothing else (``odoo_typing.scanner.super_returns``), in source order.
     """
 
     addon: str
@@ -202,6 +204,7 @@ class Contribution:
     assigned_any: tuple[str, ...] = ()
     assigned_through: tuple[tuple[str, tuple[str, ...]], ...] = ()
     filled: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    super_returns: tuple[str, ...] = ()
 
     @property
     def fullname(self) -> str:

@@ -58,6 +58,7 @@ from odoo_typing.scanner.results import (
     ModuleScan,
     SourceError,
 )
+from odoo_typing.scanner.super_returns import super_returns
 from odoo_typing.scanner.syntax import executed_blocks, parse_bytes, read_source
 from odoo_typing.stamps import UNREADABLE, Stamps, stamp
 from odoo_typing.xmlids import scan_data
@@ -354,6 +355,7 @@ class _ImportWalker:
                 assigned_any=assigned.unknown,
                 assigned_through=assigned.through,
                 filled=assigned.filled,
+                super_returns=super_returns(node),
             )
         )
 

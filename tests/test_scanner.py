@@ -21,6 +21,7 @@ from odoo_typing.scanner.assigned import (
     filled_attributes,
 )
 from odoo_typing.scanner.class_bodies import passed_containers
+from odoo_typing.scanner.super_returns import super_returns
 
 NESTED = """
     from odoo import fields, models
@@ -375,3 +376,81 @@ def test_the_attributes_a_method_assigns_to_each_record_on_every_path() -> None:
         "_other_super": {OVERRIDDEN},
         "_not_super": set(),  # another method; a ``super()`` of one record
     }
+
+
+SUPER_RETURNS = """
+class Thing(models.Model):
+    @api.model
+    def _search(self, domain, *args, **kwargs):
+        if self.env.context.get("x"):
+            domain = [*domain, ("name", "=", "x")]
+        return super()._search(domain, *args, **kwargs)
+
+    def write(self, vals):
+        result = super().write(vals)
+        result += 0
+        self.flush_recordset()
+        return result
+
+    def _size(self, extra=None):
+        def inner():
+            return 1
+        return super(Thing, self)._size()
+
+    def _label(self, short=False):
+        try:
+            return super()._label()
+        except KeyError:
+            raise ValueError("long")
+
+    def _maybe(self, flag=False):
+        if flag:
+            return super()._maybe()
+
+    def _twice(self):
+        found = super()._twice()
+        if not found:
+            found = 1
+        return found
+
+    def _looped(self):
+        for found in self:
+            pass
+        found = super()._looped()
+        return found
+
+    def _given(self, found=None):
+        found = super()._given()
+        return found
+
+    def _other(self):
+        return super()._total()
+
+    def _another_class(self):
+        return super(Other, self)._another_class()
+
+    def _typed(self) -> int:
+        return super()._typed()
+
+    def _generator(self):
+        yield 1
+        return super()._generator()
+
+    def _bound_twice(self):
+        return super()._bound_twice()
+
+    _bound_twice = None
+
+    async def _coroutine(self):
+        return super()._coroutine()
+"""
+
+
+def test_the_methods_that_return_their_super_call() -> None:
+    """Every return passes ``super().<same method>(...)`` on, and no path falls off the end."""
+    node = ast.parse(SUPER_RETURNS).body[0]
+    assert isinstance(node, ast.ClassDef)
+
+    # Not: a path without a return, a second binding (also of a parameter or a ``for``),
+    # another method or class, an annotation, a generator, a name bound twice, async.
+    assert super_returns(node) == ("_search", "write", "_size", "_label")
