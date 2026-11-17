@@ -247,16 +247,32 @@ once it can be.
   (`x.name = v`, `setattr(x, "name", v)`; `x["name"] = v` and `x.update({"name": v})` /
   `x.write({...})` with a dict display where `x` starts at the method's first parameter
   or at a name bound to an expression that does, since most such writes are a dict's):
-  a string by its syntax, the dotted name of a called name of the module (`json.dumps`),
-  or unknown (then only the attribute's name, per class). A call of a name the method
-  binds itself (`url.geturl()`, `self._label()`) is unknown. `value_required` asks for
-  a `Char` / `Text` / `Html` field that is computed at each read (not stored, no
-  `inverse`, not `readonly=False`: `Field.__get__` raises for a record without a value)
-  whether the classes of the model's view assign only such values, at least once in the
-  compute method; the called names are looked up in mypy's symbol table of the module
+  a string by its syntax, a true operand of `or` (any type but `None` / `False`), the
+  dotted name of a called name of the module (`json.dumps`), or unknown (then only the
+  attribute's name, per class). A call of a name the method binds itself
+  (`url.geturl()`, `self._label()`) is unknown. An unknown value written to records the
+  method's records reach through attributes (`menu.page_id.write(...)`) is kept with the
+  attributes instead; the fields of the model's view tell whether they lead to the
+  model's records (a field that is not relational, a comodel not known, the model or a
+  comodel that delegates to it). The scan also follows, statement by statement, which
+  attributes a method assigns to each of its records on every path
+  (`scanner.assigned.filled_attributes`, only for methods that assign a known value or
+  call `super()` of themselves): `self.x = v`, and `for r in self:` whose every path
+  through the body assigns `r.x` (both arms of an `if`; `continue` ends a record's path;
+  `break` and `return` in the loop leave records without a value; inner loops, `with`,
+  `try` bodies and `match` add nothing), plus a mark for `super().<method>()` on every
+  path. `value_required` asks for a `Char` / `Text` / `Html` field that is computed at
+  each read (not stored) whether the classes of the model's view assign only such
+  values (a true operand of `or` only in a `Char` / `Text`), at least once in the compute
+  method; for a field with an `inverse` or `readonly=False`, where `Field.__get__` fills
+  in `False` instead of raising, also whether the last override of the compute method
+  fills the field on every path (or calls `super()` on every path and the method it
+  overrides does). The called names are looked up in mypy's symbol table of the module
   that calls them (then in `builtins`) and must be declared to return `str` (a class
-  derived from `str` counts). The assigned kinds are part of the addon's scan digest
-  and of `__odoo_fields`, so an edit of a compute method checks the readers again.
+  derived from `str` counts). Reads inside the compute method and the inverse method keep
+  the declared type. The assigned kinds, the writes through attributes, the filled
+  attributes and the method names are part of the addon's scan digest and of
+  `__odoo_fields`, so an edit of a compute method checks the readers again.
 
 - **Attributes of field objects** (`odoo_typing.field_setup`, `hooks.field_objects`). The
   scan keeps, for each field definition, the names of the arguments it passes, with the

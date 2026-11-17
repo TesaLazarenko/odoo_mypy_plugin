@@ -159,15 +159,33 @@ compute method and assigns the field in it, and every value that the methods of 
 model's classes assign to the field's name is a string: a literal, an f-string,
 `"%s" % x`, `"a" + x`, `"{}".format(x)`, `", ".join(x)`, or the call of a name of the
 module that is declared to return `str` (`json.dumps(...)`, `str(...)`, a function of
-the addon annotated `-> str`). `record.data = json.dumps(values)` in two branches of an
-`if` / `elif` is enough; `record.data = values and json.dumps(values)`, `record.data =
-False` in any method of the model (also `record["data"] = False` and
+the addon annotated `-> str`). In a `Char` or `Text` field `x or "#"` is a string too,
+whatever `x` is: the field turns every value but `None` and `False` into its string
+(an `Html` field of Odoo 17-19 keeps it as it is). `record.data = json.dumps(values)` in
+two branches of an `if` / `elif` is enough; `record.data = values and json.dumps(values)`,
+`record.data = False` in any method of the model (also `record["data"] = False` and
 `record.update({"data": False})`), or `record.update({**values})` in the compute method
-leave the field `str | Literal[False]`. The classes are those the reading addon sees: an
-override of the compute method in an addon outside its dependencies does not count.
-Inside its own compute method the field reads `False` until it is assigned, so reads
-there keep the declared type; a value given from outside the model's classes
-(`create({"data": False})`) is not seen, as with a required field.
+leave the field `str | Literal[False]`. A value that is not known, written to records
+the method's records reach through fields, counts only where the fields may lead back to
+the model: `menu.page_id.write({"url": menu.url})` writes pages, `menu.parent_id.write(...)`
+menus. The classes are those the reading addon sees: an override of the compute method
+in an addon outside its dependencies does not count.
+
+A computed text field with an `inverse` or `readonly=False` (and not stored) reads as
+`str` under the same conditions, and only when the compute method assigns it to each
+record on every path: Odoo fills in `False` for a record such a method left without a
+value. `for menu in self:` whose body assigns `menu.url` in both arms of an `if`, or
+before a `continue`, does; so does `self.url = "#"`. A loop over some of the records
+(`self.filtered(...)`), an `if` without `else`, a `continue`, `break` or `return` before
+the assignment, an assignment inside a `with` or an inner loop, or in a `try` body but
+not in each of its `except` handlers do not. The method that counts is the last override
+the reading addon sees; one that calls `super().<method>()` on every path hands on to
+the method it overrides.
+
+Inside its own compute method the field reads `False` until it is assigned, and inside
+its inverse method it holds the value written, so reads there keep the declared type; a
+value given from outside the model's classes (`create({"data": False})`, a form that
+clears an editable field) is not seen, as with a required field.
 
 **`rebound_variables`** (on by default) gives a local variable without an annotation
 that its function binds more than once (`products = []` then records,

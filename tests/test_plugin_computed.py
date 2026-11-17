@@ -138,8 +138,8 @@ def test_a_text_field_its_compute_always_assigns_reads_as_a_string(run_mypy: Run
         EMPTY,  # ``False`` in a branch
         EMPTY,  # a function that may return None
         EMPTY,  # stored: a record keeps what it had
-        EMPTY,  # an inverse method: the field is written
-        EMPTY,  # ``readonly=False``: Odoo fills in False where nothing is assigned
+        "str",  # an inverse method; assigned to each record on every path
+        "str",  # ``readonly=False``; assigned to each record on every path
         EMPTY,  # the result of a method of a local value
         EMPTY,  # another method of the model assigns False
         EMPTY,  # the compute method writes names that are not read
@@ -219,3 +219,130 @@ def test_a_computed_text_reads_the_same_from_the_cache(run_mypy: RunMypy) -> Non
 
     assert _revealed(cold.messages("t_reader/models.py")) == ["str", "str", "str"]
     assert warm.lines == cold.lines
+
+
+FILLED = """
+from odoo import fields, models
+
+
+class Page(models.Model):
+    _name = "t.page"
+
+    url = fields.Char()
+
+
+class Menu(models.Model):
+    _name = "t.menu"
+
+    page_id = fields.Many2one("t.page")
+    parent_id = fields.Many2one("t.menu")
+    manual_url = fields.Char()
+    container = fields.Boolean()
+    url = fields.Char(compute="_compute_url", inverse="_inverse_url")
+    label = fields.Char(compute="_compute_label", readonly=False)
+    target = fields.Char(compute="_compute_target", inverse="_inverse_target")
+    anchor = fields.Char(compute="_compute_anchor", inverse="_inverse_target")
+    title = fields.Char(compute="_compute_title", readonly=False)
+    page = fields.Char(compute="_compute_page", readonly=False)
+    note = fields.Html(compute="_compute_note", readonly=False)
+    code = fields.Char(compute="_compute_code", readonly=False)
+
+    def _compute_url(self) -> None:
+        for menu in self:
+            if menu.container:
+                menu.url = "#"
+            else:
+                menu.url = (menu.page_id.url if menu.page_id else menu.manual_url) or "#"
+
+    def _inverse_url(self) -> None:
+        for menu in self:
+            reveal_type(menu.url)
+            if menu.url and menu.page_id:
+                menu.page_id.write({"url": menu.url})
+
+    def _compute_label(self) -> None:
+        for menu in self:
+            if not menu.container:
+                menu.label = "-"
+                continue
+            menu.label = menu.manual_url or "#"
+
+    def _compute_target(self) -> None:
+        for menu in self:
+            if menu.container:
+                menu.target = "#"
+
+    def _compute_anchor(self) -> None:
+        for menu in self:
+            if not menu.page_id:
+                continue
+            menu.anchor = "#"
+
+    def _inverse_target(self) -> None:
+        pass
+
+    def _compute_title(self) -> None:
+        for menu in self.filtered("container"):
+            menu.title = "#"
+
+    def _compute_page(self) -> None:
+        for menu in self:
+            menu.page = "#"
+            menu.parent_id.write({"page": menu.manual_url})
+
+    def _compute_note(self) -> None:
+        for menu in self:
+            menu.note = menu.manual_url or "#"
+
+    def _compute_code(self) -> None:
+        self.code = "-"
+
+
+class MenuOverride(models.Model):
+    _inherit = "t.menu"
+
+    def _compute_url(self) -> None:
+        super()._compute_url()
+        for menu in self:
+            if not menu.parent_id:
+                menu.url = "/"
+
+    def _compute_code(self) -> None:
+        for menu in self:
+            if menu.container:
+                menu.code = "#"
+
+    def check(self) -> None:
+        reveal_type(self.url)
+        reveal_type(self.label)
+        reveal_type(self.target)
+        reveal_type(self.anchor)
+        reveal_type(self.title)
+        reveal_type(self.page)
+        reveal_type(self.note)
+        reveal_type(self.code)
+        self.filtered(lambda menu: menu.url[:5] == "/shop")
+"""
+
+
+def test_an_editable_text_field_its_compute_assigns_on_every_path_reads_as_a_string(
+    run_mypy: RunMypy,
+) -> None:
+    """``m.url[:5]`` of ``website.menu.url`` (Odoo 20): a compute with an inverse.
+
+    Odoo fills in ``False`` where the compute method of such a field assigns nothing, so
+    it must assign each record on every path; ``x or "#"`` is a string in a ``Char``.
+    """
+    messages = run_mypy({"my_mod": {"models.py": FILLED}}).messages("models.py")
+
+    assert _revealed(messages) == [
+        EMPTY,  # in its inverse method: the value written
+        "str",  # each branch; ``or "#"``; a write to the records of another model; super()
+        "str",  # ``continue`` after the assignment
+        EMPTY,  # one branch of two
+        EMPTY,  # ``continue`` before the assignment
+        EMPTY,  # some of the records
+        EMPTY,  # a write to the records of the model itself
+        EMPTY,  # ``or`` in an ``Html`` field: the value is kept as it is
+        EMPTY,  # an override without super() that assigns in one branch
+    ], messages

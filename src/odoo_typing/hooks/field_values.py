@@ -258,8 +258,9 @@ class FieldValueHooks(Hooks):
     ) -> bool:
         """Whether a field read always has a value (:func:`value_required`).
 
-        Not a computed field read in its own compute method: it reads ``False`` there
-        until the method assigns it (:mod:`odoo_typing.computed`).
+        Not a computed field read in its own compute method, where it reads ``False``
+        until the method assigns it, nor in its inverse method, where it holds the value
+        written (:mod:`odoo_typing.computed`).
         """
         model = self._models.model_of(records.type)
         addon_name = self.registry.addon_name_for_path(api.path)
@@ -269,9 +270,9 @@ class FieldValueHooks(Hooks):
         return value_required(info, model, self._fields_of(addon_name, api), computed)
 
     def _computing(self, info: FieldInfo, model: str, api: CheckerPluginInterface) -> bool:
-        """Whether the function being checked is the compute method of a field of a model."""
+        """Whether the function being checked computes or inverses a field of a model."""
         function = checked_function(api)
-        if not isinstance(function, FuncDef) or function.name != info.compute:
+        if not isinstance(function, FuncDef) or function.name not in {info.compute, info.inverse}:
             return False
         # ``info`` of a function that is no method is mypy's false placeholder.
         return not function.info or self._models.model_of(function.info) in {model, None}

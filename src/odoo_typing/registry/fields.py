@@ -255,8 +255,31 @@ class ModelFields(ModelViews):
         if key not in self._computed:
             view = self.view_class(model, addon_name)
             chain = view.chain if view is not None else ()
-            self._computed[key] = computed_calls(info, chain)
+            self._computed[key] = computed_calls(
+                info, chain, lambda path: self._reaches(model, path, addon_name)
+            )
         return self._computed[key]
+
+    def _reaches(self, model: str, path: tuple[str, ...], addon_name: str) -> bool:
+        """Whether the records a model's records reach through fields may be of the model.
+
+        ``menu.page_id.write({"url": ...})`` writes pages where ``page_id`` is a relational
+        field to another model; a field the model does not have, one whose comodel is
+        not known, the model itself or a comodel that delegates to it (``_inherits``)
+        may be the model's records.
+        """
+        current = model
+        for name in path:
+            info = self.fields(current, addon_name).get(name)
+            if info is None or info.field_type not in RELATIONAL or not info.comodel:
+                return True
+            if "comodel" in info.dynamic:
+                return True
+            current = info.comodel
+        if current == model:
+            return True
+        view = self.view_class(current, addon_name)
+        return view is None or model in self.delegate_closure(view.chain, current, addon_name)
 
     def has_method(self, model: str, addon_name: str, name: str) -> bool:
         """Whether a class of a model's view defines a method (not BaseModel's).

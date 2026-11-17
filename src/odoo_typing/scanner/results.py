@@ -175,6 +175,11 @@ class Contribution:
             method that assigns to a name the scan cannot read.
         assigned_any: The attributes some method of the class assigns a value the scan
             cannot tell, sorted.
+        assigned_through: The values the scan cannot tell that its methods write to the
+            records their records reach through attributes: ``(attribute, path)``, sorted.
+        filled: The attributes with known values each method assigns to each of its
+            records on every path (``odoo_typing.scanner.assigned.filled_attributes``):
+            ``(method, attributes)``, with ``OVERRIDDEN`` for a ``super()`` call.
     """
 
     addon: str
@@ -195,6 +200,8 @@ class Contribution:
     passed: tuple[tuple[str, str, tuple[str, ...], str], ...] = ()
     assigned: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
     assigned_any: tuple[str, ...] = ()
+    assigned_through: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    filled: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     @property
     def fullname(self) -> str:

@@ -329,7 +329,7 @@ class _ImportWalker:
         methods = defined_methods(node)
         inherits = attrs.get("_inherits")
         scope = ChainMap(attrs, file.names)
-        assigned, assigned_any = assigned_values(node)
+        assigned = assigned_values(node)
         file.contributions.append(
             Contribution(
                 addon=self.addon.name,
@@ -350,8 +350,10 @@ class _ImportWalker:
                 value_keys=read_value_keys(node),
                 dispatches=record_dispatches(node) if file.tests_names else (),
                 passed=passed_containers(node),
-                assigned=assigned,
-                assigned_any=assigned_any,
+                assigned=assigned.known,
+                assigned_any=assigned.unknown,
+                assigned_through=assigned.through,
+                filled=assigned.filled,
             )
         )
 

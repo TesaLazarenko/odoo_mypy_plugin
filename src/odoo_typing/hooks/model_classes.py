@@ -222,8 +222,12 @@ class ModelClassHooks(Hooks):
         ]
         details = [[item.log_access, item.abstract] for item in scan.contributions]
         fields = [item.fields for item in scan.contributions]
-        # What the methods assign decides whether a computed field may be empty.
-        assigned = [[item.assigned, item.assigned_any] for item in scan.contributions]
+        # What the methods assign decides whether a computed field may be empty; which
+        # class defines the compute method last, which of them assign on every path.
+        assigned = [
+            [item.assigned, item.assigned_any, item.assigned_through, item.filled, item.methods]
+            for item in scan.contributions
+        ]
         value = digest(
             [encode(tuple(map(tuple, parts))), details, encode(tuple(fields)), assigned]
         )[:16]

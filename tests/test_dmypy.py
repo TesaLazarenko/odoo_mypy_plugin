@@ -384,10 +384,15 @@ class Computed(models.Model):
     _inherit = "x.thing"
 
     summary = fields.Text(compute="_compute_summary")
+    label = fields.Char(compute="_compute_label", readonly=False)
 
     def _compute_summary(self) -> None:
         for record in self:
             record.summary = "{}"
+
+    def _compute_label(self) -> None:
+        for record in self:
+            record.label = "-"
 """
 READ_SUMMARY = """
 
@@ -396,6 +401,7 @@ class Reader(models.Model):
 
     def check(self) -> None:
         reveal_type(self.env["x.thing"].summary)
+        reveal_type(self.env["x.thing"].label)
 """
 
 
@@ -412,13 +418,18 @@ def test_dmypy_computed_values_of_another_module_are_followed(
     empty = daemon.check()
     models.write_text(models.read_text().replace("record.summary = False", 'record.summary = "{}"'))
     again = daemon.check()
+    # The same value, on some paths only: Odoo fills in False for an editable field.
+    some = 'if record.id:\n                record.label = "-"'
+    models.write_text(models.read_text().replace('record.label = "-"', some))
+    partly = daemon.check()
 
     def revealed(lines: list[str]) -> list[str]:
-        return [line.split('"', 1)[1] for line in lines if "x.reader" not in line][-1:]
+        return [line.split('"', 1)[1] for line in lines if "x.reader" not in line][-2:]
 
-    assert revealed(text) == ['str"']
-    assert revealed(empty) == ['str | Literal[False]"']
-    assert revealed(again) == ['str"']
+    assert revealed(text) == ['str"', 'str"']
+    assert revealed(empty) == ['str | Literal[False]"', 'str"']
+    assert revealed(again) == ['str"', 'str"']
+    assert revealed(partly) == ['str"', 'str | Literal[False]"']
 
 
 VARIABLES = """
