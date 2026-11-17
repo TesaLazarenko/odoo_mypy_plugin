@@ -425,12 +425,15 @@ def write_addon(path: Path, spec: dict[str, object]) -> None:
     manifest = spec.get("manifest", "__manifest__.py")
     assert isinstance(manifest, str)
     data = spec.get("data", {})
+    demo = spec.get("demo", {})
     assert isinstance(data, dict)
+    assert isinstance(demo, dict)
     auto_install = f", 'auto_install': {spec['auto_install']!r}" if "auto_install" in spec else ""
+    listed = f"'data': {list(data)!r}" + (f", 'demo': {list(demo)!r}" if demo else "")
     (path / manifest).write_text(
-        f"{{'name': '{path.name}', 'depends': {depends!r}, 'data': {list(data)!r}{auto_install}}}\n"
+        f"{{'name': '{path.name}', 'depends': {depends!r}, {listed}{auto_install}}}\n"
     )
-    for name, content in data.items():
+    for name, content in {**data, **demo}.items():
         (path / name).parent.mkdir(parents=True, exist_ok=True)
         (path / name).write_text(textwrap.dedent(content))
     files = {key: spec[key] for key in spec if key.endswith(".py")}

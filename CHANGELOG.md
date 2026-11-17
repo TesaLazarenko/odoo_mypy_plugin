@@ -163,6 +163,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   of Odoo 19+, checked through `timedelta.__radd__`).
 - `create()` takes any iterable of values (`create({...} for i in range(3))`), which
   Odoo reads once.
+- `env.ref(xml_id, raise_if_not_found=False)` of an id that a `data` file (not a `demo`
+  one) of the addon's closure creates gives its records without `None`:
+  `env.ref("sale.view_order_form", False).id` in `sale`.
 - Odoo 20: the parameters that Odoo annotates `dict[str, ...]` take `env.context`, a
   `frozendict`, which is no `dict`: `clean_context(self.env.context)`,
   `with_context(self.env.context)`.

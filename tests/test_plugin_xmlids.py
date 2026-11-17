@@ -27,6 +27,7 @@ T_BASE = {
         </odoo>
         """,
     },
+    "demo": {"demo/things.xml": '<odoo><record id="thing_demo" model="t.thing"/></odoo>'},
 }
 T_OTHER = {
     "data": {"data.xml": '<odoo><record id="other_thing" model="t.thing"/></odoo>'},
@@ -53,6 +54,7 @@ class Thing(models.Model):
         self.env.ref("local_es.made_by_code")
         reveal_type(self.env.ref("t_base.made_by_code"))
         self.env.user.has_group("t_base.made_by_code")
+        reveal_type(self.env.ref("t_base.thing_demo", raise_if_not_found=False))
 """
 
 
@@ -72,7 +74,8 @@ def test_env_ref_types_and_checks_xml_ids(run_mypy: RunMypy, names: OdooNames) -
     messages = result.messages("t_use/models.py")
 
     assert messages[0] == '8: note: Revealed type is "str | Literal[False]"'
-    assert messages[1].startswith('9: note: Revealed type is "t_use.models.Thing | None')
+    # Created by a data file of the closure: there wherever t_use is installed.
+    assert messages[1] == '9: note: Revealed type is "t_use.models.Thing"'
     assert messages[2].startswith('10: note: Revealed type is "odoo.addons.base.models.ir_model')
     assert messages[3:] == [
         '11: error: Unknown XML id "t_base.thing_onee"; did you mean "t_base.thing_one"?  '
@@ -83,6 +86,8 @@ def test_env_ref_types_and_checks_xml_ids(run_mypy: RunMypy, names: OdooNames) -
         # _update_xmlids does not say the model: records of no known model (Odoo 19+
         # declares ``BaseModel``, whose fields would all be unknown attributes).
         '19: note: Revealed type is "Any"',
+        # Demo data is only in a database made with it.
+        '21: note: Revealed type is "t_use.models.Thing | None"',
     ]
 
 

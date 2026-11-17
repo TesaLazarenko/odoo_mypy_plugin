@@ -142,6 +142,7 @@ class ScannedAddons:
         self._parsed: tuple[Path, Stamp | None, ast.AST | None] | None = None
         self._xml_ids: dict[str, Mapping[str, str]] = {}  # of a closure (_ClosureIds)
         self._own_xml_ids: dict[str, Mapping[str, str]] = {}  # of one addon's data files
+        self._own_data_ids: dict[str, frozenset[str]] = {}  # of its files that are no demo
         self._misnamed: set[str] = set()  # addons warned about by misnamed()
         self._warned: set[str] = set()  # addons whose unparsable files were reported
         # Addons read only for the models they define (see _defined_models).
@@ -510,6 +511,22 @@ class ScannedAddons:
                 ids.setdefault(item.name, sys.intern(item.model))
             found = self._own_xml_ids[addon_name] = ids
         return found
+
+    def created_by_data(self, xml_id: str, addon_name: str) -> bool:
+        """Whether the data files of an addon's closure that are no ``demo`` create an id.
+
+        Those records are there wherever the addon is installed; demo data is only in a
+        database made with it.
+        """
+        for name in self.addons.closure(addon_name):
+            found = self._own_data_ids.get(name)
+            if found is None:
+                scan, _ = self.scan_result(name)
+                found = frozenset(item.name for item in scan.data.xml_ids if not item.demo)
+                self._own_data_ids[name] = found
+            if xml_id in found:
+                return True
+        return False
 
     def xml_id_outside(self, xml_id: str, addon_name: str) -> str | None:
         """The addon outside an addon's closure whose data files create an XML id.

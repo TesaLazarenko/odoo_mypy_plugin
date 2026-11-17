@@ -192,7 +192,9 @@ class EnvHooks(Hooks):
         The id must be created by the data files of the addon's closure (``odoo-xmlid``;
         ``odoo-xmlid-depends`` when only an addon outside it creates it). With
         ``raise_if_not_found=False`` the result may be ``None``, and an id that is not
-        found is not an error (the code expects it to be missing).
+        found is not an error (the code expects it to be missing); an id that a data
+        file of the closure (not a ``demo`` one) creates is found wherever the addon is
+        installed, so the result is its records.
         """
         xml_id = call_argument(ctx, "xml_id", 0)
         addon_name = self.registry.addon_name_for_path(ctx.api.path)
@@ -209,6 +211,8 @@ class EnvHooks(Hooks):
             return self._of_no_known_model(ctx.default_return_type)
         if self._models.extended_outside(model, addon_name, ctx.api, ctx.context.line):
             return AnyType(TypeOfAny.special_form)
+        if optional and self.registry.created_by_data(xml_id.value, addon_name):
+            return records  # the addon's own (non-demo) data: ``view_order_form`` of sale
         return UnionType([records, NoneType()]) if optional else records
 
     def _of_no_known_model(self, declared: Type) -> Type:

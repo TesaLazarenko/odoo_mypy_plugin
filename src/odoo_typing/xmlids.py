@@ -37,7 +37,7 @@ import re
 import sys
 import warnings
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 from xml.etree import ElementTree
@@ -67,6 +67,7 @@ ODOO_XMLID_DEPENDS = ErrorCode(
 
 # Manifest keys whose files Odoo loads (``demo`` only with demo data).
 DATA_KEYS: Final = ("data", "demo")
+DEMO_KEY: Final = "demo"
 SHORTCUT_MODELS: Final = {
     "template": "ir.ui.view",
     "menuitem": "ir.ui.menu",
@@ -94,10 +95,12 @@ class XmlId:
     Attributes:
         name: Full XML id, ``module.name``.
         model: Model of the record.
+        demo: Created by a ``demo`` file (only in a database with demo data).
     """
 
     name: str
     model: str
+    demo: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,13 +132,15 @@ def scan_data(
     recorded: Stamps = {} if stamps is None else stamps
     xml_ids: list[XmlId] = []
     files: list[Path] = []
-    for relative in _data_files(manifest, recorded):
+    for relative, key in _data_files(manifest, recorded):
         path = addon_path / relative
         files.append(path)
         current = recorded.setdefault(str(path), stamp(path))
         found = _file_ids(path, addon_name)
         if found is None and current is not None:  # exists, but cannot be read
             recorded[str(path)] = UNREADABLE
+        if key == DEMO_KEY:
+            found = [replace(item, demo=True) for item in found or ()]
         xml_ids += found or ()
     return DataScan(tuple(xml_ids), tuple(files))
 
@@ -145,7 +150,7 @@ def automatic_model(name: str) -> str | None:
     return next((model for pattern, model in AUTOMATIC if pattern.fullmatch(name)), None)
 
 
-def _data_files(manifest: Path | None, stamps: Stamps) -> Iterator[str]:
+def _data_files(manifest: Path | None, stamps: Stamps) -> Iterator[tuple[str, str]]:
     if manifest is None:
         return
     current = stamps.setdefault(str(manifest), stamp(manifest))  # its lists count too
@@ -166,7 +171,7 @@ def _data_files(manifest: Path | None, stamps: Stamps) -> Iterator[str]:
     for key in DATA_KEYS:
         entries = data.get(key, [])
         if isinstance(entries, list | tuple):
-            yield from (entry for entry in entries if isinstance(entry, str))
+            yield from ((entry, key) for entry in entries if isinstance(entry, str))
 
 
 UNKNOWN_MODEL: Final = ""

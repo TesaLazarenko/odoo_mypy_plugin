@@ -500,7 +500,9 @@ creates.
   is `Any` there (Odoo 19 and 20 declare `BaseModel`, records of no model, whose every
   field would be an unknown attribute; `dynamic_env = "base"` keeps that).
 - With `raise_if_not_found=False` the result is `| None`, and the check is off (the code
-  expects the id may be missing). So is a line under
+  expects the id may be missing); an id that a data file of the closure creates (listed
+  under `data` in a manifest, not `demo`) is there wherever the addon is installed, so
+  `env.ref("sale.view_order_form", False).id` in `sale` is the view's id. So is a line under
   `if env.ref("sale.x", raise_if_not_found=False):` for every id of `sale`.
 - An id whose module is not an addon of the closure is reported only when an addon
   outside it creates it: ids made by Python code (`local_es.x` of a chart template,
