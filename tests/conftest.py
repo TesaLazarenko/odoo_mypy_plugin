@@ -26,6 +26,7 @@ from odoo_typing.odoo_version import read_odoo_version
 os.environ[RAISE_VARIABLE] = "1"
 
 FIND_ODOO = "import os, odoo; print(os.path.dirname(odoo.__file__))"
+CACHE_HOME = "XDG_CACHE_HOME"  # where ``scan_cache_dir`` is by default
 
 
 def _find_odoo() -> Path | None:
@@ -116,8 +117,25 @@ def names(odoo_version: int) -> OdooNames:
 def _own_scan_cache(
     tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Each test its own shared scan cache (``scan_cache_dir`` defaults to the user's)."""
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("xdg-cache")))
+    """Each test its own shared scan cache (``scan_cache_dir`` defaults to the user's).
+
+    ``run_mypy`` replaces it with the session's for its runs on the session's mypy cache
+    (``scan_cache_home``).
+    """
+    monkeypatch.setenv(CACHE_HOME, str(tmp_path_factory.mktemp("xdg-cache")))
+
+
+@pytest.fixture(scope="session")
+def scan_cache_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The cache home whose scan cache the ``run_mypy`` runs of this process share.
+
+    A scan is kept by its addon's directory and the stamps of the files it read, and
+    each test writes its addons to a directory of its own: what the runs share are the
+    scans of Odoo's addons (``base`` for nearly every test), read once per pytest process
+    like Odoo's modules in the session's mypy cache, not once per run (about a third of
+    the time of a run that depends on ``base`` alone).
+    """
+    return tmp_path_factory.mktemp("xdg-cache-session")
 
 
 # The collector's thresholds and frozen objects before any test ran mypy in this process
@@ -346,6 +364,7 @@ def run_mypy(
     odoo_root: Path,
     odoo_version: int,
     mypy_cache: Path,
+    scan_cache_home: Path,
     capfd: pytest.CaptureFixture[str],
 ) -> RunMypy:
     """Write addons to a temp dir and type-check them.
@@ -357,11 +376,12 @@ def run_mypy(
     ``bytes`` is written unchanged (BOM, other encodings).
     Pass ``check=["my_mod"]`` to limit which addons are given to mypy,
     ``scripts={"tool.py": "..."}`` to also check files outside any addon, and
-    ``fresh_cache=True`` to use a cache of the test's own, empty on the first call
-    (so that Odoo's own modules are analyzed again in this run; a second call in the
-    same test reuses it, for warm-cache checks), and ``flags=[...]`` for extra mypy
-    command-line options. ``workdir="x"`` puts the addons and the config in a
-    subdirectory ``x`` of the test's directory (two working copies sharing a cache);
+    ``fresh_cache=True`` to use caches of the test's own (mypy's and the plugin's scan
+    cache), empty on the first call (so that Odoo's own modules are analyzed and its
+    addons scanned again in this run; a second call in the same test reuses them, for
+    warm-cache checks), and ``flags=[...]`` for extra mypy command-line options.
+    ``workdir="x"`` puts the addons and the config in a subdirectory ``x`` of the test's
+    directory (two working copies sharing a cache);
     ``addons_path=[...]`` replaces the configured addons directories (default: the
     one the addons are written to) and ``mypy_path=[...]`` adds directories to mypy's.
     The call fails the test if mypy crashes (internal error, exit status 2).
@@ -402,9 +422,12 @@ def run_mypy(
             + options
         )
         cache = tmp_path / "mypy_cache" if fresh_cache else mypy_cache
-        stdout, stderr, status = run_mypy_in_process(
-            ["--config-file", str(config), "--cache-dir", str(cache), *(flags or []), *targets]
-        )
+        with pytest.MonkeyPatch.context() as patch:
+            if not fresh_cache:  # else the test's own scan cache (_own_scan_cache)
+                patch.setenv(CACHE_HOME, str(scan_cache_home))
+            stdout, stderr, status = run_mypy_in_process(
+                ["--config-file", str(config), "--cache-dir", str(cache), *(flags or []), *targets]
+            )
         captured = capfd.readouterr()
         _assert_no_crash(status, stdout, stderr, captured.out, captured.err)
         # mypy's own stderr, then what the plugin printed (its warnings go to sys.stderr)

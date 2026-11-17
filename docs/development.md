@@ -17,10 +17,19 @@ print nothing on stderr: `result.stderr` of `run_mypy` holds mypy's stderr and t
 plugin's warnings.
 
 `-n <workers>` (pytest-xdist) runs them in parallel; without it they run one by one.
-Each worker has its own temporary directories and mypy cache (the session fixtures are
-per worker), so each analyzes Odoo's own modules once. On Odoo 19 (14 CPUs): 287 s one
-by one, 160 s with `-n 2`, 90 s with `-n 4`, 68 s with `-n 6` (2 GB in all), 58 s with
-`-n 8`. A worker takes 0.4-0.7 GB, so mind the memory of the machine more than its CPUs.
+Each worker has its own temporary directories, mypy cache and scan cache (the session
+fixtures are per worker), so each analyzes Odoo's own modules and scans Odoo's addons
+once: a run of `run_mypy` reads both from the worker's caches and checks addons the
+test wrote to a directory of its own (about 0.5 s). `run_mypy(..., fresh_cache=True)`
+uses caches of the test's own, empty at first: a cold run (about 3 s), for the tests
+that compare cold and warm runs. The `dmypy` tests start a daemon each, which keeps no
+cache (about 4 s). On Odoo 19 (14 CPUs): 210 s with `-n 2` (1 GB in all), 120 s with
+`-n 4` (1.3 GB). A worker takes 0.4-0.7 GB, so mind the memory of the machine more than
+its CPUs.
+
+A test that passed leaves nothing in the temporary directory
+(`tmp_path_retention_policy = "failed"` in `pyproject.toml`; a run writes about 0.5 GB);
+what a failed test wrote stays under `/tmp/pytest-of-<user>/`.
 
 mypy runs in the pytest process (`run_mypy_in_process` in `tests/conftest.py`), and a
 build leaves the garbage collector tuned for a process of its own; after each test that

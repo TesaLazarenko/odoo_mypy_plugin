@@ -93,6 +93,9 @@ good-names = ["_"]  # drop pylint's default i/j/k exemptions; "_" stays the thro
 testpaths = ["tests"]
 pythonpath = ["tests", "tools/bench", "tools/fields"]
 markers = ["odoo(*versions): run only when the e2e tests target one of these Odoo versions"]
+# Each end-to-end test writes addons, some a mypy cache of their own (about 0.5 GB a run):
+# only what failed tests wrote is kept, and nothing after a run that passed.
+tmp_path_retention_policy = "failed"
 
 [tool.mypy]
 # Settings for type-checking the plugin's own code (not Odoo code).
