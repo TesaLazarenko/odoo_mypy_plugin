@@ -41,6 +41,12 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - `mapped("a.b")`, `grouped("a")` and `read([...])` / `search_read` return real types.
 - Unannotated overrides of `-> Self` methods that return their own records keep the
   model type through `super()`.
+- An unannotated override that only returns its `super()` call (directly or through a
+  local bound once to it) returns what the overridden method declares:
+  `env["product.product"]._search(...)` is a `Query` on Odoo 18+, so a `search_read`
+  with `("product_id", "in", subquery)` reads `product_id` without `False`. The scan
+  finds such overrides (mypy keeps no method bodies of modules it does not report on);
+  parameters stay `Any` and the body is checked as before.
 - An attribute a class method defines (`cls.partner = ...` in `setUpClass`) is an
   attribute of the class and its subclasses, with the type of its value: plain mypy
   reports every such line and every later read (`"TestSale" has no attribute
