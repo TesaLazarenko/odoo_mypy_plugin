@@ -16,8 +16,12 @@ def test_class_that_builds_another_class_has_its_methods(run_mypy: RunMypy) -> N
                 "tools.py": """
                 from collections import OrderedDict
                 from types import MappingProxyType
+                from typing import Generic, TypeVar
 
-                class ordered[K, V]:
+                K = TypeVar("K")
+                V = TypeVar("V")
+
+                class ordered(Generic[K, V]):  # not ``ordered[K, V]``: Python 3.11 runs this
                     def __new__(cls, mapping: dict[K, V]):
                         return OrderedDict(mapping)
 
@@ -61,11 +65,11 @@ def test_class_that_builds_another_class_has_its_methods(run_mypy: RunMypy) -> N
 
     messages = result.messages("tools.py")
     assert messages[:5] == [
-        '31: note: Revealed type is "int | None"',
-        '32: note: Revealed type is "int"',
-        '33: note: Revealed type is "dict[str, int]"',
-        '34: note: Revealed type is "bool"',
         '35: note: Revealed type is "int | None"',
+        '36: note: Revealed type is "int"',
+        '37: note: Revealed type is "dict[str, int]"',
+        '38: note: Revealed type is "bool"',
+        '39: note: Revealed type is "int | None"',
     ]
     assert [message.partition(" error: ")[2] for message in messages[5:]] == [
         '"ordered[str, int]" has no attribute "missing"  [attr-defined]',
