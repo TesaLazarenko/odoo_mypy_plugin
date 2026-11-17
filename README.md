@@ -117,6 +117,14 @@ Run it again after adding or removing an addon.
 mypy -p odoo.addons.my_addon
 ```
 
+or let `odoo-typing-check` do steps 2 and 3: it takes addon names, directories or files,
+keeps the overlay root up to date and prints the errors at the files' real paths:
+
+```bash
+odoo-typing-check                                   # every addon of addons_path
+odoo-typing-check addons/my_addon/models/sale.py    # the errors of this file
+```
+
 See [Configuration](docs/configuration.md) for every option, `mypy.ini` support and the
 notes for Odoo 19 and 20.
 

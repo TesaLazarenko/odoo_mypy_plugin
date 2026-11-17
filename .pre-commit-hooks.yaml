@@ -8,3 +8,12 @@
   types: [python]
   pass_filenames: false
   require_serial: true
+# mypy with the plugin on the addons of the changed files; prints the errors of those
+# files, at their real paths. Keeps the overlay root up to date.
+- id: odoo-typing-check
+  name: mypy (odoo-typing-check)
+  entry: odoo-typing-check
+  language: python
+  additional_dependencies: []
+  types: [python]
+  require_serial: true

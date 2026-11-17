@@ -31,6 +31,7 @@ Changelog = "https://github.com/TesaLazarenko/odoo_mypy_plugin/blob/main/CHANGEL
 
 [project.scripts]
 odoo-typing-root = "odoo_typing.overlay:main"
+odoo-typing-check = "odoo_typing.check:main"
 odoo-typing-baseline = "odoo_typing.baseline:main"
 odoo-typing-stubs = "odoo_typing.stubs:main"
 

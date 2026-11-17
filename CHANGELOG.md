@@ -478,6 +478,10 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 
 - `odoo-typing-stubs` writes `.pyi` stubs of the models for editors (Pyright,
   PyCharm): `env["res.partner"]` and its fields without mypy.
+- `odoo-typing-check` runs mypy on addons given by name, directory or file, keeps the
+  overlay root up to date and prints the errors at the files' real paths (mypy prints
+  those of the overlay root); for files, only their own errors. `--daemon` runs `dmypy`.
+  A pre-commit hook of the same name takes the changed files.
 - `odoo-typing-baseline` reports only the errors that are not in a recorded baseline.
 - `odoo-typing-root` generates a `mypy_path` root in which every addon is
   `odoo.addons.<name>`; `--check` reports an out-of-date one.

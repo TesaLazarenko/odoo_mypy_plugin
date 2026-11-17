@@ -249,6 +249,24 @@ mypy -p odoo.addons.my_addon         # or: mypy .odoo-root/odoo/addons/my_addon
 odoo-typing-root --check             # in CI: exit 1 if .odoo-root no longer matches the addons
 ```
 
+`odoo-typing-check` wraps these steps for daily use:
+
+```bash
+odoo-typing-check                                 # every addon of addons_path
+odoo-typing-check my_addon addons/other_addon     # addons by name or directory
+odoo-typing-check addons/my_addon/models/sale.py  # the errors of these files only
+odoo-typing-check --daemon my_addon -- --strict   # dmypy; mypy's own options after --
+```
+
+It regenerates the overlay root when an addon was added, removed or moved, runs mypy on
+the addons the targets belong to (`-p odoo.addons.<name>`), and prints each path as the
+real file, relative to the current directory: mypy itself prints
+`.odoo-root/odoo/addons/my_addon/models/sale.py`, which is not the file an editor has
+open or a CI annotation can attach to. For a file or a directory inside an addon the
+whole addon is checked (mypy needs it) and only the errors of those files are printed;
+the exit status is then 1 if they have any. `--config FILE` names another config file
+than `pyproject.toml`.
+
 Check addons through their `odoo.addons.<name>` name (`-p`, or their path under the
 root), **not** through their real directory. mypy names `mypy addons/my_addon` as
 `my_addon.*`, and the same files are then analyzed a second time as

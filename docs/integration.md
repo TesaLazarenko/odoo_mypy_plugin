@@ -39,13 +39,25 @@ Live checking of unsaved buffers (mypy's `--shadow-file`, which some editor plug
 pass) checks the buffer, but the plugin reads the addons from disk: models and fields
 typed and not saved yet are unknown until the file is saved.
 
+An editor plugin that runs mypy itself (on save, or through `dmypy`) should run
+`odoo-typing-check --daemon <file>` instead of `mypy <file>`: mypy names a file given by
+its real path `my_addon.models.sale`, not `odoo.addons.my_addon.models.sale`, and prints
+the paths of the overlay root. `odoo-typing-check` checks the file's addon by its
+module name and prints the errors of the file at its real path
+([Running mypy](configuration.md#running-mypy)).
+
 ## pre-commit
 
-The repository provides the hook `odoo-typing` (mypy with the plugin, on the whole
-project). See [ci/pre-commit-config.yaml](ci/pre-commit-config.yaml) for an example that
-also runs `odoo-typing-root --check`.
+The repository provides two hooks: `odoo-typing-check` (the changed files' addons are
+checked and the errors of the changed files are printed, at their real paths) and
+`odoo-typing` (plain mypy with the plugin, with the `args` you give it). See
+[ci/pre-commit-config.yaml](ci/pre-commit-config.yaml) for an example.
 
 ## CI
+
+`odoo-typing-check` (every addon of `addons_path`) is the one command a CI job needs: it
+generates the overlay root, and its paths are those of the repository, so annotations
+land on the changed lines.
 
 [ci/Dockerfile](ci/Dockerfile) builds an image with Odoo's sources and the plugin.
 [.github/workflows/ci.yml](../.github/workflows/ci.yml) is how this project tests itself
