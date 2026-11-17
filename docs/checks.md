@@ -787,6 +787,14 @@ With real recordset types, some plain mypy codes appear more often:
   request.pricelist.id)` on Odoo 20, which declares `request: Request`.
 - `assignment` between two classes of the same model (`AccountMoveLine` of two addons):
   use another variable name, or annotate it.
+- A **field the search domain sets** has no `False`: `search_read([("product_id", "in",
+  subquery), ...], fields=["product_id"])` gives rows whose `product_id` is a pair, and
+  the records of `leads = search([("email_from", "ilike", "@team1")])` (also the variable
+  of a `for` over them) read `email_from` as `str`. A term of the domain's top-level
+  conjunction (not under `|` or `!`) on a field of the model itself sets it when it is
+  `=` / `child_of` / `parent_of` with a true literal, `in` with true literals (or a
+  `Query`, records, `list[int]`), `!= False` / `None`, or a `like` / `ilike` with a
+  non-empty string. The local must be bound once.
 - An **Odoo function that handles an empty argument itself** takes it: Odoo starts
   `format_date(env, value: datetime | date | str, ...)` with `if not value: return ''`
   and `str2bool(s: str)` with `if type(s) is bool: return s`, so `format_date(self.env,

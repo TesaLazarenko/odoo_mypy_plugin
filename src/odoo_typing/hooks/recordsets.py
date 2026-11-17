@@ -64,6 +64,7 @@ from odoo_typing.references import (
     resolve_path,
 )
 from odoo_typing.scanner import FieldInfo
+from odoo_typing.searched import domain_argument, restricted_fields
 from odoo_typing.vals import RELATIONAL_CLASSES
 
 __all__ = ["RecordsetHooks"]
@@ -139,6 +140,13 @@ class RecordsetHooks(Hooks):
         fields = fields_of(model)
         checker = type_checker(ctx.api)
         items: dict[str, Type] = {"id": checker.named_type("builtins.int")}
+        call = ctx.context
+        domain = (
+            domain_argument(call)
+            if method == "search_read" and isinstance(call, CallExpr)
+            else None
+        )
+        searched = restricted_fields(domain, checker.lookup_type_or_none)
         for node in names:
             info = fields.get(node.value)
             if info is None:
@@ -150,7 +158,9 @@ class RecordsetHooks(Hooks):
                     message += did_you_mean(node.value, fields)
                     ctx.api.fail(message, node, code=ODOO_FIELD_REF)
                 return ctx.default_return_type
-            required = self._settings.required_values and value_required(info, model, fields_of)
+            required = (
+                self._settings.required_values and value_required(info, model, fields_of)
+            ) or node.value in searched
             value = _read_value(info, ids_only, checker, required=required)
             items[node.value] = (
                 value

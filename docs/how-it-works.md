@@ -232,6 +232,12 @@ once it can be.
   functions mypy has not reached yet change; in the function being checked, only the
   variables whose first binding it has not checked (`Var.type` is still `None`).
 
+- **Fields a search sets** (`odoo_typing.searched`). The `__get__` signature hook of a
+  field read from a local bound once to `search(...)` / `search_fetch(...)` with a
+  literal domain (or the variable of a `for` over such a local), and the `read_result`
+  of `search_read`, read the domain's top-level conjunction (a prefix parse: `&` keeps
+  both sides, `|` and `!` keep nothing) for terms that set a field of the model.
+
 - **Guards of Odoo functions** (`odoo_typing.falsy_guards`, `hooks.falsy_parameters`).
   mypy drops the bodies of the modules whose errors it does not show, so the signature
   and return-type hooks of a function or method that Odoo defines outside the addons

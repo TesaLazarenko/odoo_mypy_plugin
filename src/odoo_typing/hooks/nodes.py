@@ -12,6 +12,8 @@ from mypy.nodes import (
     CallExpr,
     Context,
     Expression,
+    FuncItem,
+    LambdaExpr,
     ListExpr,
     MypyFile,
     NameExpr,
@@ -35,6 +37,7 @@ __all__ = [
     "Found",
     "Incomplete",
     "call_argument",
+    "checked_function",
     "class_infos",
     "fail_unfiltered",
     "field_arguments",
@@ -276,3 +279,16 @@ def literal_string(node: Expression, node_type: Type) -> StrExpr | None:
     found = StrExpr(proper.value)
     found.set_line(node)
     return found
+
+
+def checked_function(api: CheckerPluginInterface) -> FuncItem | None:
+    """The innermost function being checked, not a lambda (whose body is an expression)."""
+    stack = getattr(type_checker(api).scope, "stack", [])
+    return next(
+        (
+            item
+            for item in reversed(stack)
+            if isinstance(item, FuncItem) and not isinstance(item, LambdaExpr)
+        ),
+        None,
+    )

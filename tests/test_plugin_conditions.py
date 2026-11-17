@@ -189,3 +189,42 @@ def test_odoo_functions_take_the_empty_values_they_handle(
             '17: note: Revealed type is "datetime.date | None"',  # "" gives None
             '18: note: Revealed type is "datetime.date | None"',
         ]
+
+
+SEARCHED = """
+from odoo import models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self, ids: list[int]) -> None:
+        rows = self.search_read(
+            [("partner_id", "in", ids), "!", ("name", "=", "x")], ["partner_id", "name"]
+        )
+        reveal_type(rows[0]["partner_id"])
+        reveal_type(rows[0]["name"])
+        found = self.search([("name", "ilike", "x")])
+        reveal_type(found.name)
+        for order in found:
+            reveal_type(order.name)
+        either = self.search(["|", ("name", "ilike", "x"), ("day", "!=", False)])
+        reveal_type(either.name)
+"""
+
+
+def test_fields_the_search_domain_sets_have_no_false(run_mypy: RunMypy) -> None:
+    """``search_read([("product_id", "in", subquery)])``, ``search([("x", "ilike", "y")])``."""
+    result = run_mypy(
+        {"t_base": {"models.py": T_BASE}, "t_use": {"depends": ["t_base"], "models.py": SEARCHED}},
+        check=["t_use"],
+    )
+
+    revealed = [line.partition('"')[2].rstrip('"') for line in result.messages("t_use/models.py")]
+    # Under ``!`` and ``|`` the domain sets nothing.
+    assert revealed == [
+        "tuple[int, str]",
+        "str | Literal[False]",
+        "str",
+        "str",
+        "str | Literal[False]",
+    ], revealed

@@ -84,6 +84,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - A field delegated through `_inherits` is required when the parent's field is, as in
   Odoo; `create_date` and `write_date` read without `| Literal[False]`
   (`required_values`).
+- A field that the domain of the search sets has no `False` in what the search gives:
+  `search_read([("product_id", "in", subquery)], ["product_id"])`, the records of
+  `search([("email_from", "ilike", "x")])` and the variable of a `for` over them.
 - An Odoo function that handles an empty argument itself takes it (`format_date(env,
   line.date_maturity)`, `str2bool(config.value)`), and `fields.Date.to_date(value)` gives
   a `date` for a true argument: the guards are read from Odoo's source.

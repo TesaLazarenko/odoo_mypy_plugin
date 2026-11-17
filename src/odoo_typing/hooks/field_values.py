@@ -36,10 +36,11 @@ from mypy.typeops import make_simplified_union
 from odoo_typing.classes import instance_of, receiver_type
 from odoo_typing.compat import OdooProfile
 from odoo_typing.hooks.models import Hooks
-from odoo_typing.hooks.nodes import record_type, type_checker
+from odoo_typing.hooks.nodes import checked_function, record_type, type_checker
 from odoo_typing.model_fields import value_required
 from odoo_typing.references import resolve_path
 from odoo_typing.scanner import FieldInfo
+from odoo_typing.searched import restricted_fields, searched_domain
 from odoo_typing.vals import RECORDS, VALUE_TYPES, stored, value_type_named
 
 __all__ = ["FILTER", "FieldValueHooks", "falsy_filter_signature"]
@@ -74,8 +75,7 @@ class FieldValueHooks(Hooks):
         base = next((item for item in mro if item.fullname == relational), None)
         if base is None:
             found = self._value_get(descriptor, signature, ctx)
-            if self._settings.required_values:
-                found = self._required_value(found, ctx)
+            found = self._required_value(found, ctx)
             return self._expected_keys(found, ctx)
         records = record_type(ctx)
         if isinstance(records, NoneType):
@@ -95,12 +95,14 @@ class FieldValueHooks(Hooks):
         return signature.copy_modified(ret_type=resolved or comodel)
 
     def _required_value(self, signature: FunctionLike, ctx: MethodSigContext) -> FunctionLike:
-        """``required_values``: a required field (and ``display_name``) without ``False``.
+        """A field that is set on the records read, without ``False``.
 
-        Odoo reads ``False`` for a required field of a new record or of a form whose
-        value is not set yet; code that reads saved records does not see it. A value
-        that types a variable whose later values are checked against it keeps the
-        declared type (see :meth:`_stored`).
+        ``required_values``: a required field (and ``display_name``). Odoo reads
+        ``False`` for a required field of a new record or of a form whose value is not set
+        yet; code that reads saved records does not see it. Also a field the domain of the
+        search that found the records sets (:mod:`odoo_typing.searched`). A value that
+        types a variable whose later values are checked against it keeps the declared
+        type (see :meth:`_stored`).
         """
         member = ctx.context
         records = record_type(ctx)
@@ -108,7 +110,10 @@ class FieldValueHooks(Hooks):
             return signature
         info = self._read_field(records, ctx)
         name = member.name if isinstance(member, MemberExpr) else None
-        if name != "display_name" and not self._value_required(info, records, ctx.api):
+        required = self._settings.required_values and (
+            name == "display_name" or self._value_required(info, records, ctx.api)
+        )
+        if not required and not self._searched(member, ctx.api):
             return signature
         value = get_proper_type(signature.ret_type)
         if not isinstance(value, UnionType):
@@ -238,6 +243,15 @@ class FieldValueHooks(Hooks):
             return signature
         view = self._models.view_type(comodel, addon_name, ctx.api)
         return signature.copy_modified(ret_type=view) if isinstance(view, Instance) else signature
+
+    def _searched(self, member: Context, api: CheckerPluginInterface) -> bool:
+        """Whether the search that found the records read sets the field (``ilike "x"``)."""
+        function = checked_function(api)
+        if not isinstance(member, MemberExpr) or function is None:
+            return False
+        domain = searched_domain(function, member.expr)
+        checker = type_checker(api)
+        return member.name in restricted_fields(domain, checker.lookup_type_or_none)
 
     def _value_required(
         self, info: FieldInfo | None, records: Instance, api: CheckerPluginInterface

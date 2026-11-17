@@ -11,9 +11,7 @@ from mypy.nodes import (
     MDEF,
     CallExpr,
     Expression,
-    FuncItem,
     IndexExpr,
-    LambdaExpr,
     ListExpr,
     MemberExpr,
     MypyFile,
@@ -56,7 +54,13 @@ from odoo_typing.classes import instance_of, receiver_type
 from odoo_typing.compat import OdooProfile
 from odoo_typing.guards import module_guard
 from odoo_typing.hooks.models import Hooks
-from odoo_typing.hooks.nodes import call_argument, is_false, literal_string, type_checker
+from odoo_typing.hooks.nodes import (
+    call_argument,
+    checked_function,
+    is_false,
+    literal_string,
+    type_checker,
+)
 from odoo_typing.proven import Proof, proven
 from odoo_typing.references import did_you_mean
 from odoo_typing.xmlids import ODOO_XMLID, ODOO_XMLID_DEPENDS, automatic_model
@@ -648,15 +652,7 @@ def _proof(ctx: MethodContext) -> Proof | None:
 
 def proof_of(expression: object, api: CheckerPluginInterface) -> Proof | None:
     """What the innermost function being checked (not a lambda) proves about an expression."""
-    stack = getattr(type_checker(api).scope, "stack", [])
-    function = next(
-        (
-            item
-            for item in reversed(stack)
-            if isinstance(item, FuncItem) and not isinstance(item, LambdaExpr)
-        ),
-        None,
-    )
+    function = checked_function(api)
     if function is None or not isinstance(expression, Expression):
         return None
     return proven(function, expression)
