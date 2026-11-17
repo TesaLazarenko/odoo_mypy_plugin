@@ -238,7 +238,12 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   then `json.loads(record.move_data)`). A compute method that leaves a record without a
   value does not make such a field `False`: Odoo raises "Compute method failed to
   assign". An override of the compute method counts for the addons that see it; inside
-  its own compute method the field keeps the declared type.
+  its own compute method the field keeps the declared type. A field computed with an
+  `inverse` or `readonly=False` (not stored) reads as `str` when its compute method
+  assigns it a string for every record on every path (`m.url[:5]` of
+  `website.menu.url`, Odoo 20); `x or "#"` counts as a string in a `Char` / `Text`
+  field, and an unknown value written to the records of another model's field
+  (`menu.page_id.write({"url": ...})`) no longer makes such a field empty.
 - An attribute of a field object holds the argument of the field's definition:
   `journal._fields["code"].size - len(counter)` of `code = fields.Char(size=5)` and
   `partner._fields["credit"].groups.split(",")` of a field defined with `groups="..."`
