@@ -787,6 +787,13 @@ With real recordset types, some plain mypy codes appear more often:
   request.pricelist.id)` on Odoo 20, which declares `request: Request`.
 - `assignment` between two classes of the same model (`AccountMoveLine` of two addons):
   use another variable name, or annotate it.
+- A **read of the environment proven true before** is true again: after `if not
+  self.env.context.get("active_ids"): raise ...` (or `if len(... or []) < 2: raise`, or
+  inside `if self.env.context.get("k"):`) the same `get` (or `["k"]`) is not `None`, and
+  `env.ref(xml_id, raise_if_not_found=False)` after the same call was bound to `partner`
+  and `if not partner: raise ...` tested it is the records. mypy narrows no call; the
+  context of an environment does not change, so the proof holds while `self` (or the
+  environment's name) is not bound again.
 - A **condition kept in a variable** narrows what it tested: `cron_enabled = cron and
   cron.sudo().active`, then `if async_send and cron_enabled:` leaves `cron` the records
   (not `IrCron | None`); `value = result.get(key) if result else False` then `if value:`

@@ -232,6 +232,15 @@ once it can be.
   functions mypy has not reached yet change; in the function being checked, only the
   variables whose first binding it has not checked (`Var.type` is still `None`).
 
+- **Reads proven true** (`odoo_typing.proven`). The hooks of `get` of the class
+  `Environment.context` is declared with (named after the receiver's class,
+  `odoo.tools.misc.frozendict.get`) and of `env.ref` ask what the innermost function
+  being checked proves about the call: the facts along the path from its body to the
+  call (the tests of the arms it is in, `if not x: return` / `raise` before it,
+  `assert`, the left operands of `and` / `or`), through `not`, `and` / `or`, `is
+  (not) None`, `len(x) < n` and a local name's last value; a fact is about an
+  expression of the same structure, and holds while no name it reads is bound again.
+
 - **Aliases of conditions and `assertTrue`** (`odoo_typing.conditions`). mypy narrows
   the names a test reads, not the names its value was built from. With the rebound
   variables, each function's tests are rewritten before mypy checks it: an `if` /

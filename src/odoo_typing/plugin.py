@@ -142,10 +142,12 @@ from odoo_typing.hooks.domains import (
     wrapper_signature,
 )
 from odoo_typing.hooks.env import (
+    CONTEXT_GETS,
     XML_ID_METHODS,
     EnvHooks,
     add_request_attributes,
     context_class,
+    declared_context,
     env_cursor,
     has_context_parameter,
     present_env,
@@ -742,10 +744,18 @@ class OdooPlugin(Plugin):
         """Records kept on a class that is no model, with the fields their function asked for."""
         return self._asked.with_asked(self._values.kept_record(ctx), ctx)
 
+    def _is_context_get(self, fullname: str) -> bool:
+        """``get`` of the class ``env.context`` is (mypy names a hook after the receiver)."""
+        owner, _, name = fullname.rpartition(".")
+        if name != "get" or not self._modules:
+            return False
+        return owner == declared_context(self._models.profile.environment, self._modules)
+
     def _dict_get(self, ctx: MethodContext) -> Type:
         """``get`` of ``odoo.values.*``, and of a dict of mixed values."""
         found = values_get(ctx)
-        return self._mixed.read(ctx) if found is ctx.default_return_type else found
+        found = self._mixed.read(ctx) if found is ctx.default_return_type else found
+        return self._env.context_get(found, ctx)  # ``env.context`` (a dict up to Odoo 19)
 
     def _env_records(self, ctx: MethodContext) -> Type:
         """``env["model"]``, with the fields the function asked the model for."""
@@ -806,6 +816,8 @@ class OdooPlugin(Plugin):
         profile = self._models.profile
         if fullname == DICT_GET:
             return self._dict_get
+        if fullname in CONTEXT_GETS or self._is_context_get(fullname):
+            return lambda ctx: self._env.context_get(ctx.default_return_type, ctx)
         if fullname in MAPPING_ITEMS:
             return partial(_first_of, (self._recordsets.declared_field, self._mixed.read))
         if fullname in MIXED_READS:

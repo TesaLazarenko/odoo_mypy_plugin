@@ -9,6 +9,10 @@ from typing import Final
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import (
     MDEF,
+    CallExpr,
+    Expression,
+    FuncItem,
+    LambdaExpr,
     ListExpr,
     MemberExpr,
     MypyFile,
@@ -45,17 +49,20 @@ from mypy.types import (
 # isort: split
 # After mypy.types: these modules import each other at import time.
 from mypy.checker import TypeChecker
+from mypy.typeops import make_simplified_union, true_only
 
 from odoo_typing.classes import instance_of, receiver_type
 from odoo_typing.compat import OdooProfile
 from odoo_typing.guards import module_guard
 from odoo_typing.hooks.models import Hooks
 from odoo_typing.hooks.nodes import call_argument, is_false, literal_string, type_checker
+from odoo_typing.proven import Proof, proven
 from odoo_typing.references import did_you_mean
 from odoo_typing.xmlids import ODOO_XMLID, ODOO_XMLID_DEPENDS, automatic_model
 
 __all__ = [
     "CONTEXT",
+    "CONTEXT_GETS",
     "GROUPS",
     "REQUEST_ATTRIBUTES",
     "XML_ID_METHODS",
@@ -63,6 +70,7 @@ __all__ = [
     "XmlIdUse",
     "add_request_attributes",
     "context_class",
+    "declared_context",
     "env_cursor",
     "has_context_parameter",
     "present_env",
@@ -72,6 +80,8 @@ __all__ = [
 
 
 EXECUTE: Final = "execute"  # what a cursor class has (see env_cursor)
+# ``get`` of the classes Odoo 20's ``frozendict`` context is made of (built_classes).
+CONTEXT_GETS: Final = frozenset({"types.MappingProxyType.get", "typing.Mapping.get"})
 CONTEXT: Final = "context"
 DICT: Final = "builtins.dict"
 
@@ -145,6 +155,34 @@ class EnvHooks(Hooks):
             return signature
         return signature.copy_modified(arg_types=widened)
 
+    def context_get(self, found: Type, ctx: MethodContext) -> Type:
+        """``env.context.get("k")`` that the function has found true or set before.
+
+        ``if not self.env.context.get("active_ids"): raise UserError(...)``, then
+        ``Command.set(self.env.context.get("active_ids"))``: mypy narrows no call, so the
+        second read was ``Any | None`` again. The context of an environment does not
+        change (``frozendict``), so what the function proves about the first read holds
+        for the second (:func:`odoo_typing.proven.proven`).
+        """
+        call = ctx.context
+        if not isinstance(call, CallExpr) or not isinstance(call.callee, MemberExpr):
+            return found
+        if not self._is_context(call.callee.expr, ctx.api):
+            return found
+        return _without_empty(found, _proof(ctx))
+
+    def _is_context(self, expression: Expression, api: CheckerPluginInterface) -> bool:
+        """``<environment>.context``, or ``<records>._context`` (Odoo 17, 18)."""
+        if not isinstance(expression, MemberExpr) or expression.name not in {"context", "_context"}:
+            return False
+        owner = get_proper_type(type_checker(api).lookup_type_or_none(expression.expr))
+        owner = receiver_type(owner) if owner is not None else None
+        if not isinstance(owner, Instance):
+            return False
+        if expression.name == "context":
+            return owner.type.has_base(self._profile.environment)
+        return owner.type.has_base(self._profile.base_model)
+
     def getitem(self, ctx: MethodContext) -> Type:
         """``env["model.name"]``: the model's records as the addon sees them."""
         model = _model_name_argument(ctx)
@@ -213,6 +251,8 @@ class EnvHooks(Hooks):
             return AnyType(TypeOfAny.special_form)
         if optional and self.registry.created_by_data(xml_id.value, addon_name):
             return records  # the addon's own (non-demo) data: ``view_order_form`` of sale
+        if optional and _proof(ctx) is not None:
+            return records  # the same ``env.ref(...)`` was found true before
         return UnionType([records, NoneType()]) if optional else records
 
     def _of_no_known_model(self, declared: Type) -> Type:
@@ -540,6 +580,16 @@ def add_request_attributes(ctx: ClassDefContext) -> None:
         info.names[name] = SymbolTableNode(MDEF, var, plugin_generated=True)
 
 
+def declared_context(environment: str, modules: dict[str, MypyFile]) -> str | None:
+    """The full name of the class ``Environment.context`` is declared (or inferred) with."""
+    found = lookup_fully_qualified(environment, modules, raise_on_missing=False)
+    info = found.node if found is not None else None
+    symbol = info.get(CONTEXT) if isinstance(info, TypeInfo) else None
+    variable = symbol.node if symbol is not None else None
+    declared = get_proper_type(variable.type) if isinstance(variable, Var) else None
+    return declared.type.fullname if isinstance(declared, Instance) else None
+
+
 def context_class(environment: str, modules: dict[str, MypyFile]) -> TypeInfo | None:
     """The class ``Environment.context`` is declared with, where it is no ``dict`` (Odoo 20).
 
@@ -578,3 +628,35 @@ def _string_dict(typ: ProperType) -> bool:
         return False
     key = get_proper_type(typ.args[0])
     return isinstance(key, Instance) and key.type.fullname == "builtins.str"
+
+
+def _proof(ctx: MethodContext) -> Proof | None:
+    """What the function being checked proves about the call of a method hook."""
+    stack = getattr(type_checker(ctx.api).scope, "stack", [])
+    function = next(
+        (
+            item
+            for item in reversed(stack)
+            if isinstance(item, FuncItem) and not isinstance(item, LambdaExpr)
+        ),
+        None,
+    )
+    if function is None or not isinstance(ctx.context, Expression):
+        return None
+    return proven(function, ctx.context)
+
+
+def _without_empty(found: Type, proof: Proof | None) -> Type:
+    """A type without its empty values: false ones (``truthy``) or ``None`` (``not_none``)."""
+    if proof == "truthy":
+        return true_only(found)
+    if proof == "not_none":
+        proper = get_proper_type(found)
+        if isinstance(proper, UnionType):
+            kept = [item for item in proper.items if not _is_none(item)]
+            return make_simplified_union(kept)
+    return found
+
+
+def _is_none(typ: Type) -> bool:
+    return isinstance(get_proper_type(typ), NoneType)
