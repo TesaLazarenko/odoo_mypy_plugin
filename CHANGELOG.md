@@ -86,7 +86,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   (`required_values`).
 - A field that the domain of the search sets has no `False` in what the search gives:
   `search_read([("product_id", "in", subquery)], ["product_id"])`, the records of
-  `search([("email_from", "ilike", "x")])` and the variable of a `for` over them.
+  `search([("email_from", "ilike", "x")])` and the variable of a `for` over them, also
+  of one of two loops that use the same variable (`for lead in team1_leads:` then `for
+  lead in team2_leads:`); `x |= v` binds the local again.
 - An Odoo function that handles an empty argument itself takes it (`format_date(env,
   line.date_maturity)`, `str2bool(config.value)`), and `fields.Date.to_date(value)` gives
   a `date` for a true argument: the guards are read from Odoo's source.
@@ -96,6 +98,10 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - A condition kept in a local variable narrows what it tested where an `if`, `while` or
   `assert` tests the variable (`cron_enabled = cron and cron.active`, then `if
   cron_enabled: cron._trigger()`), and `self.assertTrue(value)` narrows `value` after it.
+  What the function binds later does not matter, only a binding that may run between the
+  variable and the test (in between, or through a loop): `allowed = (self.commitment_date
+  and ...) or []`, `if not allowed or self.commitment_date.date() ...`, then
+  `self.commitment_date = allowed[0]`.
 - A local variable that its function binds more than once has the type of each value
   where it is bound (`rebound_variables`, on by default): `products = []` then records,
   `proposal = company` then `proposal = False`, `total = 0` then `total += line.amount`,
