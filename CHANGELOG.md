@@ -84,6 +84,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - A field delegated through `_inherits` is required when the parent's field is, as in
   Odoo; `create_date` and `write_date` read without `| Literal[False]`
   (`required_values`).
+- A condition kept in a local variable narrows what it tested where an `if`, `while` or
+  `assert` tests the variable (`cron_enabled = cron and cron.active`, then `if
+  cron_enabled: cron._trigger()`), and `self.assertTrue(value)` narrows `value` after it.
 - A local variable that its function binds more than once has the type of each value
   where it is bound (`rebound_variables`, on by default): `products = []` then records,
   `proposal = company` then `proposal = False`, `total = 0` then `total += line.amount`,

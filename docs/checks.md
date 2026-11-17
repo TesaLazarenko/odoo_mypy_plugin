@@ -785,6 +785,13 @@ With real recordset types, some plain mypy codes appear more often:
   request.pricelist.id)` on Odoo 20, which declares `request: Request`.
 - `assignment` between two classes of the same model (`AccountMoveLine` of two addons):
   use another variable name, or annotate it.
+- A **condition kept in a variable** narrows what it tested: `cron_enabled = cron and
+  cron.sudo().active`, then `if async_send and cron_enabled:` leaves `cron` the records
+  (not `IrCron | None`); `value = result.get(key) if result else False` then `if value:`
+  leaves `result` set; `dates = (order.commitment_date and allowed) or []` then `if not
+  dates or order.commitment_date.date() ...`. The variable and what it implies must be
+  bound before the test and not again in the function. `self.assertTrue(value)` in a
+  test narrows `value` after it, as `assert value` does.
 - A **variable that the function binds more than once** (`products = []` then
   records, `proposal = lead.company_id` then `proposal = False`, `total = 0` then
   `total += line.balance`, one loop variable over two models, a wizard then the invoice

@@ -232,6 +232,17 @@ once it can be.
   functions mypy has not reached yet change; in the function being checked, only the
   variables whose first binding it has not checked (`Var.type` is still `None`).
 
+- **Aliases of conditions and `assertTrue`** (`odoo_typing.conditions`). mypy narrows
+  the names a test reads, not the names its value was built from. With the rebound
+  variables, each function's tests are rewritten before mypy checks it: an `if` /
+  `elif` / `while` / `assert` operand that is a local bound once to a value whose truth
+  implies the truth of names or member expressions (`x and ...`, `... if x else False`,
+  `(x and ...) or []`, `bool(x)`) becomes `alias and x` (`OpExpr` with fresh, bound
+  `NameExpr` / `MemberExpr` nodes), so the binder narrows `x`; only where the alias and
+  those names are bound before the test and not again. A `self.assertTrue(value)`
+  statement becomes a block of itself and `assert value`, in its place in the list (the
+  function may be the one mypy is walking).
+
 - **Tests about installed modules** (`odoo_typing.module_tests`): where the env hooks
   type records, the function mypy checks (`checker.scope.top_level_function()`) is
   read once for its `if` tests that hold `"ir.module.module"` or `"installed"` and

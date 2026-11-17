@@ -113,6 +113,7 @@ from odoo_typing.annotations import (
     rewrite_annotations,
 )
 from odoo_typing.compat import profile_for
+from odoo_typing.conditions import narrow_conditions
 from odoo_typing.config import ConfigError, Settings, load_settings
 from odoo_typing.domains import DOMAIN_METHODS, PARAMETER_DOMAIN_METHODS
 from odoo_typing.errors import RAISE_VARIABLE, fail_soft, report_internal_error
@@ -499,6 +500,8 @@ class OdooPlugin(Plugin):
                 self._rebound.skip(tree)
             else:
                 self._rebound.prepare(tree, checker.named_type("builtins.bool"))
+            if not outside:
+                narrow_conditions(tree)  # odoo_typing.conditions
         except Exception as exc:  # pylint: disable=broad-exception-caught
             if os.environ.get(RAISE_VARIABLE):
                 raise

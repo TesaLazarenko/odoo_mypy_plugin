@@ -105,7 +105,7 @@ from mypy.patterns import (
 )
 from mypy.types import AnyType, Instance, LiteralType, Type, TypeOfAny, UnionType
 
-__all__ = ["ReboundVariables", "rebound_names"]
+__all__ = ["ReboundVariables", "function_bindings", "functions", "nested_blocks", "rebound_names"]
 
 FALSE = "builtins.False"
 # Displays: a variable bound to one with displays inside is declared ``Any``.
@@ -186,6 +186,23 @@ def rebound_names(function: FuncItem) -> dict[Var, list[Binding]]:
             or (variable in collector.given_dicts and _is_empty_binding(bindings))
         )
     }
+
+
+def function_bindings(function: FuncItem) -> _Bindings:
+    """Every binding of the local variables of a function (``x += v`` among the targets)."""
+    collector = _Bindings()
+    collector.block(function.body)
+    return collector
+
+
+def functions(statements: Iterable[Statement]) -> Iterator[FuncItem]:
+    """The functions of a module or class body, and the functions defined in them."""
+    return _functions(statements)
+
+
+def nested_blocks(statement: Statement) -> list[Block]:
+    """The blocks of a compound statement (not the body of a nested function)."""
+    return _nested_blocks(statement)
 
 
 def _leaves_list_uninferred(method: str, arguments: list[Expression]) -> bool:
