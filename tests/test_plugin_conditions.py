@@ -79,6 +79,96 @@ def test_aliases_of_conditions_and_assert_true_narrow(run_mypy: RunMypy) -> None
     ]
 
 
+BOUND_AGAIN = """
+from odoo import models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def updated(self, allowed: list[str]) -> bool:
+        dates = (self.day and allowed) or []
+        if not dates or self.day.date().isoformat() in dates:
+            return True
+        self.day = False
+        return False
+
+    def changed_before(self, allowed: list[str]) -> None:
+        order = self
+        dates = (order.day and allowed) or []
+        order = self.browse(1)
+        if dates:
+            order.day.date()
+
+    def changed_in_loop(self, allowed: list[str]) -> None:
+        dates = (self.day and allowed) or []
+        for order in self:
+            if dates:
+                self.day.date()
+            self.day = order.day
+
+    def each(self, allowed: list[str]) -> None:
+        for order in self:
+            dates = (order.day and allowed) or []
+            if dates:
+                order.day.date()
+            order.day = False
+
+    def stale(self, allowed: list[str]) -> None:
+        for order in self:
+            if order.name:
+                dates = (order.day and allowed) or []
+            if dates:
+                order.day.date()
+
+    def twice(self, allowed: list[str]) -> None:
+        dates = (self.day and allowed) or []
+        if dates:
+            self.day.date()
+        dates = (self.day and allowed[1:]) or []
+        assert dates
+        self.day.date()
+
+    def alias_changed_in_loop(self, allowed: list[str]) -> None:
+        dates = (self.day and allowed) or []
+        for order in self:
+            if dates:
+                self.day.date()
+            dates = order.name and allowed
+
+    def alias_skipped(self, allowed: list[str]) -> None:
+        dates = allowed
+        if self.name:
+            dates = (self.day and allowed) or []
+        if dates:
+            self.day.date()
+
+    def after_loop(self, allowed: list[str]) -> None:
+        for order in self:
+            if order.name:
+                dates = (order.day and allowed) or []
+        if dates:
+            order.day.date()
+"""
+
+
+def test_an_alias_holds_until_what_it_tested_is_bound_again(run_mypy: RunMypy) -> None:
+    """``dates = (self.day and allowed) or []``, ``if dates:``, later ``self.day = x``."""
+    result = run_mypy(
+        {
+            "t_base": {"models.py": T_BASE},
+            "t_use": {"depends": ["t_base"], "models.py": BOUND_AGAIN},
+        },
+        check=["t_use"],
+    )
+
+    # The alias says nothing where the name it tested, or the alias itself, may have
+    # been bound again since: in between, later in a loop around both, or on a path
+    # that skipped the alias (an earlier value, an earlier pass of the loop).
+    error = 'error: Item "bool" of "datetime | Literal[False]" has no attribute "date"'
+    messages = [message.split("  [")[0] for message in result.messages("t_use/models.py")]
+    assert messages == [f"{line}: {error}" for line in (19, 25, 40, 54, 62, 69)], messages
+
+
 REPEATED = """
 from odoo import Command, models
 

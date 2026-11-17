@@ -19,14 +19,23 @@ Before mypy checks a module of an addon (with the rebound variables,
 :mod:`odoo_typing.rebound`), each function's tests are rewritten so that mypy sees what
 the code proves:
 
-* **An alias of a condition.** A local variable bound once to a value whose truth
-  implies the truth of names or member expressions (``x and ...``, ``... if x else
-  False``, ``(x and ...) or []``, ``bool(x)``) gets them added where an ``if``,
-  ``elif``, ``while`` or ``assert`` tests it, as an operand of ``and`` / ``or`` /
-  ``not`` or alone: ``if cron_enabled:`` becomes ``if cron_enabled and cron:``. The two
-  are true together, so the code means the same, and mypy narrows ``cron``. Only
-  where the alias and the names it implies are bound before the test and not bound
-  again in the function.
+* **An alias of a condition.** A local variable bound to a value whose truth implies
+  the truth of names or member expressions (``x and ...``, ``... if x else False``,
+  ``(x and ...) or []``, ``bool(x)``) gets them added where an ``if``, ``elif``,
+  ``while`` or ``assert`` tests it, as an operand of ``and`` / ``or`` / ``not`` or
+  alone: ``if cron_enabled:`` becomes ``if cron_enabled and cron:``. The two are true
+  together, so the code means the same, and mypy narrows ``cron``. The binding is the
+  alias's last one before the test, and it must still hold there: no binding of the
+  alias or of a name it implies (``x = ...``, ``x.attr = ...``, ``x += ...``, a ``for``
+  or ``with`` target) may run between the two. A binding may when it is after the
+  alias and before the test in the source; in a loop around the test (the test of a
+  ``while`` is in its loop), unless the loop holds the alias too and the alias is an
+  earlier statement of a block the test is in, so that it runs again before the test
+  in each pass; in a loop around the alias but not the test (a later pass may bind it
+  and skip the alias); and, for an earlier binding of the alias, unless the alias is
+  such a statement (an ``if`` may skip it). A binding later in the function changes
+  nothing: ``dates = (self.day and allowed) or []``, ``if not dates or
+  self.day.date() ...: return``, then ``self.day = dates[0]``.
 * **``self.assertTrue(value)``**, as a statement, is followed by ``assert value`` (the
   two in a block that takes the statement's place): the call is checked as before, and
   the test fails where the value is false, so mypy narrows it after.
@@ -34,7 +43,7 @@ the code proves:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from mypy.nodes import (
     AssertStmt,
@@ -45,6 +54,7 @@ from mypy.nodes import (
     DictExpr,
     Expression,
     ExpressionStmt,
+    ForStmt,
     FuncItem,
     IfStmt,
     IntExpr,
@@ -54,12 +64,14 @@ from mypy.nodes import (
     NameExpr,
     OperatorAssignmentStmt,
     OpExpr,
+    StarExpr,
     Statement,
     StrExpr,
     TupleExpr,
     UnaryExpr,
     Var,
     WhileStmt,
+    WithStmt,
 )
 
 from odoo_typing.rebound import function_bindings, functions, nested_blocks
@@ -83,31 +95,23 @@ class _Function:
     def __init__(self, function: FuncItem) -> None:
         self.function = function
         bindings = function_bindings(function)
-        changed = {
-            target.node
-            for target in bindings.augmented
-            if isinstance(target, NameExpr) and isinstance(target.node, Var)
+        self.excluded = bindings.excluded  # ``except ... as e``, ``case`` captures
+        # Each statement of the body in source order: the blocks it is in, with its
+        # position in each; the loops among them as (first, last statement, ``while``).
+        self.chains: list[tuple[tuple[int, int], ...]] = []
+        self.places: dict[int, int] = {}  # id of a statement -> its place in ``chains``
+        self.loops: list[tuple[int, int, bool]] = []
+        # The bindings of each name and member expression: the statement, the value.
+        self.names: dict[Var, list[tuple[int, Expression | None]]] = {}
+        self.members: dict[tuple[str, ...], list[int]] = {}
+        self._walk(function.body, ())
+        self.aliases = {
+            variable
+            for variable, names in bindings.names.items()
+            if variable not in self.excluded
+            and not variable.is_argument
+            and any(value is not None and next(_implied(value, 0), None) for _, value in names)
         }
-        self.bound_lines: dict[Var, list[int]] = {
-            variable: [name.line for name, _ in names] for variable, names in bindings.names.items()
-        }
-        self.unstable = changed | bindings.excluded
-        self.assigned_members = {
-            _member_key(target)
-            for statement in _statements(function.body)
-            if isinstance(statement, AssignmentStmt | OperatorAssignmentStmt)
-            for target in _targets(statement)
-            if isinstance(target, MemberExpr)
-        }
-        self.aliases: dict[Var, tuple[int, list[Expression]]] = {}
-        for variable, names in bindings.names.items():
-            if len(names) != 1 or variable in self.unstable or variable.is_argument:
-                continue
-            name, value = names[0]
-            implied = list(_implied(value, 0)) if value is not None else []
-            kept = [item for item in implied if self._stable(item, name.line)]
-            if kept:
-                self.aliases[variable] = (name.line, kept)
 
     def rewrite(self) -> None:
         if not self.aliases and not _has_assert_true(self.function.body):
@@ -115,42 +119,107 @@ class _Function:
         for block in list(_blocks(self.function.body)):  # not the blocks made below
             for index, statement in enumerate(block.body):
                 if isinstance(statement, IfStmt):
-                    statement.expr = [self._test(test, statement.line) for test in statement.expr]
+                    statement.expr = [self._test(test, statement) for test in statement.expr]
                 elif isinstance(statement, WhileStmt | AssertStmt):
-                    statement.expr = self._test(statement.expr, statement.line)
+                    statement.expr = self._test(statement.expr, statement)
                 elif (asserted := _asserted(statement)) is not None:
                     block.body[index] = asserted
 
-    def _stable(self, item: Expression, line: int) -> bool:
-        """Whether a name an alias implies keeps the value it had when the alias was bound."""
-        root = item
-        while isinstance(root, MemberExpr):
-            if _member_key(root) in self.assigned_members:
-                return False
-            root = root.expr
-        if not isinstance(root, NameExpr) or not isinstance(root.node, Var):
-            return False
-        if root.node in self.unstable:
-            return False
-        lines = self.bound_lines.get(root.node, [])
-        return all(bound <= line for bound in lines) and len(lines) <= 1
+    def _walk(self, block: Block, chain: tuple[tuple[int, int], ...]) -> None:
+        """Number the statements of a block and those nested in it; record their bindings."""
+        for position, statement in enumerate(block.body):
+            place = len(self.chains)
+            inside = (*chain, (id(block), position))
+            self.chains.append(inside)
+            self.places[id(statement)] = place
+            for target, value in _bound(statement):
+                if isinstance(target, MemberExpr):
+                    self.members.setdefault(_member_key(target), []).append(place)
+                elif isinstance(target.node, Var):
+                    self.names.setdefault(target.node, []).append((place, value))
+            for nested in nested_blocks(statement):
+                self._walk(nested, inside)
+            if isinstance(statement, ForStmt | WhileStmt):
+                self.loops.append((place, len(self.chains) - 1, isinstance(statement, WhileStmt)))
 
-    def _test(self, test: Expression, line: int) -> Expression:
+    def _test(self, test: Expression, statement: Statement) -> Expression:
         """A test with each alias it reads as an operand replaced by ``alias and implied``."""
+        place = self.places.get(id(statement))
+        if place is None:
+            return test
         if isinstance(test, NameExpr) and isinstance(test.node, Var) and test.node in self.aliases:
-            bound, implied = self.aliases[test.node]
-            if bound >= line:
-                return test
             found: Expression = test
-            for item in implied:
+            for item in self._implied_at(test.node, place):
                 found = _located(OpExpr("and", found, _copy(item)), test)
             return found
         if isinstance(test, OpExpr) and test.op in {"and", "or"}:
-            test.left = self._test(test.left, line)
-            test.right = self._test(test.right, line)
+            test.left = self._test(test.left, statement)
+            test.right = self._test(test.right, statement)
         elif isinstance(test, UnaryExpr) and test.op == "not":
-            test.expr = self._test(test.expr, line)
+            test.expr = self._test(test.expr, statement)
         return test
+
+    def _implied_at(self, alias: Var, test: int) -> list[Expression]:
+        """What an alias implies where a test reads it, of what still holds there."""
+        bindings = self.names.get(alias, [])
+        earlier = [number for number, (place, _) in enumerate(bindings) if place < test]
+        if not earlier:
+            return []  # bound after the test: in a loop, from an earlier pass
+        chosen = earlier[-1]
+        bound, value = bindings[chosen]
+        if value is None:
+            return []
+        each_pass = self._precedes(bound, test)
+        # The loops a binding in may run after the alias's and before the test: those
+        # around the test, unless the alias runs again before it in each pass, and
+        # those around the alias only (a later pass may bind what it tested, or skip it).
+        loops = [
+            (first, last)
+            for first, last, repeated in self.loops
+            if (
+                (first < test <= last or (repeated and first == test))
+                and not (each_pass and first < bound <= last)
+            )
+            or (first < bound <= last and not first < test <= last)
+        ]
+
+        def between(place: int) -> bool:
+            """Whether a binding may run after the alias's and before the test."""
+            return bound <= place < test or any(first <= place <= last for first, last in loops)
+
+        for number, (place, _) in enumerate(bindings):
+            if number != chosen and (between(place) or (place < bound and not each_pass)):
+                return []
+        return [item for item in _implied(value, 0) if self._holds(item, alias, between)]
+
+    def _holds(self, item: Expression, alias: Var, between: Callable[[int], bool]) -> bool:
+        """Whether no binding of a name an alias implies may run between the two."""
+        keys: list[tuple[str, ...]] = []
+        root = item
+        while isinstance(root, MemberExpr):
+            keys.append(_member_key(root))
+            root = root.expr
+        if not isinstance(root, NameExpr) or not isinstance(root.node, Var):
+            return False
+        if root.node in self.excluded or root.node is alias:
+            return False
+        places = [place for place, _ in self.names.get(root.node, [])]
+        places += [place for key in keys for place in self.members.get(key, [])]
+        return not any(map(between, places))
+
+    def _precedes(self, first: int, second: int) -> bool:
+        """Whether a statement runs before another each time that one runs.
+
+        The first is an earlier statement of a block the second is in, or nested in.
+        """
+        outer, inner = self.chains[first], self.chains[second]
+        depth = len(outer) - 1
+        return (
+            len(inner) > depth
+            and inner[:depth] == outer[:depth]
+            and inner[depth][0] == outer[depth][0]
+            and inner[depth][1] > outer[depth][1]
+        )
 
 
 def _implied(value: Expression, depth: int) -> Iterator[Expression]:
@@ -255,17 +324,28 @@ def _has_assert_true(block: Block) -> bool:
     return any(_asserted(statement) is not None for statement in _statements(block))
 
 
-def _targets(statement: AssignmentStmt | OperatorAssignmentStmt) -> list[Expression]:
-    if isinstance(statement, OperatorAssignmentStmt):
-        return [statement.lvalue]
-    found: list[Expression] = []
-    pending = list(statement.lvalues)
+def _bound(statement: Statement) -> list[tuple[NameExpr | MemberExpr, Expression | None]]:
+    """The names and member expressions a statement binds, each with its value if known."""
+    pending: list[tuple[Expression, Expression | None]]
+    if isinstance(statement, AssignmentStmt):
+        pending = [(target, statement.rvalue) for target in statement.lvalues]
+    elif isinstance(statement, OperatorAssignmentStmt):
+        pending = [(statement.lvalue, None)]
+    elif isinstance(statement, ForStmt):
+        pending = [(statement.index, None)]
+    elif isinstance(statement, WithStmt):
+        pending = [(target, None) for target in statement.target if target is not None]
+    else:
+        return []
+    found: list[tuple[NameExpr | MemberExpr, Expression | None]] = []
     while pending:
-        target = pending.pop()
-        if isinstance(target, TupleExpr | ListExpr):
-            pending.extend(target.items)
-        else:
-            found.append(target)
+        target, value = pending.pop()
+        if isinstance(target, NameExpr | MemberExpr):
+            found.append((target, value))
+        elif isinstance(target, TupleExpr | ListExpr):
+            pending.extend((item, None) for item in target.items)
+        elif isinstance(target, StarExpr):
+            pending.append((target.expr, None))
     return found
 
 

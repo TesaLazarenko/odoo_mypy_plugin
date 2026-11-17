@@ -290,11 +290,16 @@ once it can be.
 - **Aliases of conditions and `assertTrue`** (`odoo_typing.conditions`). mypy narrows
   the names a test reads, not the names its value was built from. With the rebound
   variables, each function's tests are rewritten before mypy checks it: an `if` /
-  `elif` / `while` / `assert` operand that is a local bound once to a value whose truth
-  implies the truth of names or member expressions (`x and ...`, `... if x else False`,
-  `(x and ...) or []`, `bool(x)`) becomes `alias and x` (`OpExpr` with fresh, bound
-  `NameExpr` / `MemberExpr` nodes), so the binder narrows `x`; only where the alias and
-  those names are bound before the test and not again. A `self.assertTrue(value)`
+  `elif` / `while` / `assert` operand that is a local whose last binding before the test
+  is a value whose truth implies the truth of names or member expressions (`x and ...`,
+  `... if x else False`, `(x and ...) or []`, `bool(x)`) becomes `alias and x` (`OpExpr`
+  with fresh, bound `NameExpr` / `MemberExpr` nodes), so the binder narrows `x`; only
+  where no binding of the alias or of those names may run between the alias and the
+  test. The statements are numbered in source order, each with the blocks it is in; a
+  binding counts when it is between the two in that order, in a loop around the test
+  (unless the loop holds the alias too and the alias is an earlier statement of a
+  block the test is in), in a loop around the alias only, or, for an earlier binding of
+  the alias, when the alias is no such statement. A `self.assertTrue(value)`
   statement becomes a block of itself and `assert value`, in its place in the list (the
   function may be the one mypy is walking).
 
