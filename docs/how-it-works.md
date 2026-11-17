@@ -234,9 +234,13 @@ once it can be.
 
 - **Fields a search sets** (`odoo_typing.searched`). The `__get__` signature hook of a
   field read from a local bound once to `search(...)` / `search_fetch(...)` with a
-  literal domain (or the variable of a `for` over such a local), and the `read_result`
-  of `search_read`, read the domain's top-level conjunction (a prefix parse: `&` keeps
-  both sides, `|` and `!` keep nothing) for terms that set a field of the model.
+  literal domain (`x |= v` counts as a binding; or the variable of a `for` over such a
+  local), and the `read_result` of `search_read`, read the domain's top-level
+  conjunction (a prefix parse: `&` keeps both sides, `|` and `!` keep nothing) for
+  terms that set a field of the model. For a `for` variable bound more than once, the
+  loop is the innermost `for` binding it whose body holds the read (the statements
+  around the read are found by their source spans), when no other binding of it in
+  that body is before the read or inside a loop of the body around the read.
 
 - **Computed text fields** (`odoo_typing.computed`, `scanner.assigned`). The scan of a
   class keeps, per method and attribute name, the kinds of the values assigned

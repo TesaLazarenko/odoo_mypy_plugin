@@ -323,3 +323,54 @@ def test_fields_the_search_domain_sets_have_no_false(run_mypy: RunMypy) -> None:
         "str",
         "str | Literal[False]",
     ], revealed
+
+
+SEARCHED_LOOPS = """
+from odoo import models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def check(self) -> None:
+        first = self.search([("name", "ilike", "x")])
+        second = self.search([("name", "ilike", "y")])
+        for order in first:
+            reveal_type(order.name)
+        for order in second:
+            reveal_type(order.name)
+            order = self.browse(1)
+            reveal_type(order.name)
+        for order in first:
+            for _ in range(2):
+                reveal_type(order.name)
+                order = self.browse(1)
+        for order in self:
+            reveal_type(order.name)
+        third = self.search([("name", "ilike", "z")])
+        reveal_type(third.name)
+        third |= self.browse(1)
+"""
+
+
+def test_the_loop_around_a_read_gives_its_records(run_mypy: RunMypy) -> None:
+    """``for lead in team1_leads: ...``, then ``for lead in team2_leads: lead.email_from``."""
+    result = run_mypy(
+        {
+            "t_base": {"models.py": T_BASE},
+            "t_use": {"depends": ["t_base"], "models.py": SEARCHED_LOOPS},
+        },
+        check=["t_use"],
+    )
+
+    revealed = [line.partition('"')[2].rstrip('"') for line in result.messages("t_use/models.py")]
+    # Not where the loop variable may hold other records: bound again in the loop before
+    # the read, or in a loop of its body around the read; a loop over other records; a
+    # local that ``|=`` binds again, even where read before it (the local is bound once).
+    assert revealed == [
+        "str",
+        "str",
+        "str | Literal[False]",
+        "str | Literal[False]",
+        "str | Literal[False]",
+        "str | Literal[False]",
+    ], revealed

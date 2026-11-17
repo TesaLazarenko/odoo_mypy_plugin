@@ -794,7 +794,10 @@ With real recordset types, some plain mypy codes appear more often:
   conjunction (not under `|` or `!`) on a field of the model itself sets it when it is
   `=` / `child_of` / `parent_of` with a true literal, `in` with true literals (or a
   `Query`, records, `list[int]`), `!= False` / `None`, or a `like` / `ilike` with a
-  non-empty string. The local must be bound once.
+  non-empty string. The local must be bound once (`leads |= other` binds it again). A
+  loop variable that two loops use (`for lead in team1_leads:` then `for lead in
+  team2_leads:`) reads as the records of the loop around the read, unless the loop
+  binds it again before the read (or in an inner loop around the read).
 - An **Odoo function that handles an empty argument itself** takes it: Odoo starts
   `format_date(env, value: datetime | date | str, ...)` with `if not value: return ''`
   and `str2bool(s: str)` with `if type(s) is bool: return s`, so `format_date(self.env,
