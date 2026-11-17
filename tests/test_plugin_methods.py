@@ -461,10 +461,11 @@ def test_env_dynamic_name_option_base_keeps_base_model(run_mypy: RunMypy, names:
 def test_env_dynamic_name_option_change_invalidates_cache(
     run_mypy: RunMypy, names: OdooNames
 ) -> None:
-    run_mypy({"my_mod": {"models.py": DYNAMIC_ENV}})
+    first = run_mypy({"my_mod": {"models.py": DYNAMIC_ENV}})
 
     result = run_mypy({"my_mod": {"models.py": DYNAMIC_ENV}}, options='dynamic_env = "base"\n')
 
+    assert first.messages("models.py") == ['9: note: Revealed type is "Any"']  # the default
     assert f'9: note: Revealed type is "{names.base_model}"' in result.messages("models.py")
 
 

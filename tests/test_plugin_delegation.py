@@ -217,4 +217,7 @@ def test_delegated_field_is_required_when_the_delegated_models_field_is(
         '18: note: Revealed type is "str | Literal[False]"',
     ]
     declared = run_mypy(addons, options="required_values = false\n").messages("models.py")
-    assert declared[0] == '17: note: Revealed type is "str | Literal[False]"'
+    assert declared == [
+        '17: note: Revealed type is "str | Literal[False]"',
+        '18: note: Revealed type is "str | Literal[False]"',
+    ]

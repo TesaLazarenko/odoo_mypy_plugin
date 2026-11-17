@@ -87,10 +87,10 @@ class Order(models.Model):
 def test_sorted_field_checked(run_mypy: RunMypy) -> None:
     messages = _messages(run_mypy, SORTED)
 
-    assert messages[0].startswith('8: note: Revealed type is "t_use.models.Order')
-    assert messages[1].split(";")[0] == (
-        '9: error: Odoo model "t.order" has no field "nmae" in sorted("nmae")'
-    )
+    assert [message.split(";")[0] for message in messages] == [
+        '8: note: Revealed type is "t_use.models.Order"',
+        '9: error: Odoo model "t.order" has no field "nmae" in sorted("nmae")',
+    ]
 
 
 SORTED_ORDER = """

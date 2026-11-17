@@ -99,13 +99,19 @@ class Thing(models.Model):
 """
 
 
-def test_a_local_dict_of_mixed_values_takes_and_gives_any_value(run_mypy: RunMypy) -> None:
+def test_a_local_dict_of_mixed_values_takes_and_gives_any_value(
+    run_mypy: RunMypy, odoo_version: int
+) -> None:
     """``record.id`` is a union on Odoo 17 and 18: mypy joins the values into a union."""
     result = run_mypy({"my_mod": {"models.py": UNION}})
 
-    # Values of one type keep it (``int | NewId`` on 17 and 18; an untyped id on 19+).
-    messages = result.messages("models.py")
-    assert all(message.startswith("16: error: Item ") for message in messages), messages
+    # Values of one type keep it: ``int | NewId`` on 17 and 18, whose items have no such
+    # attribute; an untyped id on 19+, which has any.
+    items = ["int", "NewId"] if odoo_version < 19 else []
+    assert result.messages("models.py") == [
+        f'16: error: Item "{item}" of "int | NewId" has no attribute "missing"  [union-attr]'
+        for item in items
+    ]
 
 
 RECORDS = """

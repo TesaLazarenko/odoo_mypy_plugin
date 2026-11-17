@@ -358,6 +358,7 @@ def test_cold_and_warm_runs_report_the_same(run_mypy: RunMypy) -> None:
     cold = run_mypy(addons, check=["t_use"], fresh_cache=True)
     warm = run_mypy(addons, check=["t_use"], fresh_cache=True)
 
+    assert [line for line in cold.lines if "[odoo-" in line]  # not two empty reports
     assert warm.lines == cold.lines
 
 

@@ -62,19 +62,22 @@ def _messages(run_mypy: RunMypy, options: str = "") -> list[str]:
 def test_binary_and_reference_fields_read_typed(run_mypy: RunMypy, odoo_version: int) -> None:
     messages = _messages(run_mypy)
 
-    binary = "bytes | Literal[False]" if odoo_version < 20 else None
-    if binary is not None:
-        assert messages[:2] == [
-            f'10: note: Revealed type is "{binary}"',
-            f'11: note: Revealed type is "{binary}"',
-        ]
+    # Odoo 20 declares the value of a Binary field itself, of a computed one too.
+    declared = "odoo.tools.binary.BinaryValue"
+    binary = "bytes | Literal[False]" if odoo_version < 20 else declared
+    assert messages[:2] == [
+        f'10: note: Revealed type is "{binary}"',
+        f'11: note: Revealed type is "{binary}"',
+    ]
     assert messages[2].startswith('12: note: Revealed type is "odoo.addons.base.')
     assert "t_base.models.Line" in messages[2]
     assert messages[2].endswith('| Literal[False]"')
     assert messages[3].endswith('BaseModel | Literal[False]"')
-    assert messages[4] == '14: note: Revealed type is "str | Literal[False]"'
-    if odoo_version < 20:
-        assert messages[5] == '15: note: Revealed type is "Any"'
+    computed = "Any" if odoo_version < 20 else declared
+    assert messages[4:] == [
+        '14: note: Revealed type is "str | Literal[False]"',
+        f'15: note: Revealed type is "{computed}"',
+    ]
 
 
 def test_literal_selection_reads_keys_of_view(run_mypy: RunMypy) -> None:
@@ -372,18 +375,18 @@ def test_an_operator_false_does_not_support_is_one_error(
     messages = run_mypy({"my_mod": {"models.py": FALSE_OPERAND}}).messages("models.py")
 
     errors = [message.split("  [")[0] for message in messages if ": error: " in message]
-    assert errors[:1] == [
+    # Odoo 19+ declares ``from_string`` as ``datetime | None``: the operands are
+    # reported, and no error about ``abs`` of a ``datetime`` that no value is. Odoo 17
+    # and 18 leave it untyped: nothing more is reported.
+    declared = [
+        '21: error: Unsupported operand types for + ("None" and "timedelta")',
+        '22: error: Unsupported left operand type for - ("None")',
+    ]
+    assert errors == [
         '14: error: Unsupported operand types for - ("Literal[False]" and "datetime")',
+        *(declared if odoo_version >= 19 else []),
     ], messages
     assert [message for message in messages if ": note: Revealed" in message] == [
         '15: note: Revealed type is "int"',
         '16: note: Revealed type is "int"',
     ]
-    # Odoo 19+ declares ``from_string`` as ``datetime | None``: the operands are
-    # reported, and no error about ``abs`` of a ``datetime`` that no value is.
-    assert not [error for error in errors if '"abs"' in error], messages
-    if odoo_version >= 19:
-        assert errors[1:] == [
-            '21: error: Unsupported operand types for + ("None" and "timedelta")',
-            '22: error: Unsupported left operand type for - ("None")',
-        ], messages

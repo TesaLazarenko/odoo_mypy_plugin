@@ -131,9 +131,7 @@ def test_a_read_of_env_proven_true_before_is_true_again(run_mypy: RunMypy) -> No
             "t_use": {
                 "depends": ["t_base"],
                 "models.py": REPEATED,
-                "demo": {
-                    "demo.xml": '<odoo><record id="base.res_partner_2" model="res.partner"/></odoo>'
-                },
+                "demo": {"demo.xml": DEMO},
             },
         },
         check=["t_use"],
@@ -183,12 +181,17 @@ def test_odoo_functions_take_the_empty_values_they_handle(
 
     messages = [line.split(";")[0] for line in result.messages("t_use/models.py")]
     assert messages[0].startswith('11: error: Argument 2 to "format_datetime" has incompatible')
-    if odoo_version >= 19:  # Odoo 18 does not annotate to_date
-        assert messages[1:] == [
-            '16: note: Revealed type is "datetime.date"',  # the context value was found true
-            '17: note: Revealed type is "datetime.date | None"',  # "" gives None
-            '18: note: Revealed type is "datetime.date | None"',
+    dates = ["Any", "Any", "Any"]  # Odoo 18 does not annotate to_date
+    if odoo_version >= 19:
+        dates = [
+            "datetime.date",  # the context value was found true
+            "datetime.date | None",  # "" gives None
+            "datetime.date | None",
         ]
+    assert messages[1:] == [
+        f'{line}: note: Revealed type is "{date}"'
+        for line, date in zip((16, 17, 18), dates, strict=True)
+    ]
 
 
 SEARCHED = """
