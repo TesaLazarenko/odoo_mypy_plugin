@@ -378,20 +378,20 @@ class Order(models.Model):
         self.helper()
         return {"nope2": 1}
 """
-# A module without a class: bare strings are never rewritten there, on any path.
+# A module without a class: mypy looks its bare strings up itself (odoo_typing.alias_names).
 TOOLS = """
 from typing import Annotated
 from t_base.models import Order
 
 def bare(order: Order) -> "odoo.values.t_order":
     order.helper()
-    return {}
+    return {"nope0": 1}
 
 def annotated(order: Order) -> Annotated[dict, "odoo.values.t_order"]:
     return {"nope3": 1}
 
 def local() -> None:
-    class Inner:  # a class in a function does not make the module rewritten
+    class Inner:  # a class in a function does not make the plugin rewrite the module
         pass
 """
 # A module that binds the name odoo, with a helper above its first class.
@@ -429,7 +429,7 @@ def test_bare_strings_survive_a_dependency_signature_change(run_mypy: RunMypy) -
             '13: error: Extra key "nope2" for TypedDict "t.order values"  [typeddict-unknown-key]',
         ]
         assert result.messages("t_use/tools.py") == [
-            '5: error: Name "odoo" is not defined  [name-defined]',
+            '7: error: Extra key "nope0" for TypedDict "t.order values"  [typeddict-unknown-key]',
             '10: error: Extra key "nope3" for TypedDict "t.order values"  [typeddict-unknown-key]',
         ]
         assert result.messages("t_use/bound.py") == [

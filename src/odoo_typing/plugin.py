@@ -105,8 +105,20 @@ from mypy.types import (
 )
 from mypy.util import correct_relative_import
 
+# isort: split
+# After mypy.types: mypy.semanal imports modules that import each other at import time.
+from mypy.semanal import SemanticAnalyzer
+
 from odoo_typing import records
 from odoo_typing.addons import Addon
+from odoo_typing.alias_names import (
+    BUILTINS,
+    NAMED_PREFIXES,
+    ROOT,
+    bind_in_builtins,
+    bind_in_package,
+    named_alias,
+)
 from odoo_typing.annotations import (
     ANNOTATED_NAMES,
     TRIGGER_FULLNAME,
@@ -197,7 +209,7 @@ from odoo_typing.records import RecordStore, load_index
 from odoo_typing.references import RECORD_PATH_METHODS
 from odoo_typing.registry import Registry
 from odoo_typing.scan_store import ScanStore
-from odoo_typing.scanner import LOG_ACCESS_USERS
+from odoo_typing.scanner import LOG_ACCESS_USERS, AnnotationAlias
 from odoo_typing.stamps import Stamps, stamp
 from odoo_typing.startup import (
     follow_imports_warning,
@@ -299,7 +311,10 @@ class OdooPlugin(Plugin):
         self._rebound_tree: MypyFile | None = None  # prepared last, see _prepare_rebound
         # The classes Odoo registers BaseModel with (``Sequence``, ``Set``), once read.
         self._registered: frozenset[str] | None = None
-        annotations = AnnotationHooks(models)
+        annotations = self._annotations = AnnotationHooks(models)
+        # The trees the names of bare annotations are bound in (see _bind_alias_names).
+        self._alias_builtins: MypyFile | None = None
+        self._alias_package: MypyFile | None = None
         self._type_hooks: dict[str, Callable[[AnalyzeTypeContext], Type]] = {
             name: partial(annotations.annotated, name) for name in ANNOTATED_NAMES
         }
@@ -526,7 +541,12 @@ class OdooPlugin(Plugin):
     # -- annotations: odoo.values.* / odoo.model.* -----------------------------------------
 
     def _rewrite_module_of(self, class_fullname: str) -> None:
-        """Rewrite the bare ``odoo.<kind>.*`` strings of a class's module, once per tree.
+        """Rewrite the module of a regular top-level class (:meth:`_rewrite_module`)."""
+        if "@" not in class_fullname:  # ``Name@12``: a class defined in a function
+            self._rewrite_module(class_fullname.rpartition(".")[0])
+
+    def _rewrite_module(self, module: str) -> bool:
+        """Rewrite the bare ``odoo.<kind>.*`` strings of a module, once per tree.
 
         See :mod:`odoo_typing.annotations`. Called when semantic analysis reaches a
         regular top-level class (:meth:`get_customize_class_mro_hook`), before its body:
@@ -535,35 +555,80 @@ class OdooPlugin(Plugin):
         ``--num-workers``), which no hook that sees the parsed file covers. mypy calls
         the hook for no class-syntax ``TypedDict`` / ``NamedTuple`` and no class whose
         bases it rejects; classes defined in functions are skipped here. A module
-        without such a class is never rewritten (``Annotated`` works there).
+        without such a class is rewritten when mypy analyzes its first bare string
+        (:meth:`_named_annotation`).
 
         The same pass wraps the expressions whose domains are checked: those of
         ``odoo.domain.*`` annotations and the returns of fields' search methods.
+
+        Returns:
+            Whether the tree was rewritten by this call.
         """
-        if "@" in class_fullname:
-            return  # a class defined in a function (``Name@12``): not a top-level class
-        module = class_fullname.rpartition(".")[0]
         tree = self._modules.get(module) if self._modules else None
         if tree is None or self._rewritten.get(module) is tree:
-            return
+            return False
         self._rewritten[module] = tree
         registry = self._models.registry
         aliases = registry.annotation_aliases(tree.path)
         search = registry.search_methods(module) if registry.addon_name_for_path(tree.path) else {}
         if not aliases and not search:
-            return
+            return False
         builtins = self._modules.get("builtins") if self._modules else None
         wrapper = builtins.names.get("__build_class__") if builtins is not None else None
         wrapping = None
         if wrapper is not None and wrapper.node is not None:
             wrapping = Wrapping(wrapper.node, registry.model_classes(module), search)
         rewrite_annotations(tree, wrapping)
+        return True
+
+    def _bind_alias_names(self) -> None:
+        """Bind the names bare annotations are looked up through (odoo_typing.alias_names).
+
+        Asked from the hook lookups: two dictionary lookups once the trees are done.
+        """
+        modules = self._modules
+        if not modules:
+            return
+        builtins = modules.get(BUILTINS)
+        if (
+            builtins is not None
+            and builtins is not self._alias_builtins
+            and bind_in_builtins(builtins)
+        ):
+            self._alias_builtins = builtins
+        package = modules.get(ROOT)
+        if package is not None and package is not self._alias_package:
+            bind_in_package(package)
+            self._alias_package = package
+
+    def _named_annotation(self, found: AnnotationAlias, ctx: AnalyzeTypeContext) -> Type:
+        """A bare ``odoo.<kind>.<model>`` string that mypy looked up itself.
+
+        The first one of a module that no class made the plugin rewrite: the module is
+        rewritten now, for the domains the rewrite wraps. The annotated statements are
+        analyzed from here on (the one being analyzed is the first), so each is wrapped
+        before mypy reaches its value or its function's body; the type itself is given
+        at once (mypy analyzes the fields of a class-syntax ``NamedTuple`` only once).
+        """
+        analyzer = getattr(ctx.api, "api", None)
+        if isinstance(analyzer, SemanticAnalyzer):
+            self._rewrite_module(analyzer.cur_mod_id)
+        return self._annotations.named(found, ctx)
 
     def get_type_analyze_hook(self, fullname: str) -> Callable[[AnalyzeTypeContext], Type] | None:
         """Type ``odoo.values.*`` / ``odoo.model.*`` annotations (odoo_typing.annotations)."""
         if self._package is not None:
             self._bind_package_names()
-        return self._type_hooks.get(fullname)
+        self._bind_alias_names()
+        hook = self._type_hooks.get(fullname)
+        if hook is None and fullname.startswith(NAMED_PREFIXES):
+            found = named_alias(fullname)
+            if found is not None:
+                hook = fail_soft(
+                    partial(self._named_annotation, found), _any_type, f"the annotation {fullname}"
+                )
+                self._type_hooks[fullname] = hook
+        return hook
 
     # -- hook lookup -----------------------------------------------------------------------
     # mypy asks for a hook at every call, attribute and class (about 200,000 times on the
@@ -586,6 +651,7 @@ class OdooPlugin(Plugin):
         """
         if self._package is not None:
             self._bind_package_names()
+        self._bind_alias_names()
         self._rewrite_module_of(fullname)
         found = self._hooks.mro
         if fullname not in found:

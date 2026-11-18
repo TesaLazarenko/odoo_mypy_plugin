@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from difflib import get_close_matches
 
-from mypy.errorcodes import VALID_TYPE
+from mypy.errorcodes import NAME_DEFINED, VALID_TYPE
 from mypy.nodes import MypyFile, TypeInfo
 from mypy.plugin import AnalyzeTypeContext, MethodContext, MethodSigContext
 from mypy.plugins.default import typed_dict_get_callback, typed_dict_get_signature_callback
@@ -63,7 +63,7 @@ from odoo_typing.hooks.models import (
 )
 from odoo_typing.records import digest
 from odoo_typing.registry.annotations import normalized_alias
-from odoo_typing.scanner import DOMAIN, VALUES
+from odoo_typing.scanner import DOMAIN, VALUES, AnnotationAlias
 
 __all__ = ["DICT_GET", "AnnotationHooks", "values_get", "values_get_signature"]
 
@@ -114,6 +114,21 @@ class AnnotationHooks(Hooks):
                 ctx.context,
                 code=VALID_TYPE,
             )
+            return AnyType(TypeOfAny.from_error)
+        kind, alias = found
+        if kind == DOMAIN:
+            return self._domain(alias, None, ctx)
+        return self._values(alias, ctx) if kind == VALUES else self._records(alias, ctx)
+
+    def named(self, found: AnnotationAlias, ctx: AnalyzeTypeContext) -> Type:
+        """A bare string mypy looked up itself (:mod:`odoo_typing.alias_names`).
+
+        Where the rewrite does not reach: a module without a regular class, ``cast(...)``,
+        a type alias, a class-syntax ``NamedTuple`` or ``TypedDict``. Outside the addons
+        the name means nothing, as to plain mypy.
+        """
+        if self._place(ctx) is None:
+            ctx.api.fail('Name "odoo" is not defined', ctx.context, code=NAME_DEFINED)
             return AnyType(TypeOfAny.from_error)
         kind, alias = found
         if kind == DOMAIN:
@@ -306,7 +321,7 @@ def _annotated_alias(typ: UnboundType) -> tuple[str, str] | None:
 
 def _kind(typ: UnboundType) -> str:
     """``values``, ``model`` or ``domain``: what an annotation being analyzed stands for."""
-    found = trigger_alias(typ)
+    found = trigger_alias(typ) or annotation_alias(typ.name)
     if found is None:
         found = _annotated_alias(typ)
     return found[0] if found is not None else VALUES

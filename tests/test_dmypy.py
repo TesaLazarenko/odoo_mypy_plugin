@@ -692,3 +692,42 @@ def test_dmypy_returns_of_super_overrides_survive_rechecks(daemon: Daemon, tmp_p
     assert total(daemon.check()) == 'Any"'
     models.write_text(models.read_text().replace(other, "helper()\n"))
     assert total(daemon.check()) == 'int"'
+
+
+# A module of plain functions: mypy looks the bare strings up itself (odoo_typing.alias_names).
+PLAIN = """
+def values() -> "odoo.values.x_thing":
+    return {"name": "a", "extra": 1}
+
+def records(things: "odoo.model.x_thing") -> "odoo.domain.x_thing":
+    reveal_type(things)
+    return [("extra", "=", 1)]
+"""
+
+
+def test_dmypy_bare_strings_in_a_module_of_functions_follow_edits(
+    daemon: Daemon, tmp_path: Path
+) -> None:
+    root = tmp_path / "addons"
+    daemon.check()
+    (root / "my_mod/plain.py").write_text(PLAIN)
+    (root / "my_mod/__init__.py").write_text("from . import user, plain\n")
+    before = daemon.check()
+    _append(root / "dep_mod/models.py", EXTENSION)  # the field "extra"
+    after = daemon.check()
+    _append(root / "my_mod/plain.py", "\nx = 1\n")  # the module alone is analyzed again
+    again = daemon.check()
+
+    user = 'user.py:8: note: Revealed type is "dep_mod.models.Thing"'
+    assert before == [
+        user,
+        'plain.py:3: error: Extra key "extra" for TypedDict "x.thing values"'
+        "  [typeddict-unknown-key]",
+        'plain.py:6: note: Revealed type is "dep_mod.models.Thing"',
+        'plain.py:7: error: Odoo model "x.thing" has no field "extra" in domain  [odoo-domain]',
+    ]
+    assert after == [
+        user.replace("Thing", "ThingExtra"),
+        'plain.py:6: note: Revealed type is "dep_mod.models.ThingExtra"',
+    ]
+    assert again == after
