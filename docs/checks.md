@@ -561,23 +561,44 @@ def _prepare_line(self) -> "odoo.values.account_move_line":
 ```
 
 **Where they work.** The model is named with `_` for `.` (`account_move_line`;
-`"odoo.values.account.move.line"` works too). The bare string works in the annotations
-of functions (parameters, return), variables (module, class, function) and type
-comments, also inside other types (`"odoo.values.x | None"`,
-`"Mapping[str, odoo.model.x]"`), in a module that has a regular class at its top level
-(the plugin rewrites the module's annotations when mypy reaches it; a class-syntax
-`TypedDict` or `NamedTuple`, a class whose bases mypy rejects and a class defined in a
-function do not count). Use `Annotated[dict, "odoo.values.x"]` instead:
+`"odoo.values.account.move.line"` works too). The bare string is a type wherever mypy
+reads one in a file of an addon:
 
-- in a module without such a class, where mypy reports `Name "odoo" is not defined`;
-- in `cast(...)`, an expression, which mypy turns into a type later.
+- the annotations of functions (parameters, return), variables (module, class,
+  function) and type comments, also inside other types (`"odoo.values.x | None"`,
+  `"Mapping[str, odoo.model.x]"`);
+- in any module: one of model classes, one of plain functions (`tools/helpers.py`), one
+  whose only classes are dataclasses, class-syntax `NamedTuple`s or `TypedDict`s;
+- the fields of a dataclass, a `NamedTuple`, a `TypedDict` and the attributes of any
+  other class, and a class defined in a function;
+- `cast("odoo.values.x", d)` and a type alias (`OrderValues: TypeAlias =
+  "odoo.values.sale_order"`, `type OrderValues = "odoo.values.sale_order"`).
 
-A type alias (`V = Annotated[dict, "odoo.values.x"]`, `V: TypeAlias = ...`,
-`type V = ...`) is a plain `dict` in either form: mypy drops the metadata of
-`Annotated` there. Annotate the helpers and variables themselves.
+```python
+# my_addon/tools/payload.py: no model class in the file
+@dataclass
+class Payload:
+    order: "odoo.model.sale_order"
+    values: "odoo.values.sale_order"
+    domain: "odoo.domain.sale_order"
+
+def build(order: "odoo.model.sale_order") -> Payload:
+    return Payload(order, {"nmae": "x"}, [("stte", "=", "draft")])
+    # error: Extra key "nmae" for TypedDict "sale.order values"  [typeddict-unknown-key]
+    # error: Odoo model "sale.order" has no field "stte" in domain; did you mean "state"?
+```
+
+`Annotated[dict, "odoo.values.x"]` (and `Annotated[list, "odoo.domain.x"]`) stays the
+form other tools read as a plain `dict` (`list`). In a type alias it is a plain `dict`
+(`V = Annotated[dict, "odoo.values.x"]`): mypy drops the metadata of `Annotated` there;
+write the alias with the bare string.
 
 Outside any addon (scripts) the annotations mean what they mean to plain mypy:
-`Annotated[...]` is a `dict`, a bare string is an undefined name.
+`Annotated[...]` is a `dict`, a bare string is `Name "odoo" is not defined`. The name
+`odoo` itself, used without `import odoo` (`odoo.tools.x()`), is reported as
+`"type[odoo]" has no attribute "tools"`: the plugin gives `builtins` a class of that
+name, which is how mypy finds the annotations
+([how it works](how-it-works.md#annotations-odoovalues-and-odoomodel)).
 
 **The model.** The alias is looked up among the models of the file's addon view, like
 `env["..."]`:
@@ -715,11 +736,16 @@ def action(self) -> None:
 **Where its literals are checked** (against the annotation's model, with the rules that
 hold everywhere): a `return` of a function annotated to return a domain (also
 `-> "odoo.domain.x | None"`, not in nested functions), the value of an annotated
-variable (in a module, a function or an Odoo model class), the changes of an annotated
-variable or parameter (`domain = AND([domain, [...]])`, `domain.append(...)`), and an
-argument of an annotated parameter (of a method, also inherited, or a function). The
+variable (in a module, a function or a class), the changes of an annotated
+variable or parameter (`domain = AND([domain, [...]])`, `domain.append(...)`), an
+argument of an annotated parameter (of a method, also inherited, a function, or the
+constructor of a class: `Payload(domain=[...])` of a dataclass, a `NamedTuple` or a
+class with its own `__init__`), and a value assigned to an attribute that is a domain
+(`payload.domain = [...]`, `self.domain = [...]`: an attribute annotated with a domain,
+or one that `__init__` gives its annotated parameter). The
 literals of an annotated variable that reach a search through it get the search rules
-too.
+too. A literal assigned to an attribute is checked term by term, not as a whole (the
+attribute may be extended in place), and `payload.domain += [...]` is not checked.
 
 **Where its model is checked** (`odoo-domain-model`): a search method on records, a
 returned value, an annotated assignment, an argument of an annotated parameter, an
@@ -748,12 +774,12 @@ ambiguous or invisible model is reported as for `odoo.values`.
 
 | What | Why | Instead |
 |---|---|---|
-| the bare string in a module without a regular top-level class | the rewrite runs from a class's analysis, as for `odoo.values` | `Annotated[list, "odoo.domain.x"]` (its type and the consumers' checks work; a `return` there is not checked) |
-| the bare string in an expression (`cast("odoo.domain.x", d)`), a type alias | an expression becomes a type later; mypy drops `Annotated` metadata in an alias | `cast(Annotated[list, "odoo.domain.x"], d)`, annotate the helper or variable |
+| `Annotated[list, "odoo.domain.x"]` in a type alias | mypy drops `Annotated` metadata in an alias | the bare string (`D: TypeAlias = "odoo.domain.x"`) |
+| a `return` of a function annotated with a type alias of a domain | the wrapped places are found by the annotation's text | annotate the function with the bare string |
 | `Annotated[dict \| Sequence \| ..., "odoo.domain.x"]` | a `Sequence` does not go to `search()` on Odoo 19+ | `list` or `Domain` (another base is a `valid-type` error) |
 | literals in nested positions (`"list[odoo.domain.x]"`, dict values) | only expressions that are a domain are checked | annotate a variable or helper that holds one domain |
 | a literal default of a parameter | rare (a mutable default) | — |
-| a literal in an annotated attribute of a class that is no Odoo model (dataclass...) | the check would hide the value from those classes' plugins | the consumers check it |
+| a call as the class-level value of an annotated attribute of a class that is no Odoo model (`field(default_factory=...)`, `Domain([...])`) | the class's own plugin reads the call (a dataclass's `field`) | the constructor and the assignments are checked |
 | arguments of `super()._helper(domain)` | mypy calls no plugin hook for `super()` calls | assign the literal to an annotated variable first |
 | domains in action dicts (`{"res_model": ..., "domain": [...]}`) | another mechanism | — |
 

@@ -38,12 +38,14 @@ from mypy.nodes import (
     Expression,
     LambdaExpr,
     MemberExpr,
+    MypyFile,
     NameExpr,
     RefExpr,
     StrExpr,
     Var,
 )
 from mypy.plugin import (
+    AttributeContext,
     CheckerPluginInterface,
     FunctionContext,
     FunctionSigContext,
@@ -69,7 +71,15 @@ from mypy.types import (
 # After mypy.types: mypy.checker and mypy.types import each other at import time.
 from mypy.checker import TypeChecker
 
-from odoo_typing.annotations import ASSIGN, ASSIGN_BUILT, RETURN, SEARCH, SEARCH_ALIAS
+from odoo_typing.annotations import (
+    ASSIGN,
+    ASSIGN_BUILT,
+    RETURN,
+    SEARCH,
+    SEARCH_ALIAS,
+    is_wrapped,
+    member_values,
+)
 from odoo_typing.classes import domain_type_model, receiver_type
 from odoo_typing.domain_parts import DomainParts, TypedPart
 from odoo_typing.domains import (
@@ -123,6 +133,8 @@ class DomainHooks(Hooks):
     def __init__(self, models: Models, recordsets: RecordsetHooks) -> None:
         super().__init__(models)
         self._recordsets = recordsets
+        # The attribute assignments of the module checked last (see assigned_attribute).
+        self._member_values: tuple[MypyFile | None, dict[int, Expression]] = (None, {})
 
     # -- consumers ---------------------------------------------------------------------------
 
@@ -198,6 +210,55 @@ class DomainHooks(Hooks):
         consumer = Consumer(addon_name, model, mode, mismatch, whole=kind != ASSIGN_BUILT)
         self._check(expression, consumer, ctx.api)
         return ctx.default_return_type
+
+    def assigned_attribute(
+        self,
+        declared: Type,
+        then: Callable[[AttributeContext], Type] | None,
+        ctx: AttributeContext,
+    ) -> Type:
+        """An attribute declared ``odoo.domain.<model>``: check the value assigned to it.
+
+        ``payload.domain = [...]`` and ``self.domain = [...]``, of any class (a dataclass,
+        a plain class, a model's attribute that is no field), in any file of an addon:
+        mypy asks the attribute's hook for the target of an assignment, and the value is
+        found in the module's statements. Its parts are typed here, ahead of mypy (which
+        types the target first), in a type map and with errors of their own that are
+        dropped: mypy checks the value itself right after. The literal may be a piece
+        of the domain (the attribute may be extended in place later), so its structure
+        as a whole is not checked.
+
+        Args:
+            declared: The attribute's own type (mypy hands the hook a simplified union,
+                without the marker of the model).
+            then: The attribute's other hook, if it has one.
+            ctx: mypy's context.
+        """
+        result = then(ctx) if then is not None else ctx.default_attr_type
+        model = domain_type_model(declared) if ctx.is_lvalue else None
+        addon_name = self.registry.addon_name_for_path(ctx.api.path) if model else None
+        if model is None or addon_name is None:
+            return result
+        checker = type_checker(ctx.api)
+        value = self._member_value(checker.tree, ctx.context)
+        if value is None or is_wrapped(value):
+            return result  # an annotated assignment is checked through its wrapper
+
+        def mismatch(other: str) -> str:
+            return f'Domain of Odoo model "{other}" assigned to a domain of Odoo model "{model}"'
+
+        consumer = Consumer(addon_name, model, Mode(search=False), mismatch, whole=False)
+        with checker.local_type_map:
+            with checker.msg.filter_errors():
+                checker.expr_checker.accept(value, type_context=declared)
+            self._check(value, consumer, ctx.api)
+        return result
+
+    def _member_value(self, tree: MypyFile, target: Context) -> Expression | None:
+        """The value assigned to an attribute target of the module being checked."""
+        if self._member_values[0] is not tree:
+            self._member_values = (tree, member_values(tree))
+        return self._member_values[1].get(id(target))
 
     def annotated_parameters(
         self,

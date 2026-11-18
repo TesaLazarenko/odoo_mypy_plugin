@@ -187,11 +187,13 @@ class SaleOrder(models.Model):
   goes (`search()`, a parameter, `any`, `domain=`). A domain of a parent model, a mixin
   or a delegated model fits too. `Annotated[list, ...]` and, on Odoo 19+,
   `Annotated[Domain, ...]` are the forms for variables that use `.append()` or `&`.
-- The model is named with `_` for `.` (`sale_order`). The bare string works in
-  annotations of functions and variables in a module that has a regular class; in a
-  module of plain functions and in `cast(...)` use `Annotated[dict, "odoo.values.x"]`
-  (`Annotated[list, "odoo.domain.x"]`), which other tools read as a plain `dict`
-  (`list`). A type alias of either is a plain `dict` (`list`).
+- The model is named with `_` for `.` (`sale_order`). The annotations work in every
+  file of an addon, not only in model classes: a module of plain functions
+  (`tools/helpers.py`), the fields of a dataclass, a `NamedTuple` or a `TypedDict`,
+  `cast(...)`, a type alias. A domain given to the constructor of such a class or
+  assigned to its attribute (`payload.domain = [...]`) is checked like one that is
+  returned. `Annotated[dict, "odoo.values.x"]` (`Annotated[list, "odoo.domain.x"]`) is
+  the form other tools read as a plain `dict` (`list`).
 
 [The rules, and what is not checked in them →](docs/checks.md#annotated-helpers-odoovalues-and-odoomodel)
 

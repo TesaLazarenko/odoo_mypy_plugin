@@ -27,8 +27,9 @@ a plain ``dict`` in either form: mypy drops the metadata of ``Annotated`` there.
 The same pass wraps the expressions whose domains the plugin checks, since mypy has no
 hook on a ``return`` or an assignment: ``return E`` in a function annotated to return a
 domain, the value of an annotated assignment ``x: "odoo.domain.x" = E`` (in a module, a
-function or the body of an Odoo model class) and ``return E`` in the method a field
-names in ``search=`` become ``__build_class__(E, "<kind>", "<alias or model>")``. A
+function or the body of a class; in a class that is no Odoo model, not a value that is a
+call, which the class's own plugin may read: ``field(...)``) and ``return E`` in the
+method a field names in ``search=`` become ``__build_class__(E, "<kind>", "<alias or model>")``. A
 function hook on ``builtins.__build_class__`` (which Python calls itself, never code)
 checks ``E``, and a signature hook makes the call an identity, so mypy types the
 statement as before (:mod:`odoo_typing.hooks.domains`). The name is bound to the
@@ -106,6 +107,8 @@ __all__ = [
     "Wrapping",
     "annotation_alias",
     "domain_annotation_alias",
+    "is_wrapped",
+    "member_values",
     "rewrite_annotations",
     "trigger_alias",
 ]
@@ -134,9 +137,10 @@ class Wrapping:
     Attributes:
         wrapper: The node of ``builtins.__build_class__``, which the wrapper's name is
             bound to.
-        model_classes: The names of the module's top-level Odoo model classes (their
-            annotated class attributes are wrapped; those of other classes, such as
-            dataclasses, are not: their plugins read the value).
+        model_classes: The names of the module's top-level Odoo model classes (every
+            annotated class attribute of theirs is wrapped; of another class, such as a
+            dataclass, only one whose value is no call: its plugin may read the call,
+            ``field(...)``).
         search_methods: Class name to the methods named in ``search=`` of the fields
             of the class's model (:class:`SearchMethod`).
     """
@@ -377,7 +381,9 @@ class _Wrapper:
             if isinstance(func, FuncDef):
                 self.function(func, search.get(func.name))
             elif isinstance(statement, AssignmentStmt):
-                if model_class:
+                # A call in another class may be read by that class's plugin
+                # (``field(...)`` of a dataclass): only its other values are wrapped.
+                if model_class or not isinstance(statement.rvalue, CallExpr):
                     self._assignment(statement, body)
             else:
                 self.block([statement], None, body, wrap_assignments=model_class)
@@ -395,7 +401,7 @@ class _Wrapper:
 
     def _wrap(self, expression: Expression, kind: str, alias: str) -> Expression:
         """``__build_class__(expression, kind, alias)``, placed where ``expression`` is."""
-        if _is_wrapped(expression):
+        if is_wrapped(expression):
             return expression
         callee = NameExpr(TRIGGER)
         callee.node = self._wrapping.wrapper
@@ -408,7 +414,45 @@ class _Wrapper:
         return call
 
 
-def _is_wrapped(expression: Expression) -> bool:
+def member_values(tree: MypyFile) -> dict[int, Expression]:
+    """The value each attribute assignment of a module gives, by the ``id`` of its target.
+
+    ``x.attr = E`` and ``x.attr = y.attr = E``, in every block, function and class of the
+    module; not the targets inside a tuple (``x.a, x.b = ...``).
+    """
+    found: dict[int, Expression] = {}
+    _member_values(tree.defs, found)
+    return found
+
+
+def _member_values(statements: Iterable[Statement], found: dict[int, Expression]) -> None:
+    for statement in statements:
+        if isinstance(statement, AssignmentStmt):
+            value = statement.rvalue
+            found.update(
+                (id(target), value)
+                for target in statement.lvalues
+                if isinstance(target, MemberExpr)
+            )
+        else:
+            _member_values(_inner_statements(statement), found)
+
+
+def _inner_statements(statement: Statement) -> list[Statement]:
+    """The statements inside a function, a class or a compound statement."""
+    if isinstance(statement, OverloadedFuncDef):
+        return [*statement.items, *([statement.impl] if statement.impl is not None else [])]
+    if isinstance(statement, Decorator):
+        return statement.func.body.body
+    if isinstance(statement, FuncDef):
+        return statement.body.body
+    if isinstance(statement, ClassDef):
+        return statement.defs.body
+    return [inner for block in _blocks(statement) for inner in block.body]
+
+
+def is_wrapped(expression: Expression) -> bool:
+    """Whether an expression is the plugin's wrapper of a checked domain."""
     return (
         isinstance(expression, CallExpr)
         and isinstance(expression.callee, NameExpr)

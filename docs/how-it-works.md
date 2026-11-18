@@ -432,8 +432,27 @@ their types:
   analyzes a module from source on several paths that ask the plugin nothing else
   first: a cached module whose dependency changed, the other modules of an import
   cycle, `--num-workers`, a daemon update. An annotation analyzed before the first class
-  waits for mypy's next pass, as a name mypy cannot find yet does. A module without
-  such a class is never rewritten (`Annotated[...]` works there).
+  waits for mypy's next pass, as a name mypy cannot find yet does.
+- **Bare strings mypy looks up itself.** The rewrite reaches the statements of a module
+  that has a regular class, and no hook is called for a module of plain functions before
+  mypy analyzes its annotations. So the name is also made findable
+  (`odoo_typing.alias_names`): `builtins` gets a class `odoo` whose attributes `values`,
+  `model` and `domain` are `Any` (for a module that binds no `odoo`), and the `odoo`
+  package gets the same three as variables (for one that imports it). Through a name
+  that is `Any` mypy accepts any further name and makes a symbol whose full name is the
+  whole path (`builtins.odoo.values.res_partner`); it then asks the plugin for the
+  type-analysis hook of that full name, which gives the type. This covers every place
+  mypy analyzes a type: a module without a regular class, a class-syntax `NamedTuple` /
+  `TypedDict` (whose fields mypy analyzes only once, so the type is given at once),
+  `cast(...)`, a type alias, a class in a function. The symbols are stored with
+  `builtins` and `odoo` in mypy's cache, so a module analyzed in a later run (alone, or
+  because a dependency changed) finds them before any hook is asked; they are bound from
+  the plugin's hook lookups, the first of which is that of `builtins`'s own first class.
+  `odoo` is a class, not a variable, so that `odoo.tools` in a module that forgot
+  `import odoo` is still an error. The first such annotation of a module that no class
+  made the plugin rewrite triggers the rewrite (for the domains it wraps): mypy
+  analyzes annotated statements from there on, so each `return` and value is wrapped
+  before mypy reaches it.
   `Annotated[dict, "..."]` needs no rewriting: the plugin's hook for `typing.Annotated`
   reads its metadata, and hands every other `Annotated` back to mypy unchanged.
 - **`odoo.values.<model>`** is a named `TypedDict` (`total=False`) created in the
@@ -498,14 +517,26 @@ How [annotated domains](checks.md#annotated-domains-odoodomain) are typed and ch
   `list[Any]`, `Domain`, the marker, `None` or `Any`, for which the identity is
   transparent (it passes no type context). The name is bound to the builtin by hand:
   the statements of a module above its first class are analyzed before the rewrite.
-  Annotated class attributes are wrapped only in Odoo model classes (a dataclass's
-  plugin reads the value of a field). Whether an annotated variable is a whole domain
+  An annotated class attribute of a class that is no Odoo model is wrapped unless its
+  value is a call (a dataclass's plugin reads `field(...)`). Whether an annotated variable is a whole domain
   where it is assigned (no later `+=`, `append`, `extend`, `insert` in its scope, nor a
   rebinding that uses it as a piece of a list: `x = x + [...]`, `x = [*x, ...]`; one that
   uses it as a whole domain, `x = AND([x, ...])`, keeps it whole) is decided by the same
   pass, by name: some statements of the module are analyzed already, others
   not, so the function walk of the checks (which keys variables by their symbol) could
   not tell one variable apart there.
+- **Attributes and constructors.** `payload.domain = [...]` has no annotation of its
+  own to wrap, in a module that may have none at all. mypy asks the hook of the
+  attribute (`module.Payload.domain`) for the target of an assignment too: an attribute
+  whose variable has the marker in its type gets a hook that finds the assigned value in
+  the module's statements (an index of its attribute assignments, made once per tree)
+  and checks it. mypy types the target before the value, so the hook types the value
+  first itself, in a local type map and with its errors dropped; mypy checks it right
+  after. The hook reads the variable's own type: the one mypy hands it went through
+  `make_simplified_union`, which drops the marker (a subclass of `list[Any]`). A call of
+  a class by name is checked like a call of a function, against the `__init__` the
+  class has (the one mypy's dataclass plugin makes, too) or its `__new__` (a
+  `NamedTuple`).
 - **The parts of a domain.** A consumer (a search method, the wrapper, an annotated
   parameter, an `any` term, `domain=`) walks the expression into literal lists and
   typed parts (`odoo_typing.domain_parts`): the literals are checked term by term, a

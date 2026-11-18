@@ -731,3 +731,40 @@ def test_dmypy_bare_strings_in_a_module_of_functions_follow_edits(
         'plain.py:6: note: Revealed type is "dep_mod.models.ThingExtra"',
     ]
     assert again == after
+
+
+HOLDER = """
+from dataclasses import dataclass
+
+@dataclass
+class Holder:
+    domain: "odoo.domain.x_thing"
+"""
+ASSIGNS = """
+from .holder import Holder
+
+def fill(holder: Holder) -> None:
+    holder.domain = [("extra", "=", 1)]
+    Holder([("extra", "=", 2)])
+"""
+
+
+def test_dmypy_domains_of_attributes_follow_edits(daemon: Daemon, tmp_path: Path) -> None:
+    root = tmp_path / "addons"
+    (root / "my_mod/holder.py").write_text(HOLDER)
+    (root / "my_mod/assigns.py").write_text(ASSIGNS)
+    (root / "my_mod/__init__.py").write_text("from . import user, holder, assigns\n")
+    before = daemon.check()
+    _append(root / "dep_mod/models.py", EXTENSION)  # the field "extra"
+    after = daemon.check()
+    (root / "my_mod/holder.py").write_text(HOLDER.replace("x_thing", "x_user"))
+    other = daemon.check()
+
+    missing = 'error: Odoo model "x.thing" has no field "extra" in domain  [odoo-domain]'
+    user = 'user.py:8: note: Revealed type is "dep_mod.models.Thing"'
+    assert before == [f"assigns.py:5: {missing}", f"assigns.py:6: {missing}", user]
+    assert after == [user.replace("Thing", "ThingExtra")]
+    # The daemon reports the modules in the order it checked them again.
+    assert sorted(other) == sorted(
+        [line.replace("x.thing", "x.user") for line in before[:2]] + after
+    )

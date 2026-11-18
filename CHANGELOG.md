@@ -349,9 +349,11 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   `Annotated[dict, "odoo.values.<model>"]` and `"odoo.values.<model>"` are the model's
   `vals` (a named `TypedDict`: keys and value types checked wherever the values are
   built; `vals.get(...)` typed per key), `"odoo.model.<model>"` its records as
-  `env[...]` gives them. Bare strings work in the annotations of functions, variables
-  and type comments of a module that has a regular class, on every path mypy analyzes
-  it (incremental runs, import cycles, `--num-workers`, the daemon). The keys are the
+  `env[...]` gives them. Bare strings work wherever mypy reads a type in a file of an
+  addon, not only in model classes: a module of plain functions (`tools/helpers.py`),
+  the fields of a dataclass, a class-syntax `NamedTuple` or `TypedDict`, `cast(...)`, a
+  type alias, a class in a function; on every path mypy analyzes a module (incremental
+  runs, import cycles, `--num-workers`, the daemon). The keys are the
   fields any addon on the addons paths gives the model and its `_inherit` parents and
   mixins, so `super()` in a later addon keeps them; a field added anywhere makes mypy
   check the annotating files again. `create` (also a list of values, except through
@@ -365,7 +367,11 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   goes (search methods, annotated parameters, also of inherited methods and of a
   mixin's method called on a model that inherits it, `any`, `domain=`, returns,
   assignments); a variable without an annotation has the model its assignments agree
-  on.
+  on. An attribute of a class that is no model is a consumer too: a literal given to
+  the constructor (`Payload(domain=[...])` of a dataclass, a `NamedTuple`, a class with
+  its own `__init__`), assigned to the attribute (`payload.domain = [...]`,
+  `self.domain = [...]`) or written as its class-level value is checked against the
+  attribute's model.
 
 ### Daemon
 

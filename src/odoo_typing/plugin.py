@@ -125,6 +125,7 @@ from odoo_typing.annotations import (
     Wrapping,
     rewrite_annotations,
 )
+from odoo_typing.classes import domain_type_model
 from odoo_typing.compat import profile_for
 from odoo_typing.conditions import narrow_conditions
 from odoo_typing.config import ConfigError, Settings, load_settings
@@ -834,8 +835,29 @@ class OdooPlugin(Plugin):
                 hook = _any_attribute
             if hook is None and self._models.profile.is_field_class(fullname):
                 hook = self._field_objects.attribute  # ``_fields["code"].size``
+            declared = self._held_domain(fullname)  # ``payload.domain = [...]``
+            if declared is not None:
+                hook = partial(self._domains.assigned_attribute, declared, hook)
             found[fullname] = _soft(hook, _default_attribute, f"the hook of {fullname}")
         return found[fullname]
+
+    def _held_domain(self, fullname: str) -> Type | None:
+        """The type of an attribute of a class that is a domain of a model by its type.
+
+        Declared ``odoo.domain.<model>``, or given a value declared so
+        (``self.domain = domain`` of an annotated parameter). The variable's own type:
+        mypy simplifies the union it hands to the attribute's hook, which drops the
+        marker of the model.
+        """
+        symbol = (
+            lookup_fully_qualified(fullname, self._modules, raise_on_missing=False)
+            if self._modules
+            else None
+        )
+        variable = symbol.node if symbol is not None else None
+        if isinstance(variable, Var) and domain_type_model(variable.type) is not None:
+            return variable.type
+        return None
 
     def _kept_records(self, ctx: AttributeContext) -> Type:
         """Records kept on a class that is no model, with the fields their function asked for."""
@@ -982,7 +1004,7 @@ class OdooPlugin(Plugin):
         if fullname == HASATTR:
             return self._asked.has_attribute
         if factory is None:
-            parameters = domain_parameters(self._declared_signature(fullname, method=False))
+            parameters = domain_parameters(self._called_signature(fullname))
             if parameters:
                 name = fullname.rpartition(".")[2]
                 return partial(self._domains.annotated_parameters, parameters, name, None)
@@ -1083,6 +1105,25 @@ class OdooPlugin(Plugin):
         """The declared type of the method or function a hook is asked for, if mypy has it."""
         found = self._declared_function(fullname, method)
         return found.type if found is not None else None
+
+    def _called_signature(self, fullname: str) -> Type | None:
+        """The declared type of what a call by name runs: a function, or a class's constructor.
+
+        ``Payload(domain=[...])`` runs the ``__init__`` its class has (also the one mypy
+        makes for a dataclass), or its ``__new__`` (a ``NamedTuple``).
+        """
+        found = self._declared_signature(fullname, method=False)
+        if found is not None or not self._modules:
+            return found
+        node = lookup_fully_qualified(fullname, self._modules, raise_on_missing=False)
+        info = node.node if node is not None else None
+        if not isinstance(info, TypeInfo):
+            return None
+        for name in ("__init__", "__new__"):
+            method = info.get_method(name)
+            if method is not None and method.info.fullname != "builtins.object":
+                return method.type
+        return None
 
     def _declared_function(self, fullname: str, method: bool) -> FuncDef | None:
         """The method or function a hook is asked for, if mypy has it.
