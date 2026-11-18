@@ -153,6 +153,12 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   `m.state not in ('cancel')` (a string, not a tuple) and `l.state in 'validate'`.
 - `record.id.origin` reads the `NewId` of a new record: the id is `NewId` there, not
   `int` (`new_record_ids = false`).
+- A `Reference` field whose selection is a method is a record of a model known at run
+  time (`Any`, `dynamic_env = "base"`: `BaseModel`): reading its fields
+  (`wizard.resource_ref.collaborator_ids`) is no `"BaseModel" has no attribute` error.
+- The rows of `read()` / `search_read()` take the keys the function around the call
+  writes into dicts, and a key it pops is not required: completing rows for the client
+  (`t.pop("arch_db")`, `t["numOfEl"] = ...`) is no error.
 
 - Data built from displays is not typed from its first values: a variable bound to a
   display of dicts or to a value with an empty display inside (`[{...}, {...}]`,

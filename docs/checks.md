@@ -89,7 +89,10 @@ plugin:
   list return a list of `TypedDict`s with `id` and those fields, typed as `read()` gives
   them (`partner_id` is `tuple[int, str] | Literal[False]`, x2many fields `list[int]`).
   A required field reads without `False` there too (`required_values`): a required
-  `Many2one` is `tuple[int, str]` (`int` with `load=None`).
+  `Many2one` is `tuple[int, str]` (`int` with `load=None`). Code completes the rows it
+  sends to the client: a key that the function around the call writes into a dict
+  (`row["preview"] = ...`, `setdefault`, `update({...})`) is a key of the rows (`Any`), and
+  one it removes (`row.pop("arch_db")`, `del`) is not required.
 - **`env[records._name]`** has the type of `records` (`self` in a mixin is the model
   that uses it at run time).
 - **`self.env.cr`** has the methods of a cursor (`execute`, `fetchall`, `dbname`): Odoo
@@ -539,8 +542,10 @@ creates.
 - `Binary` and `Image` read as `bytes | Literal[False]` (Odoo 18-19 declare them without
   a value type; Odoo 20's own type is kept), except computed fields that are not stored:
   Odoo uses those to hold any value for a widget (a dict), so they stay `Any`.
-- `Reference` reads as a record of the models of its literal `selection` (`BaseModel`
-  when the selection is a method), or `False`. Odoo types it as the `str` of
+- `Reference` reads as a record of the models of its literal `selection`, or `False`.
+  A selection given by a method names the models at run time: the record is `Any` then
+  (`| Literal[False]` unless the field is required), as `env[name]` of a name made at
+  run time (`dynamic_env = "base"` keeps `BaseModel`). Odoo types it as the `str` of
   `Selection`, but the value is a record.
 - With `literal_selection = true`, a `Selection` field with literal keys reads as
   `Literal["draft"] | ... | Literal[False]` (see [configuration](configuration.md#options)).

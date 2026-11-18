@@ -47,6 +47,7 @@ from odoo_typing.scanner import (
     scan_addon,
 )
 from odoo_typing.stamps import UNREADABLE, Stamp, Stamps, matches, read_index, stamp, unchanged
+from odoo_typing.written_keys import WrittenKeys, written_keys
 
 __all__ = ["NO_REFERENCES", "FileReferences", "IndexLoader", "ScanCache", "ScannedAddons"]
 
@@ -400,6 +401,11 @@ class ScannedAddons:
         """
         tree = self._parsed_tree(path)
         return call_strings(tree, line) if tree is not None else frozenset()
+
+    def written_keys(self, path: str | Path, line: int) -> WrittenKeys:
+        """The keys the function around a line writes into dicts (see written_keys)."""
+        tree = self._parsed_tree(path)
+        return written_keys(tree, line) if tree is not None else WrittenKeys()
 
     def id_origin_reads(self, path: str | Path) -> frozenset[tuple[int, int, int]]:
         """Where a source file reads ``x.id.origin``: the line and columns of each ``x.id``."""

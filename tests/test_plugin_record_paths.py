@@ -290,3 +290,37 @@ def test_mapped_of_the_field_records_are_filtered_by_has_no_empty_value(
         # Through a relational field the other lines' labels are mapped too.
         '10: note: Revealed type is "list[str | Literal[False]]"',
     ]
+
+
+ROWS_COMPLETED = """
+from odoo import fields, models
+
+class Order(models.Model):
+    _name = "t.order"
+
+    name = fields.Char()
+    note = fields.Text()
+
+    def rows(self) -> list:
+        rows = self.search_read([], ["name", "note"])
+        for row in rows:
+            note = row.pop("note")
+            row["preview"] = note
+            row.update({"size": 1})
+            row["nmae"]
+        reveal_type(rows[0].get("name"))
+        return rows
+"""
+
+
+def test_read_rows_the_function_completes(run_mypy: RunMypy) -> None:
+    """Rows sent to the client: the keys the function adds are there, popped ones optional."""
+    result = run_mypy({"my_mod": {"models.py": ROWS_COMPLETED}})
+
+    messages = result.messages("my_mod/models.py")
+    assert len(messages) == 2
+    assert messages[0].startswith('16: error: "nmae" is not a valid TypedDict key; expected one of')
+    for key in ("id", "name", "note", "preview", "size"):
+        assert f'"{key}"' in messages[0]
+    # ``name`` stays required: ``get`` gives no ``None``.
+    assert messages[1] == '17: note: Revealed type is "str | Literal[False]"'

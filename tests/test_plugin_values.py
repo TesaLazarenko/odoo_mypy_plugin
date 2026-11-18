@@ -73,7 +73,8 @@ def test_binary_and_reference_fields_read_typed(run_mypy: RunMypy, odoo_version:
     assert messages[2].startswith('12: note: Revealed type is "odoo.addons.base.')
     assert "t_base.models.Line" in messages[2]
     assert messages[2].endswith('| Literal[False]"')
-    assert messages[3].endswith('BaseModel | Literal[False]"')
+    # A selection the scan cannot read: records of a model known only at run time.
+    assert messages[3] == '13: note: Revealed type is "Any | Literal[False]"'
     computed = "Any" if odoo_version < 20 else declared
     assert messages[4:] == [
         '14: note: Revealed type is "str | Literal[False]"',
@@ -435,4 +436,41 @@ def test_record_id_is_an_int_unless_new_record_ids(
         f'note: Revealed type is "{read}"',
         f'note: Revealed type is "{origin}"',
         *(errors if new and declared else []),
+    ]
+
+
+REFERENCE_FIELDS = """
+from odoo import fields, models
+
+class Wizard(models.Model):
+    _name = "t.wizard"
+
+    target = fields.Reference(selection="_selection_target", required=True)
+    optional = fields.Reference(selection="_selection_target")
+
+    def _selection_target(self):
+        return []
+
+    def use(self) -> None:
+        self.target.collaborator_ids
+        self.optional.collaborator_ids
+"""
+
+
+def test_reference_to_a_model_known_at_run_time(run_mypy: RunMypy) -> None:
+    """Any record of some model; ``dynamic_env = "base"`` keeps records of no model."""
+    plain = run_mypy({"my_mod": {"models.py": REFERENCE_FIELDS}}).messages("my_mod/models.py")
+    base = run_mypy(
+        {"my_mod": {"models.py": REFERENCE_FIELDS}}, options='dynamic_env = "base"\n'
+    ).messages("my_mod/models.py")
+
+    # The field may be empty: a record whose model is not known, or False.
+    assert plain == [
+        '15: error: Item "bool" of "Any | Literal[False]" has no attribute "collaborator_ids"'
+        "  [union-attr]"
+    ]
+    assert [message.partition(": error: ")[2].split('"')[1] for message in base] == [
+        "BaseModel",
+        "BaseModel",
+        "bool",
     ]

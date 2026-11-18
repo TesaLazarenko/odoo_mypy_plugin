@@ -134,7 +134,10 @@ class RecordsetHooks(Hooks):
 
         Each dict has ``id`` and the literal field names, typed as ``convert_to_read``
         returns them (:func:`_read_value`); a name that is not a field is reported
-        (Odoo raises ``ValueError``) on a concrete model.
+        (Odoo raises ``ValueError``) on a concrete model. The keys the function around the
+        call writes into dicts are keys of the rows (``Any``), and those it removes
+        (``pop``, ``del``) are not required (:mod:`odoo_typing.written_keys`): code
+        completes the rows it sends to the client.
         """
         receiver = receiver_type(ctx.type)
         names = literal_strings_argument(ctx, "fields", 0 if method == "read" else 1)
@@ -177,8 +180,15 @@ class RecordsetHooks(Hooks):
                 or self._path_type(receiver, node.value, ctx)
                 or AnyType(TypeOfAny.special_form)
             )
+        # Code completes the rows it sends to the client: the keys the function writes
+        # into dicts are keys of them too, and those it removes are not required.
+        written = self.registry.written_keys(ctx.api.path, ctx.context.line)
+        required_keys = set(items) - written.removed
+        anything = AnyType(TypeOfAny.special_form)
+        for key in written.added | written.removed:
+            items.setdefault(key, anything)
         fallback = checker.named_type("typing._TypedDict")
-        row = TypedDictType(items, set(items), set(), fallback)
+        row = TypedDictType(items, required_keys, set(), fallback)
         return checker.named_generic_type("builtins.list", [row])
 
     def record_path(self, method: str, ctx: MethodContext) -> Type:

@@ -343,12 +343,20 @@ class FieldValueHooks(Hooks):
     def _reference_types(
         self, info: FieldInfo | None, records: Instance, api: CheckerPluginInterface
     ) -> list[Type]:
-        """The record types a ``Reference`` field holds: its selection's models."""
+        """The record types a ``Reference`` field holds: its selection's models.
+
+        A selection the scan cannot read (a method, ``_selection_target_model``) names
+        the models at run time: the records are of a model not known here, ``Any`` as
+        for ``env[name]`` of a name made at run time (``dynamic_env = "base"`` keeps
+        ``BaseModel``, records of no model, whose every field is an unknown attribute).
+        """
         found_base = next(
             (item for item in records.type.mro if item.fullname == self._profile.base_model), None
         )
         base: Type = (
-            instance_of(found_base) if found_base is not None else AnyType(TypeOfAny.special_form)
+            instance_of(found_base)
+            if found_base is not None and self._settings.dynamic_env != "any"
+            else AnyType(TypeOfAny.special_form)
         )
         addon_name = self.registry.addon_name_for_path(api.path)
         if info is None or not info.selection or "selection" in info.dynamic or not addon_name:
