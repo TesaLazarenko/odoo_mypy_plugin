@@ -210,7 +210,7 @@ from odoo_typing.records import RecordStore, load_index
 from odoo_typing.references import RECORD_PATH_METHODS
 from odoo_typing.registry import Registry
 from odoo_typing.scan_store import ScanStore
-from odoo_typing.scanner import LOG_ACCESS_USERS, AnnotationAlias
+from odoo_typing.scanner import DOMAIN, LOG_ACCESS_USERS, AnnotationAlias
 from odoo_typing.stamps import Stamps, stamp
 from odoo_typing.startup import (
     follow_imports_warning,
@@ -452,6 +452,13 @@ class OdooPlugin(Plugin):
                 return []  # never make mypy load the addon again under its configured name
             modules = set(registry.dependency_modules(file.fullname, file.path))
             modules |= registry.inherited_view_modules(file.path, _imported_modules(file))
+            # ``odoo.domain.*`` is a union with ``Domain`` (Odoo 19+): a file that imports
+            # nothing of Odoo (a dataclass in ``tools/``) must be analyzed after its module.
+            domain_class = self._models.profile.domain_class
+            if domain_class is not None and any(
+                kind == DOMAIN for kind, _ in registry.annotation_aliases(file.path)
+            ):
+                modules.add(domain_class.rpartition(".")[0])
         except Exception as exc:
             report_internal_error(exc, f"finding the models {file.fullname} relies on")
             raise

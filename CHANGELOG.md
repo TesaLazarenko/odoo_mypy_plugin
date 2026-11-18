@@ -371,7 +371,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   the constructor (`Payload(domain=[...])` of a dataclass, a `NamedTuple`, a class with
   its own `__init__`), assigned to the attribute (`payload.domain = [...]`,
   `self.domain = [...]`) or written as its class-level value is checked against the
-  attribute's model.
+  attribute's model. A file that names a domain and imports nothing of Odoo gets the
+  whole type on Odoo 19+ (`Domain | list[Any]`): it was `Any` when mypy reached it
+  before the module of `Domain`.
 
 ### Daemon
 

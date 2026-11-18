@@ -173,7 +173,9 @@ class AnnotationHooks(Hooks):
         )
         if isinstance(found, Pending):
             if not analyzer.final_iteration:
-                analyzer.defer()  # a class of the model is not analyzed yet
+                # A class of the model is not analyzed yet: mypy drops this result and
+                # analyzes the annotation again (``defer()`` alone would keep the ``Any``).
+                analyzer.record_incomplete_ref()
             return AnyType(TypeOfAny.special_form)
         return found if found is not None else AnyType(TypeOfAny.special_form)
 
@@ -208,7 +210,7 @@ class AnnotationHooks(Hooks):
             if node is not None and isinstance(node.node, TypeInfo):
                 domain = Instance(node.node, [])
             elif not analyzer.final_iteration:
-                analyzer.defer()  # odoo.orm.domains is not analyzed yet
+                analyzer.record_incomplete_ref()  # odoo.orm.domains is not analyzed yet
                 return any_type
         if base is not None:
             members = _domain_base(base, domain_class)

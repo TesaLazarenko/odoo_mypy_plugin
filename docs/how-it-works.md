@@ -475,7 +475,10 @@ their types:
 - **`odoo.model.<model>`** is made during semantic analysis by the code that types
   `env["..."]`: the model's last class, or the merged class of the module. When a class
   it needs is not analyzed yet (an import cycle), mypy is asked to analyze the
-  annotation again on its next pass.
+  annotation again on its next pass: the hook records an incomplete reference, so mypy
+  drops the placeholder result (deferring alone would keep it). `odoo.domain.*` does
+  the same for `Domain` (Odoo 19+), and a file that names a domain depends on
+  `Domain`'s module, so that a file that imports nothing of Odoo is analyzed after it.
 - **Incremental mode.** The config data of a file that uses `odoo.values.*` carries a
   digest of the keys of every model its aliases may name (kept with the stamps of the
   files they come from): a field added in any addon makes mypy check every such file

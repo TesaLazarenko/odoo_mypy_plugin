@@ -300,3 +300,34 @@ def test_attributes_assigned_from_a_model_class(run_mypy: RunMypy) -> None:
             '13: error: Odoo model "t.order" has no field "nmae" in domain; did you mean "name"?'
             "  [odoo-domain]",
         ]
+
+
+# A module that imports nothing of Odoo and names only a domain: mypy must analyze it
+# after the module of ``Domain`` (Odoo 19+), whatever else the addon imports.
+ONLY_DOMAIN = """
+from dataclasses import dataclass
+
+@dataclass
+class Holder:
+    domain: "odoo.domain.t_order"
+
+def helper() -> "odoo.domain.t_order":
+    return []
+
+reveal_type(helper)
+Holder([("nmae", "=", 1)])
+"""
+
+
+def test_a_domain_in_a_module_without_odoo_imports(run_mypy: RunMypy, odoo_version: int) -> None:
+    result = run_mypy(_tools(holder=ONLY_DOMAIN), check=["t_use"])
+
+    marker = "t_use.tools.holder.<domain of t_order>"
+    members = f"list[Any] | {marker}"
+    if odoo_version >= 19:
+        members = f"odoo.orm.domains.Domain | {members}"
+    assert result.messages("t_use/tools/holder.py") == [
+        f'11: note: Revealed type is "def () -> {members}"',
+        '12: error: Odoo model "t.order" has no field "nmae" in domain; did you mean "name"?'
+        "  [odoo-domain]",
+    ]
