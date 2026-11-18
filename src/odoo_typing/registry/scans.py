@@ -401,6 +401,20 @@ class ScannedAddons:
         tree = self._parsed_tree(path)
         return call_strings(tree, line) if tree is not None else frozenset()
 
+    def id_origin_reads(self, path: str | Path) -> frozenset[tuple[int, int, int]]:
+        """Where a source file reads ``x.id.origin``: the line and columns of each ``x.id``."""
+        tree = self._parsed_tree(path)
+        if tree is None:
+            return frozenset()
+        return frozenset(
+            (node.value.lineno, node.value.col_offset, node.value.end_col_offset or 0)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr == "origin"
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "id"
+        )
+
     def _parsed_tree(self, path: str | Path) -> ast.AST | None:
         """A source file's tree, kept while the questions are about its same version."""
         resolved = self.addons.real_path(path)

@@ -8,10 +8,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Final
 
-from mypy.nodes import CallExpr, Expression, NameExpr, StrExpr, TypeInfo
+from mypy.errorcodes import HAS_TYPE
+from mypy.errors import ErrorInfo
+from mypy.nodes import ARG_POS, CallExpr, Expression, LambdaExpr, NameExpr, StrExpr, TypeInfo
 from mypy.plugin import CheckerPluginInterface, FunctionContext
-from mypy.types import AnyType, Instance, Type, TypeOfAny, get_proper_type
+from mypy.types import AnyType, CallableType, Instance, Type, TypeOfAny, get_proper_type
 
 from odoo_typing.classes import instance_of
 from odoo_typing.hooks.domains import DomainHooks
@@ -34,6 +37,11 @@ __all__ = ["FieldDefinitionHooks"]
 ONDELETE_POLICIES = ("set null", "restrict", "cascade")
 
 
+# The arguments of a field that Odoo calls, when they are functions, with the records of
+# the model (``determine(field.default, model)``, ``field.compute(records)``).
+CALLED_WITH_RECORDS: Final = ("default", "domain", "selection", "compute")
+
+
 class FieldDefinitionHooks(Hooks):
     """Check field definitions and field decorators; bind relational fields to comodels."""
 
@@ -48,6 +56,8 @@ class FieldDefinitionHooks(Hooks):
         """Check the names a field definition refers to, then type it (``then``)."""
         owner = self._field_owner(ctx) if not errors_hidden(ctx.api) else None
         default = get_proper_type(ctx.default_return_type)
+        if owner is not None and isinstance(ctx.context, CallExpr):
+            self._check_called_lambdas(ctx.context, owner[2], ctx.api)
         if (
             owner is not None
             and isinstance(ctx.context, CallExpr)
@@ -60,6 +70,34 @@ class FieldDefinitionHooks(Hooks):
             if default.type.fullname in self._profile.relational_classes:
                 self._domains.check_field(ctx.context, default.type.name, owner[1], ctx.api)
         return then(ctx) if then is not None else ctx.default_return_type
+
+    @staticmethod
+    def _check_called_lambdas(call: CallExpr, info: TypeInfo, api: CheckerPluginInterface) -> None:
+        """``default=lambda self: self.env.company``: check the lambda with the model's records.
+
+        Odoo calls ``default``, ``domain``, ``selection`` and ``compute`` given as functions
+        with the records of the field's model. Its field classes take them as ``**kwargs``
+        (or a parameter without an annotation), so mypy checked a lambda's body with an
+        ``Any`` parameter. It is checked again here, after the call, with the records: a
+        field read in it may still be unknown in the class body, declared further down or
+        in a class of the same import cycle, which mypy cannot defer there ("Cannot
+        determine type", ``has-type``); that message says nothing of the code and is left
+        out.
+        """
+        checker = type_checker(api)
+        records = Instance(info, [])
+        function = checker.named_type("builtins.function")
+        context = CallableType(
+            [records], [ARG_POS], [None], checker.named_type("builtins.object"), function
+        )
+        for name, value in zip(call.arg_names, call.args, strict=True):
+            if (
+                name in CALLED_WITH_RECORDS
+                and isinstance(value, LambdaExpr)
+                and value.arg_kinds == [ARG_POS]
+            ):
+                with checker.msg.filter_errors(filter_errors=_cannot_determine):
+                    checker.expr_checker.accept(value, type_context=context)
 
     def _field_owner(self, ctx: FunctionContext) -> tuple[str, str, TypeInfo] | None:
         """The model, addon and class whose body a field definition is in, if a model's."""
@@ -248,3 +286,8 @@ def _comodel_expression(ctx: FunctionContext) -> StrExpr | None:
     if len(actuals) == 1 and isinstance(actuals[0], StrExpr):
         return actuals[0]
     return None
+
+
+def _cannot_determine(_file: str, info: ErrorInfo) -> bool:
+    """Mypy's "Cannot determine type" (``has-type``): a type it could not defer for."""
+    return info.code == HAS_TYPE

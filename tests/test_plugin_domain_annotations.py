@@ -310,7 +310,7 @@ from odoo import fields, models
 class Order(models.Model):
     _inherit = "t.order"
 
-    # the lambda's self is not typed: the call is not a typed domain
+    # the lambda's self is the model's records: its call is a typed domain of t.order
     other_ids = fields.One2many("t.line", "order_id", domain=lambda self: self._order_domain())
     lambda_ids = fields.One2many("t.line", "order_id", domain=lambda self: [("lable", "=", 1)])
 
@@ -338,6 +338,8 @@ def test_consumers_check_the_model(run_mypy: RunMypy, odoo_version: int) -> None
         )
 
     expected = [
+        '8: error: Domain of Odoo model "t.order" given to domain= of a field with comodel '
+        '"t.line"  [odoo-domain-model]',
         '9: error: Odoo model "t.line" has no field "lable" in domain  [odoo-domain]',
         f"14: error: {given('search')}",
         f"15: error: {given('search_count')}",

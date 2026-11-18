@@ -160,6 +160,7 @@ function that takes `id: int` is then an `arg-type` error, though the records of
 `search`, `browse` and `create` have an `int`. By default `record.id` reads as `int`;
 `new_record_ids = true` reads it as Odoo declares it, for code that must handle new
 records (use `record._origin.id`, `record.ids`, or test `isinstance(record.id, int)`).
+`record.id.origin` reads as the `NewId` either way: only a new record has it.
 Odoo 19 and 20 leave `record.id` untyped (`Any`), with or without the option.
 
 A computed text field counts as set when Odoo cannot read `False` from it. That is a

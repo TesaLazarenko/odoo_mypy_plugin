@@ -143,6 +143,17 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 
 ### Checks
 
+- The lambdas the ORM calls with records are checked with those records: of
+  `filtered` / `mapped` / `sorted` / `grouped` on Odoo 17 and 18 (the declaration of
+  Odoo 19+: `str | Callable[[record], ...]`, an overload of the two for `mapped` and
+  `grouped`), and the `self` of a field's `default=` / `domain=` / `selection=` /
+  `compute=` lambda on every version. Records of a model the addon cannot see keep an
+  untyped lambda. On 36 addons of Odoo 18 this reports `so.state in ['sale', 'done']`
+  (no `done` in Odoo 18), `a.account_type not in ('asset_bank', 'asset_cash')`,
+  `m.state not in ('cancel')` (a string, not a tuple) and `l.state in 'validate'`.
+- `record.id.origin` reads the `NewId` of a new record: the id is `NewId` there, not
+  `int` (`new_record_ids = false`).
+
 - Data built from displays is not typed from its first values: a variable bound to a
   display of dicts or to a value with an empty display inside (`[{...}, {...}]`,
   `{"lines": []}`, `dict((k, []) for k in keys)`) is `list[Any]` / `dict[Any, Any]`

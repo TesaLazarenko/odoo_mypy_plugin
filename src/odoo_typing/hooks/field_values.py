@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TypeGuard
 
 from mypy.lookup import lookup_fully_qualified
-from mypy.nodes import Context, Expression, FuncDef, MemberExpr, TypeInfo, Var
+from mypy.nodes import Context, Expression, FuncDef, MemberExpr, MypyFile, TypeInfo, Var
 from mypy.plugin import (
     AttributeContext,
     CheckerPluginInterface,
@@ -53,6 +53,9 @@ VALUE_KINDS = frozenset({"Binary", "Reference", "Selection"})
 
 class FieldValueHooks(Hooks):
     """Type what reading a field gives, as the reading addon sees the models."""
+
+    # Where the module checked last reads ``x.id.origin`` (see saved_id).
+    _origin_reads: tuple[MypyFile | None, frozenset[tuple[int, int, int]]] = (None, frozenset())
 
     def get(self, ctx: MethodSigContext) -> FunctionLike:
         """Type reading a field: a relational one gives its comodel's records."""
@@ -173,12 +176,22 @@ class FieldValueHooks(Hooks):
         onchange, and with it every ``values[record.id]`` of a ``dict[int, ...]`` and
         every ``id: int`` parameter is an error for the records of ``search``,
         ``browse`` and ``create`` too. Like ``required_values``, the default reads the
-        value a saved record has.
+        value a saved record has. ``record.id.origin`` is read where the record is a new
+        one (a form's record in an onchange, only a ``NewId`` has ``origin``): there the
+        id is the ``NewId``.
         """
         value = get_proper_type(ctx.default_attr_type)
         if not isinstance(value, UnionType):
             return ctx.default_attr_type
         new_id = self._profile.new_id
+        if self._reads_origin(ctx):
+            ids = [
+                item
+                for item in value.items
+                if isinstance(proper := get_proper_type(item), Instance)
+                and proper.type.fullname == new_id
+            ]
+            return ids[0] if ids else ctx.default_attr_type
         kept = [
             item
             for item in value.items
@@ -190,6 +203,21 @@ class FieldValueHooks(Hooks):
         if len(kept) == len(value.items):
             return ctx.default_attr_type
         return make_simplified_union(kept)
+
+    def _reads_origin(self, ctx: AttributeContext) -> bool:
+        """Whether the ``record.id`` being read is that of ``record.id.origin``."""
+        member = ctx.context
+        if not isinstance(member, MemberExpr):
+            return False
+        tree = type_checker(ctx.api).tree
+        if self._origin_reads[0] is not tree:
+            self._origin_reads = (tree, self.registry.id_origin_reads(tree.path))
+        position = (member.line, member.column, member.end_column or 0)
+        return position in self._origin_reads[1]
+
+    def forget_trees(self) -> None:
+        """Forget what was read from a module's statements (each daemon update)."""
+        self._origin_reads = (None, frozenset())
 
     def _stored(self, expression: Context, api: CheckerPluginInterface) -> bool:
         """Whether a value read types a variable that later values are checked against.

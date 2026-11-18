@@ -182,7 +182,7 @@ from odoo_typing.hooks.mixed_values import (
 )
 from odoo_typing.hooks.model_classes import ModelClassHooks
 from odoo_typing.hooks.models import ODOO_MODEL, ODOO_MODEL_DEPENDS, Models
-from odoo_typing.hooks.recordsets import RecordsetHooks
+from odoo_typing.hooks.recordsets import RECORD_FUNCTIONS, RecordsetHooks
 from odoo_typing.hooks.registered import (
     has_registered_parameter,
     records_signature,
@@ -386,6 +386,7 @@ class OdooPlugin(Plugin):
         # the module object when it merges new statements into it.
         self._alias_builtins = self._alias_package = None
         self._domains.forget_trees()
+        self._values.forget_trees()
         self._hooks.forget_declared()
 
     def _refresh_registry(self) -> None:
@@ -1054,8 +1055,9 @@ class OdooPlugin(Plugin):
             self._declared_signature(fullname, method=True), domain_class
         ):
             widen = partial(self._domains.widen_signature, None)
-        if fullname.rpartition(".")[2] == "filtered":
-            return partial(self._recordsets.filtered_signature, widen)
+        name = fullname.rpartition(".")[2]
+        if name in RECORD_FUNCTIONS:  # ``filtered(lambda line: ...)``: of one record
+            return partial(self._recordsets.function_signature, name, widen)
         if widen is not None:
             return widen
         # ``env["stock.rule"].Procurement(...)``, ``random.Random().sample(records, 2)``

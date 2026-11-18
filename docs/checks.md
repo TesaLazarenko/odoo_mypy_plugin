@@ -72,6 +72,15 @@ plugin:
   records. `filtered("default_code").mapped("default_code")` is `list[str]`: the
   records kept have the field set (a path through a relational field maps the values of
   other records too, so it keeps `False`).
+- **The functions the ORM calls with records** are checked with those records: the
+  parameter of `filtered(lambda line: ...)`, `mapped(...)`, `sorted(key=...)` and
+  `grouped(...)` is a record of the receiver (Odoo 17 and 18 declare no type for it;
+  19+ declare `Callable[[Self], ...]`), and the `self` of a field's `default=`,
+  `domain=`, `selection=` and `compute=` lambda is the model's records (Odoo calls them
+  with those). A misspelled field in the lambda is an error, a field of a model the addon
+  cannot see (`env["iot.device"]` of an optional addon) is not. In a field's lambda,
+  mypy's "Cannot determine type" (a field declared further down the class, or in a
+  class of the same import cycle) is left out: mypy cannot defer the class body.
 - **`mapped(lambda r: r.amount)`** is `list[float]`, and the function's records when it
   returns records. Odoo 19 and 20 declare `list[T] | BaseModel` for both, which fits no
   parameter that takes a list (`sum(...)`, `", ".join(...)`). `mapped(name)` of a path

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from typing import Final
 
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import (
+    ARG_POS,
     CallExpr,
     Context,
     Expression,
@@ -19,17 +21,21 @@ from mypy.nodes import (
     TupleExpr,
     TypeInfo,
 )
-from mypy.plugin import MethodContext, MethodSigContext
+from mypy.plugin import CheckerPluginInterface, MethodContext, MethodSigContext
 from mypy.types import (
     AnyType,
     CallableType,
     FunctionLike,
     Instance,
     LiteralType,
+    NoneType,
+    Overloaded,
     TupleType,
     Type,
     TypedDictType,
     TypeOfAny,
+    TypeVarId,
+    TypeVarType,
     UnionType,
     get_proper_type,
 )
@@ -67,12 +73,15 @@ from odoo_typing.scanner import FieldInfo
 from odoo_typing.searched import domain_argument, restricted_fields
 from odoo_typing.vals import RELATIONAL_CLASSES
 
-__all__ = ["RecordsetHooks"]
+__all__ = ["RECORD_FUNCTIONS", "RecordsetHooks"]
 
 ITERATOR = "typing.Iterator"
 FIELDS = "_fields"
 # The module that names every field class of Odoo (``odoo.fields.Float``).
 FIELDS_MODULE = "odoo.fields"
+# The recordset methods that take a field name or a function of one record, and the
+# parameter: Odoo 17 and 18 leave it unannotated, 19+ declare ``str | Callable[[Self], ...]``.
+RECORD_FUNCTIONS: Final = {"mapped": "func", "filtered": "func", "grouped": "key", "sorted": "key"}
 
 
 class RecordsetHooks(Hooks):
@@ -407,16 +416,86 @@ class RecordsetHooks(Hooks):
             value = checker.expr_checker.accept(expression)
         return None if errors.has_new_errors() else value
 
-    def filtered_signature(
-        self, then: Callable[[MethodSigContext], FunctionLike] | None, ctx: MethodSigContext
+    def function_signature(
+        self,
+        method: str,
+        then: Callable[[MethodSigContext], FunctionLike] | None,
+        ctx: MethodSigContext,
     ) -> FunctionLike:
+        """The function a recordset method takes: of one record of the receiver.
+
+        Odoo 17 and 18 declare no type for it (``def mapped(self, func)``), so the
+        parameter of ``filtered(lambda line: ...)`` was ``Any`` and nothing in the lambda
+        was checked. Odoo calls it with each record of ``self`` (``func(rec)``) and takes a
+        field name instead; the signature is what Odoo 19 declares: ``filtered`` and
+        ``sorted`` (also ``None``) take ``str | Callable[[record], object]``, ``mapped`` and
+        ``grouped`` an overload of the name (their declared result) and of the function,
+        whose result gives theirs (``mapped``: a list or records, see
+        :meth:`_mapped_values`; ``grouped``: a dict from it to records). On Odoo 19+ the
+        declaration stands; ``filtered`` there may return any value (see
+        :meth:`filtered_signature`). Records of no known model (``BaseModel`` of an
+        ``env[...]`` the addon cannot see) keep ``Any``: every field would be an unknown
+        attribute.
+        """
+        signature = then(ctx) if then is not None else ctx.default_signature
+        if method == "filtered":
+            signature = self.filtered_signature(signature, ctx)
+        records = receiver_type(ctx.type)
+        name = RECORD_FUNCTIONS[method]
+        if (
+            not isinstance(signature, CallableType)
+            or not isinstance(records, Instance)
+            or not records.type.has_base(self._profile.base_model)
+            or self._models.model_of(records.type) is None  # records of no known model
+            or name not in signature.arg_names
+        ):
+            return signature
+        index = signature.arg_names.index(name)
+        declared = get_proper_type(signature.arg_types[index])
+        if not (isinstance(declared, AnyType) and declared.type_of_any == TypeOfAny.unannotated):
+            return signature
+        api = ctx.api
+        text = api.named_generic_type("builtins.str", [])
+        anything = api.named_generic_type("builtins.object", [])
+        function = api.named_generic_type("builtins.function", [])
+        record = ctx.type  # the receiver's own type: ``Self`` in a mixin stays ``Self``
+
+        def taking(argument: Type) -> list[Type]:
+            return [*signature.arg_types[:index], argument, *signature.arg_types[index + 1 :]]
+
+        if method in {"filtered", "sorted"}:
+            func = CallableType([record], [ARG_POS], [None], anything, function)
+            items: list[Type] = [text, func, *([NoneType()] if method == "sorted" else [])]
+            return signature.copy_modified(arg_types=taking(UnionType(items)))
+        result = TypeVarType(
+            "T",
+            "T",
+            TypeVarId(-2, namespace="odoo_typing.recordsets"),
+            [],
+            anything,
+            AnyType(TypeOfAny.from_omitted_generics),
+        )
+        func = CallableType([record], [ARG_POS], [None], result, function)
+        if method == "mapped":
+            base = self._named(self._profile.base_model, api)
+            if base is None:
+                return signature
+            returned: Type = UnionType([api.named_generic_type("builtins.list", [result]), base])
+        else:
+            returned = api.named_generic_type("builtins.dict", [result, record])
+        by_name = signature.copy_modified(arg_types=taking(text))
+        by_function = signature.copy_modified(
+            arg_types=taking(func), ret_type=returned, variables=[*signature.variables, result]
+        )
+        return Overloaded([by_name, by_function])
+
+    def filtered_signature(self, signature: FunctionLike, ctx: MethodSigContext) -> FunctionLike:
         """``filtered(lambda r: r.partner_id)`` (Odoo 19+): the function may return any value.
 
         Odoo declares ``func: str | Callable[[Self], bool] | Domain`` but keeps the records
         whose result is truthy, and a field value is the usual result; ``bool`` there made
         two errors of each such call (the lambda's ``return-value``, the ``arg-type``).
         """
-        signature = then(ctx) if then is not None else ctx.default_signature
         receiver = receiver_type(ctx.type)
         if (
             not isinstance(signature, CallableType)
@@ -433,6 +512,14 @@ class RecordsetHooks(Hooks):
             return signature
         new = UnionType.make_union(widened) if isinstance(func, UnionType) else widened[0]
         return signature.copy_modified(arg_types=[new, *signature.arg_types[1:]])
+
+    @staticmethod
+    def _named(fullname: str, api: CheckerPluginInterface) -> Instance | None:
+        """A class by full name, if mypy has it (``BaseModel``)."""
+        checker = type_checker(api)
+        node = lookup_fully_qualified(fullname, checker.modules, raise_on_missing=False)
+        info = node.node if node is not None else None
+        return Instance(info, []) if isinstance(info, TypeInfo) else None
 
     def iterate(self, ctx: MethodContext) -> Type:
         """``for record in records`` (Odoo 17): each record has the receiver's type."""
