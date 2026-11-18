@@ -507,6 +507,10 @@ creates.
   under `data` in a manifest, not `demo`) is there wherever the addon is installed, so
   `env.ref("sale.view_order_form", False).id` in `sale` is the view's id. So is a line under
   `if env.ref("sale.x", raise_if_not_found=False):` for every id of `sale`.
+- `if env.ref("other.x", raise_if_not_found=False):` (also `if not ...: return`) guards
+  the ids of `other` when `other` is outside the closure: code that runs only with that
+  addon installed. For an addon of the closure, which is always installed, it proves
+  nothing, and the ids of that addon after it are checked as anywhere.
 - An id whose module is not an addon of the closure is reported only when an addon
   outside it creates it: ids made by Python code (`local_es.x` of a chart template,
   hooks) are not in any data file.

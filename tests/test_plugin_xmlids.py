@@ -55,6 +55,12 @@ class Thing(models.Model):
         reveal_type(self.env.ref("t_base.made_by_code"))
         self.env.user.has_group("t_base.made_by_code")
         reveal_type(self.env.ref("t_base.thing_demo", raise_if_not_found=False))
+
+    def guarded(self) -> None:
+        # The id of an addon of the closure: the test proves nothing, the ids are checked.
+        if not self.env.ref("t_base.thing_one", raise_if_not_found=False):
+            return
+        self.env.ref("t_base.thing_onee")
 """
 
 
@@ -88,6 +94,8 @@ def test_env_ref_types_and_checks_xml_ids(run_mypy: RunMypy, names: OdooNames) -
         '19: note: Revealed type is "Any"',
         # Demo data is only in a database made with it.
         '21: note: Revealed type is "t_use.models.Thing | None"',
+        '27: error: Unknown XML id "t_base.thing_onee"; did you mean "t_base.thing_one"?  '
+        "[odoo-xmlid]",
     ]
 
 

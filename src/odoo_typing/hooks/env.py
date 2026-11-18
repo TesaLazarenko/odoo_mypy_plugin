@@ -340,7 +340,13 @@ class EnvHooks(Hooks):
         closure = self.registry.addons.closure(addon_name)
         if module in closure and (automatic := automatic_model(local)) is not None:
             return automatic
-        if optional or self.registry.guarded(api.path, module_guard(module), xml_id.line):
+        if optional:
+            return None
+        # ``if env.ref("sale.x", raise_if_not_found=False):`` tells that the addon ``sale``
+        # is installed: it says nothing new of an addon of the closure, which always is.
+        if module not in closure and self.registry.guarded(
+            api.path, module_guard(module), xml_id.line
+        ):
             return None
         outside = self.registry.xml_id_outside(name, addon_name)
         if outside is not None and self._models.runs_with_addon(

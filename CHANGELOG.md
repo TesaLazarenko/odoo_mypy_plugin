@@ -341,7 +341,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   `domain = [("state", "=", "draft")]` followed by
   `domain.append(("company_id", "in", companies.ids))` (also `insert`, `extend`, `+=`,
   `+`, and an operator such as `"|"`) is no `arg-type` error.
-- `odoo-xmlid` / `odoo-xmlid-depends`: XML ids of `env.ref(...)`.
+- `odoo-xmlid` / `odoo-xmlid-depends`: XML ids of `env.ref(...)`. After `if not env.ref("m.x", raise_if_not_found=False): return` the other ids
+  of `m` are still checked when `m` is in the `depends` closure (the guard switched the
+  check off for every id of `m` up to the end of the function).
 
 ### Annotated helpers
 
