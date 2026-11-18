@@ -159,6 +159,19 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - The rows of `read()` / `search_read()` take the keys the function around the call
   writes into dicts, and a key it pops is not required: completing rows for the client
   (`t.pop("arch_db")`, `t["numOfEl"] = ...`) is no error.
+- The records of `filtered("field")` have the field set: `for website in
+  self.filtered("homepage_url"): website.homepage_url.startswith("/")` is no error (also
+  chained `filtered("a").filtered("b")`; a path keeps `False`), and a `for` straight over
+  `search(domain)` reads the fields the domain sets.
+- A model's own `display_name = fields.Char(...)` (and `id`) is checked against what
+  Odoo declares on `BaseModel`, not against the `str` that `required_values` reads: no
+  `Incompatible types in assignment ... base class "BaseModel"` error.
+- A later class of a model that delegates (`_inherits`) may declare its own field with
+  the name of a delegated one, as Odoo lets it (`website.page.theme_template_id`).
+- A method decorated with `functools.wraps(...)` is bound when called on an instance:
+  `request.future_response.set_cookie("name", max_age=0)` is no error.
+- A parameter that an Odoo function hands as it is to a function of the same file that
+  handles it when false takes `False` too: `format_date(env, value, lang_code=user.lang)`.
 
 - Data built from displays is not typed from its first values: a variable bound to a
   display of dicts or to a value with an empty display inside (`[{...}, {...}]`,

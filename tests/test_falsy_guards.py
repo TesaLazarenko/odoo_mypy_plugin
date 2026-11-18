@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import ast
+from pathlib import Path
 
 import pytest
 
-from odoo_typing.falsy_guards import guarded_parameters
+from odoo_typing.falsy_guards import FalsyGuards, guarded_parameters
 
 GET_LANG = """
 def get_lang(env, lang_code=None):
@@ -52,3 +53,36 @@ def test_parameters_read_only_where_they_are_true(source: str, expected: set[str
     parameters = {argument.arg for argument in function.args.args}
 
     assert guarded_parameters(function, parameters) == expected
+
+
+HANDED_ON = """
+def get_lang(env, lang_code: str | None = None):
+    if lang_code and lang_code in env:
+        return lang_code
+    return "en_US"
+
+
+def format_date(env, value, lang_code: str | None = None, date_format=False):
+    if not value:
+        return ""
+    lang = get_lang(env, lang_code)
+    return f"{value} {lang}"
+
+
+def format_keyword(env, value, lang_code: str | None = None):
+    return get_lang(env, lang_code=lang_code) + value
+
+
+def format_raw(env, value, lang_code: str | None = None):
+    return used(lang_code)
+"""
+
+
+def test_a_parameter_handed_to_a_function_that_handles_it(tmp_path: Path) -> None:
+    source = tmp_path / "misc.py"
+    source.write_text(HANDED_ON)
+    guards = FalsyGuards()
+
+    assert "lang_code" in guards.of(source, "", "format_date").falsy
+    assert "lang_code" in guards.of(source, "", "format_keyword").falsy
+    assert "lang_code" not in guards.of(source, "", "format_raw").falsy

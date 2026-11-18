@@ -14,7 +14,9 @@ parameter ``p``.
 A parameter is handled as well when every read of it only tests its truth or runs once
 such a test passed: ``get_lang(env, lang_code: str | None = None)`` reads ``lang_code``
 in ``if lang_code and lang_code in langs: lang = lang_code`` alone, so ``False`` does
-what ``None`` does (:func:`guarded_parameters`).
+what ``None`` does (:func:`guarded_parameters`). Handing it on to a function of the same
+file that handles it counts as such a read: ``format_date(env, value, lang_code=None)``
+only calls ``get_lang(env, lang_code)``.
 
 Each file is indexed once (one pass over its lines for ``class`` and ``def`` lines); a
 function's own text is parsed only when a hook asks for it.
@@ -25,6 +27,7 @@ from __future__ import annotations
 import ast
 import re
 import textwrap
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -37,6 +40,9 @@ ALIAS: Final = re.compile(r"^[ \t]+(?P<name>\w+)\s*=\s*(?P<target>\w+)\s*(?:#.*)
 MAX_ALIASES: Final = 4  # ``from_string = to_date``: aliases followed to a ``def``
 NESTED: Final = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 EXITS: Final = (ast.Return, ast.Raise, ast.Continue, ast.Break)
+
+# Whether a call handles the argument at a position (or of a keyword) itself when false.
+Passes = Callable[[ast.Call, int | str], bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,8 +86,24 @@ class FalsyGuards:
         key = (path, owner, name)
         found = self._guards.get(key)
         if found is None:
+            self._guards[key] = NO_GUARD  # a function that hands a parameter back to itself
             found = self._guards[key] = self._read(path, owner, name)
         return found
+
+    def _passes(self, path: Path) -> Passes:
+        """Whether a call to a top-level function of a file handles an argument itself."""
+
+        def passes(call: ast.Call, where: int | str) -> bool:
+            if not isinstance(call.func, ast.Name):
+                return False
+            index = self._index(path)
+            start = index.definitions.get(("", call.func.id)) if index is not None else None
+            if index is None or start is None:
+                return False
+            parameter = _parameter_at(_function_text(index.lines, start), where)
+            return parameter is not None and parameter in self.of(path, "", call.func.id).falsy
+
+        return passes
 
     def _read(self, path: Path, owner: str, name: str) -> Guard:
         index = self._index(path)
@@ -90,7 +112,7 @@ class FalsyGuards:
         for _ in range(MAX_ALIASES):
             start = index.definitions.get((owner, name))
             if start is not None:
-                return _guard(_function_text(index.lines, start))
+                return _guard(_function_text(index.lines, start), self._passes(path))
             target = index.aliases.get((owner, name))
             if target is None:
                 return NO_GUARD
@@ -147,7 +169,24 @@ def _function_text(lines: tuple[str, ...], start: int) -> str:
     return textwrap.dedent("\n".join(lines[start:end]))
 
 
-def _guard(text: str) -> Guard:
+def _parameter_at(text: str, where: int | str) -> str | None:
+    """The parameter of a function's text that a positional index or a keyword gives."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    function = tree.body[0] if tree.body else None
+    if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+        return None
+    arguments = function.args
+    positional = [argument.arg for argument in (*arguments.posonlyargs, *arguments.args)]
+    if isinstance(where, int):
+        return positional[where] if where < len(positional) else None
+    named = [argument.arg for argument in (*arguments.args, *arguments.kwonlyargs)]
+    return where if where in named else None
+
+
+def _guard(text: str, passes: Passes | None = None) -> Guard:
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -191,12 +230,14 @@ def _guard(text: str) -> Guard:
         isinstance(last, ast.Return) and not _is_empty_value(last.value)
     )
     single = len(empty_returns) == 1 and not other_empty and ends
-    falsy |= guarded_parameters(function, parameters)
+    falsy |= guarded_parameters(function, parameters, passes)
     return Guard(frozenset(falsy), frozenset(booleans), frozenset(empty_returns if single else ()))
 
 
 def guarded_parameters(
-    function: ast.FunctionDef | ast.AsyncFunctionDef, parameters: set[str]
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    parameters: set[str],
+    passes: Passes | None = None,
 ) -> set[str]:
     """The parameters every read of which tests their truth, or runs once a test passed.
 
@@ -208,11 +249,12 @@ def guarded_parameters(
     ``if not p:``, the statements after ``if not p: return`` and after ``assert p``.
     Not: a parameter the function binds again, never reads, compares (``p is None``
     tells ``None`` from ``False``), passes on or returns as it is (``return p and
-    p.strip()``), or reads in a function defined inside.
+    p.strip()``), or reads in a function defined inside. Passing it as it is to a call
+    that ``passes`` says handles that argument itself counts as a test.
     """
     found: set[str] = set()
     for name in parameters:
-        reads = _Reads(name)
+        reads = _Reads(name, passes)
         reads.block(function.body, False)
         if reads.count and not reads.other:
             found.add(name)
@@ -222,8 +264,9 @@ def guarded_parameters(
 class _Reads:
     """The reads of one parameter in a function body (see :func:`guarded_parameters`)."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, passes: Passes | None = None) -> None:
         self.name = name
+        self.passes = passes
         self.count = 0
         self.other = False  # a read of the value as it is, or a binding of the name
 
@@ -291,8 +334,31 @@ class _Reads:
             self.expression(node.orelse, proven or self._refutes(node.test), test)
         elif isinstance(node, NESTED):
             self._closed(node)
+        elif isinstance(node, ast.Call) and self.passes is not None:
+            self._call(node, proven)
         else:
             self._operands(node, proven)
+
+    def _call(self, node: ast.Call, proven: bool) -> None:
+        """A call: the parameter handed as it is to one that handles it is a test of it."""
+        assert self.passes is not None
+        self.expression(node.func, proven, False)
+        positional = True
+        for index, argument in enumerate(node.args):
+            positional = positional and not isinstance(argument, ast.Starred)
+            if positional and self._is_parameter(argument) and self.passes(node, index):
+                self.count += 1
+            else:
+                self.expression(argument, proven, False)
+        for keyword in node.keywords:
+            named = keyword.arg
+            if named and self._is_parameter(keyword.value) and self.passes(node, named):
+                self.count += 1
+            else:
+                self.expression(keyword.value, proven, False)
+
+    def _is_parameter(self, node: ast.expr) -> bool:
+        return isinstance(node, ast.Name) and node.id == self.name
 
     def _operands(self, node: ast.expr, proven: bool) -> None:
         for child in ast.iter_child_nodes(node):

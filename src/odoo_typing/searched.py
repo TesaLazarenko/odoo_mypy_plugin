@@ -47,7 +47,13 @@ from mypy.types import Instance, Type, get_proper_type
 
 from odoo_typing.rebound import function_bindings, nested_blocks
 
-__all__ = ["SEARCH_METHODS", "domain_argument", "restricted_fields", "searched_domain"]
+__all__ = [
+    "SEARCH_METHODS",
+    "domain_argument",
+    "filtered_fields",
+    "restricted_fields",
+    "searched_domain",
+]
 
 SEARCH_METHODS = frozenset({"search", "search_fetch"})
 EQUAL = frozenset({"=", "==", "child_of", "parent_of"})
@@ -86,7 +92,47 @@ def searched_domain(function: FuncItem, receiver: Expression) -> Expression | No
     """The literal domain of the search that gave the records a name holds, if one did.
 
     A local bound once to ``records.search(domain, ...)``, or the variable of a ``for``
-    over such a local (see the module).
+    over such a local or over the search itself (see the module).
+    """
+    value = _records_source(function, receiver)
+    if (
+        isinstance(value, CallExpr)
+        and isinstance(value.callee, MemberExpr)
+        and value.callee.name in SEARCH_METHODS
+    ):
+        return domain_argument(value)
+    return None
+
+
+def filtered_fields(function: FuncItem, receiver: Expression) -> frozenset[str]:
+    """The fields that ``filtered("field")`` set on the records a name holds.
+
+    ``for website in self.filtered("homepage_url"):`` keeps the records whose field is true
+    (Odoo's ``rec[func]``): ``website.homepage_url`` is no ``False``. A local bound once to
+    such a call or the variable of a ``for`` over one, as for a search; the calls may be
+    chained (``filtered("a").filtered("b")``). A path (``"partner_id.email"``) keeps the
+    records of which some value is true, which says nothing of the first field alone.
+    """
+    value = _records_source(function, receiver)
+    found: set[str] = set()
+    while (
+        isinstance(value, CallExpr)
+        and isinstance(value.callee, MemberExpr)
+        and value.callee.name == "filtered"
+        and len(value.args) == 1
+        and isinstance(value.args[0], StrExpr)
+    ):
+        name = value.args[0].value
+        if name and "." not in name:
+            found.add(name)
+        value = value.callee.expr
+    return frozenset(found)
+
+
+def _records_source(function: FuncItem, receiver: Expression) -> Expression | None:
+    """The expression that gave a local its records: its one value, or what its ``for`` iterates.
+
+    For the variable of a ``for`` over a local, the local's one value.
     """
     if not isinstance(receiver, NameExpr) or not isinstance(receiver.node, Var):
         return None
@@ -108,16 +154,12 @@ def searched_domain(function: FuncItem, receiver: Expression) -> Expression | No
             iterated = _iterated(function, receiver.node)
         else:
             iterated = _loop_over(function, receiver, names)
+        if isinstance(iterated, CallExpr):
+            return iterated  # ``for record in records.search(...)``
         if not isinstance(iterated, NameExpr) or not isinstance(iterated.node, Var):
             return None
         value = once(iterated.node)
-    if (
-        isinstance(value, CallExpr)
-        and isinstance(value.callee, MemberExpr)
-        and value.callee.name in SEARCH_METHODS
-    ):
-        return domain_argument(value)
-    return None
+    return value
 
 
 def _iterated(function: FuncItem, variable: Var) -> Expression | None:

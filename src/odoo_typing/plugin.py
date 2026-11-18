@@ -189,6 +189,7 @@ from odoo_typing.hooks.registered import (
     registered_classes,
 )
 from odoo_typing.hooks.vals import ValsHooks
+from odoo_typing.hooks.wrapped import WRAPPED_CALL, bound_wrapped_signature
 from odoo_typing.methods import (
     SELF_METHODS,
     browse_signature,
@@ -1028,6 +1029,8 @@ class OdooPlugin(Plugin):
         """Type reading a relational field; check assigned values; let ``create`` take a dict."""
         # mypy names the hook after the descriptor's own class (``odoo.fields.Many2one``,
         # a custom subclass...), so match every ``__get__`` and check the MRO in the hook.
+        if fullname == WRAPPED_CALL:  # ``request.future_response.set_cookie(...)``
+            return bound_wrapped_signature
         if fullname.endswith(".__get__"):
             return self._values.get
         if fullname.endswith(".__set__"):

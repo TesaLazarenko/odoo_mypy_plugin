@@ -5,7 +5,16 @@ from __future__ import annotations
 from typing import TypeGuard
 
 from mypy.lookup import lookup_fully_qualified
-from mypy.nodes import Context, Expression, FuncDef, MemberExpr, MypyFile, TypeInfo, Var
+from mypy.nodes import (
+    Context,
+    Expression,
+    FuncDef,
+    MemberExpr,
+    MypyFile,
+    NameExpr,
+    TypeInfo,
+    Var,
+)
 from mypy.plugin import (
     AttributeContext,
     CheckerPluginInterface,
@@ -40,7 +49,7 @@ from odoo_typing.hooks.nodes import checked_function, record_type, type_checker
 from odoo_typing.model_fields import value_required
 from odoo_typing.references import resolve_path
 from odoo_typing.scanner import FieldInfo
-from odoo_typing.searched import restricted_fields, searched_domain
+from odoo_typing.searched import filtered_fields, restricted_fields, searched_domain
 from odoo_typing.vals import RECORDS, VALUE_TYPES, stored, value_type_named
 
 __all__ = ["FILTER", "FieldValueHooks", "falsy_filter_signature"]
@@ -162,9 +171,18 @@ class FieldValueHooks(Hooks):
         return signature.copy_modified(ret_type=make_simplified_union([*keys, *kept]))
 
     def display_name(self, ctx: AttributeContext) -> Type:
-        """``required_values``: ``display_name`` (annotated on ``BaseModel``) without ``False``."""
+        """``required_values``: ``display_name`` (annotated on ``BaseModel``) without ``False``.
+
+        Not where mypy compares a class's own ``display_name = fields.Char(...)`` with
+        ``BaseModel``'s (a name, not an attribute read): the field is as Odoo declares it.
+        """
         value = get_proper_type(ctx.default_attr_type)
-        if ctx.is_lvalue or not isinstance(value, UnionType) or self._stored(ctx.context, ctx.api):
+        if (
+            ctx.is_lvalue
+            or isinstance(ctx.context, NameExpr)
+            or not isinstance(value, UnionType)
+            or self._stored(ctx.context, ctx.api)
+        ):
             return ctx.default_attr_type
         return make_simplified_union([item for item in value.items if not _is_false(item)])
 
@@ -181,8 +199,8 @@ class FieldValueHooks(Hooks):
         id is the ``NewId``.
         """
         value = get_proper_type(ctx.default_attr_type)
-        if not isinstance(value, UnionType):
-            return ctx.default_attr_type
+        if not isinstance(value, UnionType) or isinstance(ctx.context, NameExpr):
+            return ctx.default_attr_type  # a class's own ``id`` compared with BaseModel's
         new_id = self._profile.new_id
         if self._reads_origin(ctx):
             ids = [
@@ -299,10 +317,12 @@ class FieldValueHooks(Hooks):
         return signature.copy_modified(ret_type=view) if isinstance(view, Instance) else signature
 
     def _searched(self, member: Context, api: CheckerPluginInterface) -> bool:
-        """Whether the search that found the records read sets the field (``ilike "x"``)."""
+        """Whether the search or the ``filtered("f")`` that gave the records read sets the field."""
         function = checked_function(api)
         if not isinstance(member, MemberExpr) or function is None:
             return False
+        if member.name in filtered_fields(function, member.expr):
+            return True
         domain = searched_domain(function, member.expr)
         checker = type_checker(api)
         return member.name in restricted_fields(domain, checker.lookup_type_or_none)

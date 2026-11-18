@@ -311,6 +311,29 @@ class ModelClassHooks(Hooks):
                 return
             sources += found or []
         add_delegated_fields(ctx.cls.info, sources)
+        _own_fields_override_delegated(ctx.cls.info)
+
+
+def _own_fields_override_delegated(info: TypeInfo) -> None:
+    """Let a class's own field redefine one an earlier class of its model delegates to.
+
+    ``website.page`` delegates to ``ir.ui.view`` (``_inherits``), whose
+    ``theme_template_id`` an earlier class of the page got; a later class of the page
+    declares its own ``theme_template_id`` (another comodel). Odoo then sets up the
+    model's own field, not the delegated one: the type of the delegated field in the
+    earlier class is no type the own one must fit.
+    """
+    for name, node in info.names.items():
+        if node.plugin_generated or not isinstance(node.node, Var):
+            continue
+        for base in info.mro[1:]:
+            found = base.names.get(name)
+            if found is None:
+                continue
+            source = found.node
+            if found.plugin_generated and isinstance(source, Var) and source.info is not base:
+                node.node.allow_incompatible_override = True
+            break
 
 
 def _meta_field_names(
