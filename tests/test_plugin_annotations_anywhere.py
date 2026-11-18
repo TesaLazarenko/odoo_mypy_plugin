@@ -331,3 +331,53 @@ def test_a_domain_in_a_module_without_odoo_imports(run_mypy: RunMypy, odoo_versi
         '12: error: Odoo model "t.order" has no field "nmae" in domain; did you mean "name"?'
         "  [odoo-domain]",
     ]
+
+
+# The class ``odoo`` of builtins is no public name of the module: a star import leaves it.
+STAR = """
+from builtins import *
+import odoo
+from odoo import models
+
+reveal_type(odoo.release)
+
+class Order(models.Model):
+    _inherit = "t.order"
+"""
+STAR_AFTER = STAR.replace(
+    "from builtins import *\nimport odoo\n", "import odoo\nfrom builtins import *\n"
+)
+
+
+def test_a_star_import_of_builtins_keeps_the_odoo_package(run_mypy: RunMypy) -> None:
+    for source in (STAR, STAR_AFTER):
+        addons = _addons(t_use={"depends": ["t_base"], "models.py": source})
+
+        result = run_mypy(addons, check=["t_use"])
+
+        assert result.messages("t_use/models.py") == [
+            '6: note: Revealed type is "types.ModuleType"'
+        ]
+
+
+# A value that is ``...`` is no domain: a stub's placeholder, a required field of pydantic.
+ELLIPSIS = """
+from typing import Annotated
+
+class Plain:
+    domain: "odoo.domain.t_order" = ...
+    partial: Annotated[list, "odoo.domain.t_order"] = ["|"]
+
+    def more(self) -> None:
+        self.partial.append(("name", "=", "x"))
+"""
+
+
+def test_placeholders_and_partial_class_level_domains(run_mypy: RunMypy) -> None:
+    result = run_mypy(_tools(plain=ELLIPSIS), check=["t_use"])
+
+    # Only what mypy says of ``...`` itself; the partial literal is not checked as a whole.
+    messages = result.messages("t_use/tools/plain.py")
+    assert [message.partition(" (")[0] for message in messages] == [
+        "5: error: Incompatible types in assignment"
+    ]

@@ -382,6 +382,10 @@ class OdooPlugin(Plugin):
         super().set_modules(modules)
         self._inputs_checked = False
         self._package_bound = None  # a daemon update: ``odoo/init.py`` may have changed
+        # The daemon strips the names of a module it analyzes again in place, and keeps
+        # the module object when it merges new statements into it.
+        self._alias_builtins = self._alias_package = None
+        self._domains.forget_trees()
         self._hooks.forget_declared()
 
     def _refresh_registry(self) -> None:

@@ -89,7 +89,9 @@ def bind_in_builtins(tree: MypyFile) -> bool:
         variable = _any_variable(kind, f"{defn.fullname}.{kind}")
         variable.info = info
         info.names[kind] = SymbolTableNode(MDEF, variable, plugin_generated=True)
-    tree.names[ROOT] = SymbolTableNode(GDEF, info, plugin_generated=True)
+    # No public name of the module: ``from builtins import *`` must not bind it over
+    # ``import odoo`` (the lookup of a name in builtins does not ask for the flag).
+    tree.names[ROOT] = SymbolTableNode(GDEF, info, module_public=False, plugin_generated=True)
     return True
 
 

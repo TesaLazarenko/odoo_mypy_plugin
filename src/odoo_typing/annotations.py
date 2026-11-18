@@ -52,6 +52,7 @@ from mypy.nodes import (
     ClassDef,
     ConditionalExpr,
     Decorator,
+    EllipsisExpr,
     Expression,
     ExpressionStmt,
     ForStmt,
@@ -104,6 +105,7 @@ __all__ = [
     "TRIGGER",
     "TRIGGER_FULLNAME",
     "ItemTypes",
+    "MemberValues",
     "Wrapping",
     "annotation_alias",
     "domain_annotation_alias",
@@ -383,18 +385,33 @@ class _Wrapper:
             elif isinstance(statement, AssignmentStmt):
                 # A call in another class may be read by that class's plugin
                 # (``field(...)`` of a dataclass): only its other values are wrapped.
-                if model_class or not isinstance(statement.rvalue, CallExpr):
+                if model_class:
                     self._assignment(statement, body)
+                elif not isinstance(statement.rvalue, CallExpr):
+                    # Its methods may extend it (``self.domain.append(...)``): a piece.
+                    self._assignment(statement, body, whole=False)
             else:
                 self.block([statement], None, body, wrap_assignments=model_class)
 
-    def _assignment(self, statement: AssignmentStmt, scope: list[Statement]) -> None:
+    def _assignment(
+        self, statement: AssignmentStmt, scope: list[Statement], whole: bool = True
+    ) -> None:
+        """Wrap the value of an annotated assignment; ``whole``: it may be a whole domain.
+
+        Not ``...``, which is no value: a stub's placeholder, and what the plugins of
+        other classes read as "no default" (pydantic).
+        """
         alias = domain_annotation_alias(statement.unanalyzed_type)
-        if alias is None or isinstance(statement.rvalue, TempNode) or len(statement.lvalues) != 1:
+        value = statement.rvalue
+        if alias is None or isinstance(value, TempNode | EllipsisExpr):
+            return
+        if len(statement.lvalues) != 1:
             return
         target = statement.lvalues[0]
-        whole = isinstance(target, NameExpr) and not _changed_later(
-            target.name, statement.line, scope
+        whole = (
+            whole
+            and isinstance(target, NameExpr)
+            and not _changed_later(target.name, statement.line, scope)
         )
         kind = ASSIGN if whole else ASSIGN_BUILT
         statement.rvalue = self._wrap(statement.rvalue, kind, alias)
@@ -414,23 +431,27 @@ class _Wrapper:
         return call
 
 
-def member_values(tree: MypyFile) -> dict[int, Expression]:
-    """The value each attribute assignment of a module gives, by the ``id`` of its target.
+MemberValues = dict[int, tuple[MemberExpr, Expression]]
+
+
+def member_values(tree: MypyFile) -> MemberValues:
+    """Each attribute assignment of a module: its target and value, by the target's ``id``.
 
     ``x.attr = E`` and ``x.attr = y.attr = E``, in every block, function and class of the
-    module; not the targets inside a tuple (``x.a, x.b = ...``).
+    module; not the targets inside a tuple (``x.a, x.b = ...``). The target is kept with
+    the value, so that the ``id`` of a node that is gone names no other one.
     """
-    found: dict[int, Expression] = {}
+    found: MemberValues = {}
     _member_values(tree.defs, found)
     return found
 
 
-def _member_values(statements: Iterable[Statement], found: dict[int, Expression]) -> None:
+def _member_values(statements: Iterable[Statement], found: MemberValues) -> None:
     for statement in statements:
         if isinstance(statement, AssignmentStmt):
             value = statement.rvalue
             found.update(
-                (id(target), value)
+                (id(target), (target, value))
                 for target in statement.lvalues
                 if isinstance(target, MemberExpr)
             )

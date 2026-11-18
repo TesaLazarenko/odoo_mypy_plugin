@@ -594,11 +594,22 @@ form other tools read as a plain `dict` (`list`). In a type alias it is a plain 
 write the alias with the bare string.
 
 Outside any addon (scripts) the annotations mean what they mean to plain mypy:
-`Annotated[...]` is a `dict`, a bare string is `Name "odoo" is not defined`. The name
-`odoo` itself, used without `import odoo` (`odoo.tools.x()`), is reported as
-`"type[odoo]" has no attribute "tools"`: the plugin gives `builtins` a class of that
-name, which is how mypy finds the annotations
-([how it works](how-it-works.md#annotations-odoovalues-and-odoomodel)).
+`Annotated[...]` is a `dict`, a bare string is `Name "odoo" is not defined`.
+
+**What the names cost.** mypy finds the annotations through a class `odoo` that the
+plugin gives `builtins` and three names it gives the `odoo` package
+([how it works](how-it-works.md#annotations-odoovalues-and-odoomodel)). In every file
+mypy checks with the plugin, also outside the addons:
+
+- `odoo.tools.x()` in a file that forgot `import odoo` is reported as
+  `"type[odoo]" has no attribute "tools"  [attr-defined]`, not as
+  `Name "odoo" is not defined  [name-defined]`;
+- the bare name `odoo` without an import (`print(odoo)`), and `odoo.values`,
+  `odoo.model`, `odoo.domain` as expressions (`odoo.model.Model`, a typo of
+  `odoo.models.Model`) are not reported: they are `Any`. Python raises for them when the
+  file is imported.
+
+`from builtins import *` does not bind the class.
 
 **The model.** The alias is looked up among the models of the file's addon view, like
 `env["..."]`:

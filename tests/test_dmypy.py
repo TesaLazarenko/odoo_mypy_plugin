@@ -768,3 +768,22 @@ def test_dmypy_domains_of_attributes_follow_edits(daemon: Daemon, tmp_path: Path
     assert sorted(other) == sorted(
         [line.replace("x.thing", "x.user") for line in before[:2]] + after
     )
+
+
+def test_dmypy_domains_of_attributes_survive_edits_of_the_assigning_file(
+    daemon: Daemon, tmp_path: Path
+) -> None:
+    """The daemon merges a new tree into the module it keeps: the assignments are found again."""
+    root = tmp_path / "addons"
+    (root / "my_mod/holder.py").write_text(HOLDER)
+    (root / "my_mod/assigns.py").write_text(ASSIGNS)
+    (root / "my_mod/__init__.py").write_text("from . import user, holder, assigns\n")
+    first = daemon.check()
+    answers = []
+    for step in range(3):
+        _append(root / "my_mod/assigns.py", f"\nx{step} = {step}\n")
+        answers.append(daemon.check())
+
+    missing = 'error: Odoo model "x.thing" has no field "extra" in domain  [odoo-domain]'
+    assert first[:2] == [f"assigns.py:5: {missing}", f"assigns.py:6: {missing}"]
+    assert [sorted(answer) for answer in answers] == [sorted(first)] * 3

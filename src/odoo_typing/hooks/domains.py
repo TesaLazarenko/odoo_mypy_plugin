@@ -77,6 +77,7 @@ from odoo_typing.annotations import (
     RETURN,
     SEARCH,
     SEARCH_ALIAS,
+    MemberValues,
     is_wrapped,
     member_values,
 )
@@ -134,7 +135,7 @@ class DomainHooks(Hooks):
         super().__init__(models)
         self._recordsets = recordsets
         # The attribute assignments of the module checked last (see assigned_attribute).
-        self._member_values: tuple[MypyFile | None, dict[int, Expression]] = (None, {})
+        self._member_values: tuple[MypyFile | None, MemberValues] = (None, {})
 
     # -- consumers ---------------------------------------------------------------------------
 
@@ -258,7 +259,16 @@ class DomainHooks(Hooks):
         """The value assigned to an attribute target of the module being checked."""
         if self._member_values[0] is not tree:
             self._member_values = (tree, member_values(tree))
-        return self._member_values[1].get(id(target))
+        found = self._member_values[1].get(id(target))
+        return found[1] if found is not None and found[0] is target else None
+
+    def forget_trees(self) -> None:
+        """Forget what was read from a module's statements (each daemon update).
+
+        The daemon merges the new statements of an edited file into the module object
+        it keeps, so the object says nothing about them.
+        """
+        self._member_values = (None, {})
 
     def annotated_parameters(
         self,
