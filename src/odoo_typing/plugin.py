@@ -1067,14 +1067,15 @@ class OdooPlugin(Plugin):
         ):
             widen = partial(self._domains.widen_signature, None)
         name = fullname.rpartition(".")[2]
+        found: Callable[[MethodSigContext], FunctionLike] | None
         if name in RECORD_FUNCTIONS:  # ``filtered(lambda line: ...)``: of one record
-            return partial(self._recordsets.function_signature, name, widen)
-        if widen is not None:
+            # Then the other hooks: ``mapped`` handles a false ``func`` (its guard).
+            found = partial(self._recordsets.function_signature, name, widen)
+        elif widen is not None:
             return widen
-        # ``env["stock.rule"].Procurement(...)``, ``random.Random().sample(records, 2)``
-        found: Callable[[MethodSigContext], FunctionLike] | None = self._field_tuple_hook(
-            fullname
-        ) or self._registered_hook(fullname)
+        else:
+            # ``env["stock.rule"].Procurement(...)``, ``random.Random().sample(records, 2)``
+            found = self._field_tuple_hook(fullname) or self._registered_hook(fullname)
         chained: list[Callable[[MethodSigContext], FunctionLike] | None] = [
             self._dispatch_hook(fullname),
             self._context_hook(fullname, method=True),
@@ -1369,6 +1370,8 @@ class OdooPlugin(Plugin):
             return self._values.display_name  # Odoo 17, 18 annotate it on BaseModel
         if not self._models.settings.new_record_ids and fullname == f"{profile.base_model}.id":
             return self._values.saved_id  # Odoo 17, 18: ``int | NewId``
+        if fullname == f"{profile.base_model}._active_name":
+            return self._values.active_name  # Odoo 18: ``_active_name = None``
         owner, _, name = fullname.rpartition(".")
         if owner == profile.environment and self._declared_records(fullname):
             return partial(self._env.named_record, name)  # ``env.website`` (Odoo 20)

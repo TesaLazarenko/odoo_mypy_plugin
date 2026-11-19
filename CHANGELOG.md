@@ -151,8 +151,14 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   untyped lambda. On 36 addons of Odoo 18 this reports `so.state in ['sale', 'done']`
   (no `done` in Odoo 18), `a.account_type not in ('asset_bank', 'asset_cash')`,
   `m.state not in ('cancel')` (a string, not a tuple) and `l.state in 'validate'`.
+  A lambda that reads an attribute the code around it narrowed (`if rec.vat:
+  lines.filtered(lambda l: l.code == rec.vat[:2])`) or takes more parameters
+  (`lambda l, move=move: ...`) keeps an untyped parameter, on every version: mypy
+  checks a typed lambda in a scope of its own, without those narrowings.
 - `record.id.origin` reads the `NewId` of a new record: the id is `NewId` there, not
   `int` (`new_record_ids = false`).
+- On Odoo 18, `records._active_name` is a `str` on a model with an `active` or `x_active`
+  field (Odoo sets it up so), `str | None` on another one; Odoo leaves it `None`.
 - A `Reference` field whose selection is a method is a record of a model known at run
   time (`Any`, `dynamic_env = "base"`: `BaseModel`): reading its fields
   (`wizard.resource_ref.collaborator_ids`) is no `"BaseModel" has no attribute` error.

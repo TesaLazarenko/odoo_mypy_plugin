@@ -133,3 +133,56 @@ def test_a_changed_file_reads_its_id_origin_again(run_mypy: RunMypy) -> None:
     result = run_mypy({"t_mod": {"depends": ["base"], "models.py": changed}}, fresh_cache=True)
 
     assert result.messages("t_mod/models.py") == EXPECTED
+
+
+# What the review of the lambda typing found (each case reads as Odoo runs it).
+REVIEWED = """
+from odoo import _, api, fields, models
+
+class Holder(models.Model):
+    _name = "t.holder"
+
+    name = fields.Char()
+    vat = fields.Char()
+    active = fields.Boolean()
+    line_ids = fields.One2many("t.item", "holder_id")
+    total = fields.Float(compute="_compute_total")
+
+    @api.depends(lambda self: self._watched())
+    def _compute_total(self) -> None:
+        for holder in self:
+            holder.total = 0.0
+
+    @api.model
+    def _watched(self) -> list[str]:
+        return ["name"]
+
+    def use(self, key: str | None) -> None:
+        for holder in self:
+            if holder.vat:
+                holder.line_ids.filtered(lambda item: item.code == holder.vat[:2])
+        self.line_ids.filtered(lambda item, holder=self: item.holder_id == holder)
+        self.line_ids.mapped(key)
+        ", ".join(self.line_ids.mapped(lambda item: item.code))
+        self.filtered(self._active_name)
+        for item in self.line_ids:
+            label = _("Société") if item.id.origin else item.code
+
+class Item(models.Model):
+    _name = "t.item"
+
+    code = fields.Char()
+    holder_id = fields.Many2one("t.holder")
+"""
+
+
+def test_lambdas_the_review_found(run_mypy: RunMypy, odoo_version: int) -> None:
+    result = run_mypy({"t_mod": {"depends": ["base"], "models.py": REVIEWED}})
+
+    # The codes may be False, which ``join`` does not take. Odoo 19+ declares ``mapped``
+    # as overloads (``str``, ``Callable[[Self], T]``) that the plugin keeps: no ``None``,
+    # and a type variable mypy solves from ``join``.
+    messages = [message for message in result.messages("t_mod/models.py") if ": error:" in message]
+    lines = {message.split(":")[0] for message in messages}
+    assert lines == ({"28"} if odoo_version < 19 else {"27", "28"})
+    assert any('"join"' in message or "return value" in message for message in messages)

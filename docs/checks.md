@@ -80,7 +80,9 @@ plugin:
   19+ declare `Callable[[Self], ...]`), and the `self` of a field's `default=`,
   `domain=`, `selection=` and `compute=` lambda is the model's records (Odoo calls them
   with those). A misspelled field in the lambda is an error, a field of a model the addon
-  cannot see (`env["iot.device"]` of an optional addon) is not. In a field's lambda,
+  cannot see (`env["iot.device"]` of an optional addon) is not, and a lambda that reads
+  an attribute the code around it narrowed, or takes more parameters, keeps an untyped
+  parameter (mypy checks a typed lambda in a scope of its own). In a field's lambda,
   mypy's "Cannot determine type" (a field declared further down the class, or in a
   class of the same import cycle) is left out: mypy cannot defer the class body.
 - **`mapped(lambda r: r.amount)`** is `list[float]`, and the function's records when it

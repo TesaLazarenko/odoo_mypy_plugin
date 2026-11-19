@@ -37,9 +37,9 @@ def evaluate(node: ast.expr, scope: Mapping[str, object]) -> object:
                 items.append(evaluate(item, scope))
                 continue
             spliced = _spliced(item.value, scope)  # ``*CLOSED_STATES.items()``
-            if spliced is None:
-                return UNKNOWN
-            items.extend(spliced)
+            # One unknown item, as before: ``_inherit = [*IMPORTED, "mail.thread"]`` keeps
+            # the names the scan knows.
+            items.extend([UNKNOWN] if spliced is None else spliced)
         return items if isinstance(node, ast.List) else tuple(items)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         return _concatenate(evaluate(node.left, scope), evaluate(node.right, scope))

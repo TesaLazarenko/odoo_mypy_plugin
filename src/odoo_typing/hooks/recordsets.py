@@ -5,21 +5,34 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Final
 
+from mypy.literals import literal_hash
 from mypy.lookup import lookup_fully_qualified
 from mypy.nodes import (
     ARG_POS,
     CallExpr,
+    CastExpr,
+    ComparisonExpr,
+    ConditionalExpr,
     Context,
+    DictExpr,
     Expression,
+    GeneratorExpr,
     IndexExpr,
+    LambdaExpr,
+    ListComprehension,
     ListExpr,
     MemberExpr,
     NameExpr,
+    OpExpr,
+    SetComprehension,
     SetExpr,
+    SliceExpr,
+    StarExpr,
     StrExpr,
     TempNode,
     TupleExpr,
     TypeInfo,
+    UnaryExpr,
 )
 from mypy.plugin import CheckerPluginInterface, MethodContext, MethodSigContext
 from mypy.types import (
@@ -34,8 +47,6 @@ from mypy.types import (
     Type,
     TypedDictType,
     TypeOfAny,
-    TypeVarId,
-    TypeVarType,
     UnionType,
     get_proper_type,
 )
@@ -215,7 +226,7 @@ class RecordsetHooks(Hooks):
         if not isinstance(receiver, Instance):
             return result
         if argument is None:
-            return result
+            return self._function_result(method, receiver, result, ctx)
         if self._models.model_of(receiver.type) is None:
             return result  # a ``sorted`` / ``mapped`` method of another class
         if not argument.value or not self._check_record_paths(method, receiver, argument, ctx):
@@ -235,6 +246,37 @@ class RecordsetHooks(Hooks):
             return value  # records of a comodel mypy cannot type, not a list
         if _filtered_by(ctx.context, argument.value):
             value = true_only(value)  # ``filtered("code").mapped("code")``: no empty code
+        return checker.named_generic_type("builtins.list", [value])
+
+    def _function_result(
+        self, method: str, receiver: Instance, result: Type, ctx: MethodContext
+    ) -> Type:
+        """``mapped(lambda line: line.qty)`` / ``grouped(lambda line: ...)`` on Odoo 17, 18.
+
+        Odoo declares no result: it follows from what the function gives, as Odoo 19
+        declares (:meth:`function_signature`). ``mapped`` gives the function's records,
+        or a list of its values; ``grouped`` a dict from its values to records of the
+        receiver. The function's type is the one mypy gave it (a lambda's result is the
+        type of its body).
+        """
+        if method not in {"mapped", "grouped"} or not isinstance(get_proper_type(result), AnyType):
+            return result
+        given = ctx.args[0] if ctx.args else []
+        found = (
+            get_proper_type(type_checker(ctx.api).lookup_type_or_none(given[0]))
+            if len(given) == 1
+            else None
+        )
+        if not isinstance(found, CallableType) or self._models.model_of(receiver.type) is None:
+            return result
+        value = get_proper_type(found.ret_type)
+        checker = type_checker(ctx.api)
+        if method == "grouped":
+            return checker.named_generic_type("builtins.dict", [value, receiver])
+        if isinstance(value, AnyType):
+            return result
+        if isinstance(value, Instance) and value.type.has_base(self._profile.base_model):
+            return value
         return checker.named_generic_type("builtins.list", [value])
 
     def _mapped_values(self, declared: Type) -> Type:
@@ -437,25 +479,37 @@ class RecordsetHooks(Hooks):
         Odoo 17 and 18 declare no type for it (``def mapped(self, func)``), so the
         parameter of ``filtered(lambda line: ...)`` was ``Any`` and nothing in the lambda
         was checked. Odoo calls it with each record of ``self`` (``func(rec)``) and takes a
-        field name instead; the signature is what Odoo 19 declares: ``filtered`` and
-        ``sorted`` (also ``None``) take ``str | Callable[[record], object]``, ``mapped`` and
-        ``grouped`` an overload of the name (their declared result) and of the function,
-        whose result gives theirs (``mapped``: a list or records, see
-        :meth:`_mapped_values`; ``grouped``: a dict from it to records). On Odoo 19+ the
+        field name instead: the parameter takes ``str | Callable[[record], object]`` (also
+        ``None`` for ``sorted``), as Odoo 19 declares. What ``mapped`` and ``grouped`` give
+        then follows from what the function gave (:meth:`record_path`). On Odoo 19+ the
         declaration stands; ``filtered`` there may return any value (see
-        :meth:`filtered_signature`). Records of no known model (``BaseModel`` of an
-        ``env[...]`` the addon cannot see) keep ``Any``: every field would be an unknown
-        attribute.
+        :meth:`filtered_signature`).
+
+        Kept as declared (the lambda's parameter ``Any``): records of no known model
+        (``BaseModel`` of an ``env[...]`` the addon cannot see, every field would be an
+        unknown attribute); a lambda with more parameters (``lambda line, move=move:``);
+        and a lambda that reads an attribute the code around it narrowed
+        (``if rec.date_from: lines.filtered(lambda l: l.date >= rec.date_from)``): mypy
+        checks a lambda that has a type in a scope of its own, without the narrowings of
+        attributes around it. For these two, the function takes ``Any`` on Odoo 19+ too.
         """
         signature = then(ctx) if then is not None else ctx.default_signature
         if method == "filtered":
             signature = self.filtered_signature(signature, ctx)
         records = receiver_type(ctx.type)
         name = RECORD_FUNCTIONS[method]
+        if not isinstance(records, Instance) or not records.type.has_base(self._profile.base_model):
+            return signature
+        given = ctx.args[0] if ctx.args else []
+        checker = type_checker(ctx.api)
+        if any(
+            isinstance(item, LambdaExpr)
+            and (item.arg_kinds != [ARG_POS] or _reads_narrowed(item, checker))
+            for item in given
+        ):
+            return _untyped_function(signature, name)  # also where Odoo 19+ declares it
         if (
             not isinstance(signature, CallableType)
-            or not isinstance(records, Instance)
-            or not records.type.has_base(self._profile.base_model)
             or self._models.model_of(records.type) is None  # records of no known model
             or name not in signature.arg_names
         ):
@@ -465,39 +519,17 @@ class RecordsetHooks(Hooks):
         if not (isinstance(declared, AnyType) and declared.type_of_any == TypeOfAny.unannotated):
             return signature
         api = ctx.api
-        text = api.named_generic_type("builtins.str", [])
         anything = api.named_generic_type("builtins.object", [])
         function = api.named_generic_type("builtins.function", [])
-        record = ctx.type  # the receiver's own type: ``Self`` in a mixin stays ``Self``
-
-        def taking(argument: Type) -> list[Type]:
-            return [*signature.arg_types[:index], argument, *signature.arg_types[index + 1 :]]
-
-        if method in {"filtered", "sorted"}:
-            func = CallableType([record], [ARG_POS], [None], anything, function)
-            items: list[Type] = [text, func, *([NoneType()] if method == "sorted" else [])]
-            return signature.copy_modified(arg_types=taking(UnionType(items)))
-        result = TypeVarType(
-            "T",
-            "T",
-            TypeVarId(-2, namespace="odoo_typing.recordsets"),
-            [],
-            anything,
-            AnyType(TypeOfAny.from_omitted_generics),
-        )
-        func = CallableType([record], [ARG_POS], [None], result, function)
-        if method == "mapped":
-            base = self._named(self._profile.base_model, api)
-            if base is None:
-                return signature
-            returned: Type = UnionType([api.named_generic_type("builtins.list", [result]), base])
-        else:
-            returned = api.named_generic_type("builtins.dict", [result, record])
-        by_name = signature.copy_modified(arg_types=taking(text))
-        by_function = signature.copy_modified(
-            arg_types=taking(func), ret_type=returned, variables=[*signature.variables, result]
-        )
-        return Overloaded([by_name, by_function])
+        func = CallableType([ctx.type], [ARG_POS], [None], anything, function)
+        items: list[Type] = [
+            api.named_generic_type("builtins.str", []),
+            func,
+            *([NoneType()] if method == "sorted" else []),
+        ]
+        arg_types = list(signature.arg_types)
+        arg_types[index] = UnionType(items)
+        return signature.copy_modified(arg_types=arg_types)
 
     def filtered_signature(self, signature: FunctionLike, ctx: MethodSigContext) -> FunctionLike:
         """``filtered(lambda r: r.partner_id)`` (Odoo 19+): the function may return any value.
@@ -764,3 +796,83 @@ def _filtered_by(call: Context, field: str) -> bool:
         and isinstance(receiver.args[0], StrExpr)
         and receiver.args[0].value == field
     )
+
+
+def _untyped_function(signature: FunctionLike, name: str) -> FunctionLike:
+    """A signature whose parameter ``name`` takes anything (``Any``), in each overload.
+
+    mypy then checks a lambda given to it where it is written, with the narrowings of
+    the code around it (a lambda with a type is checked in a scope of its own).
+    """
+    items = signature.items if isinstance(signature, Overloaded) else [signature]
+    found: list[CallableType] = []
+    for item in items:
+        if not isinstance(item, CallableType):
+            return signature
+        if name not in item.arg_names:
+            found.append(item)
+            continue
+        arg_types = list(item.arg_types)
+        arg_types[item.arg_names.index(name)] = AnyType(TypeOfAny.special_form)
+        found.append(item.copy_modified(arg_types=arg_types))
+    return Overloaded(found) if isinstance(signature, Overloaded) else found[0]
+
+
+def _reads_narrowed(function: LambdaExpr, checker: TypeChecker) -> bool:
+    """Whether a lambda reads an attribute of a name of its scope that the code narrowed.
+
+    ``if record.vat: ...filtered(lambda c: c.code == record.vat[:2])``: mypy keeps the
+    narrowing of ``record.vat`` in a lambda it checks without a type context, not in one
+    it checks with one (a scope of its own).
+    """
+    own = set(function.arg_names)
+    pending: list[Expression] = [function.expr()]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, MemberExpr):
+            root: Expression = node
+            while isinstance(root, MemberExpr):
+                root = root.expr
+            if (
+                isinstance(root, NameExpr)
+                and root.name not in own
+                and literal_hash(node) is not None
+                and checker.binder.get(node) is not None
+            ):
+                return True
+            pending.append(node.expr)
+        else:
+            pending.extend(_children(node))
+    return False
+
+
+def _children(node: Expression) -> list[Expression]:
+    """The expressions directly in an expression (the forms a lambda's body usually has)."""
+    if isinstance(node, CallExpr):
+        return [node.callee, *node.args]
+    if isinstance(node, OpExpr):
+        return [node.left, node.right]
+    if isinstance(node, ComparisonExpr):
+        return list(node.operands)
+    if isinstance(node, UnaryExpr | StarExpr | CastExpr):
+        return [node.expr]
+    if isinstance(node, IndexExpr):
+        return [node.base, node.index]
+    if isinstance(node, ConditionalExpr):
+        return [node.cond, node.if_expr, node.else_expr]
+    if isinstance(node, ListExpr | TupleExpr | SetExpr):
+        return list(node.items)
+    if isinstance(node, DictExpr):
+        return [part for key, value in node.items for part in (key, value) if part is not None]
+    if isinstance(node, SliceExpr):
+        return [part for part in (node.begin_index, node.end_index, node.stride) if part]
+    if isinstance(node, GeneratorExpr | ListComprehension | SetComprehension):
+        generator = node if isinstance(node, GeneratorExpr) else node.generator
+        return [
+            generator.left_expr,
+            *generator.sequences,
+            *(condition for conditions in generator.condlists for condition in conditions),
+        ]
+    if isinstance(node, LambdaExpr):
+        return [node.expr()]
+    return []

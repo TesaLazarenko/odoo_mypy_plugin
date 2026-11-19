@@ -2377,6 +2377,52 @@ stub-пакети — так само і на старому коді). Рев'�
 - у модулі, що забув `import odoo`, помилка для `odoo.tools.x()` тепер
   `"type[odoo]" has no attribute "tools"` замість `Name "odoo" is not defined`.
 
+### Знахідки вибірки sale / project / hr / website (2026-11-18/19) — реалізовано
+
+Звідки: перевірка на Odoo 18 (`plans/sample-check-2026-11-18.md`): 101 помилка «лише з
+плагіном» (15 правдивих, 40 «лише за даними», 46 хибних), мутаційний тест 676/746.
+
+Зроблено (коміти `783dfdc`, `1ff11d3`, `2a99ba2`, `867911d`, `824de64`):
+
+| що | було | стало |
+|---|---|---|
+| `if not env.ref("m.x", raise_if_not_found=False): return` | вимикало перевірку всіх id `m` до кінця функції | лише для аддонів поза closure |
+| лямбди `filtered/mapped/sorted/grouped` на 17/18 | параметр `Any`, тіло не перевірялось (4586 викликів у Odoo 18) | записи отримувача (сигнатура Odoo 19) |
+| `default=` / `domain=` / `selection=` / `compute=` лямбди полів | `self` — `Any` | записи моделі (без `has-type` у тілі класу) |
+| `x.id.origin` | `"int" has no attribute "origin"` | `NewId` |
+| `fields.Reference(selection="_method")` | `BaseModel`, кожне поле — помилка | `Any` (`dynamic_env = "base"`: `BaseModel`) |
+| рядки `read()` / `search_read()`, які код доповнює | `pop` / нові ключі — помилки | ключі функції — ключі рядків, видалені — необов'язкові |
+| `for x in self.filtered("f"): x.f` | `str \| False` | `str` |
+| власне `display_name = fields.Char(...)`, `id` | конфлікт з `BaseModel` | як оголошує Odoo |
+| власне поле поверх делегованого (`_inherits`) | несумісний тип | дозволено, як в Odoo |
+| `functools.wraps` на методі (`future_response.set_cookie`) | дві хибні помилки | метод прив'язаний |
+| параметр, переданий у функцію того ж файлу, що його перевіряє | `format_date(..., lang_code=False)` — помилка | `False` дозволено |
+| `@api.depends(lambda ...)`, `@api.constrains(lambda ...)` | 17/18: `expected "str"`, 19+: `self` — `BaseModel` | функція із записами моделі |
+| `Selection([*OPEN, *CLOSED.items(), ...])` | не читалось | ключі перевіряються |
+| команди x2many через `+`, включення, `*` | не перевірялись | перевіряються |
+
+Знайдені плагіном вади Odoo 18: `hr_department.py:50` `(1, "=", 0)` (Odoo кидає
+`Invalid leaf`), `mass_cancel_orders.py:28` `'done'`, `account_merge_wizard.py:54`
+`'asset_bank'`, `stock_picking_return.py:62-72` `('cancel')` (рядок, не кортеж),
+`hr_leave.py:1124` `in 'validate'`, тести з `'priority': 0`, `ir.filters.model_id` = id,
+`account_type == 'receivable'`; `account_move.py:6702` читає поле модуля `sale`.
+
+Свідомо лишилось:
+
+- поля абстрактних моделей у міксинах не перевіряються: точне правило («немає ні в
+  міксині, ні в жодному нащадку») потребує полів нащадків з аддонів поза closure, а кеш
+  mypy не знає цієї залежності (застаріла хибна помилка після нового поля в нащадку);
+- `@property def _table_query` / `_rec_names_search` поверх атрибута `BaseModel` (7 на 36
+  модулів): обхід вимагає `Final` або `Any` для атрибута `BaseModel`;
+- звуження за `x._name == "model"`: лише через `Literal` для `_name`, а це помилки
+  `--strict-equality` у міксинах;
+- звуження всередині лямбди (`if rec.vat: ...filtered(lambda c: rec.vat[:2])`): mypy
+  перевіряє тіло лямбди з чистим станом;
+- `env.ref(..., raise_if_not_found=False)` — перевірка вимкнена задокументовано
+  (id, створені Python-кодом); рішення власника;
+- `defaultdict(lambda: self.env["x"])` без анотації (`Need type annotation`) — mypy;
+- `env` хуків `post_init_hook` без анотації, `Task.field.name` на класі, `registry["x"]`.
+
 ## Перевірка і випуск (P3)
 
 - [x] **Профілі бенчмарку.** ✅ `--profile small|default|big` (3, 6 і 37 core-addons;

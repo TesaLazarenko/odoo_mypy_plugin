@@ -84,20 +84,9 @@ class FieldDefinitionHooks(Hooks):
         determine type", ``has-type``); that message says nothing of the code and is left
         out.
         """
-        checker = type_checker(api)
-        records = Instance(info, [])
-        function = checker.named_type("builtins.function")
-        context = CallableType(
-            [records], [ARG_POS], [None], checker.named_type("builtins.object"), function
-        )
         for name, value in zip(call.arg_names, call.args, strict=True):
-            if (
-                name in CALLED_WITH_RECORDS
-                and isinstance(value, LambdaExpr)
-                and value.arg_kinds == [ARG_POS]
-            ):
-                with checker.msg.filter_errors(filter_errors=_cannot_determine):
-                    checker.expr_checker.accept(value, type_context=context)
+            if name in CALLED_WITH_RECORDS:
+                check_with_records(value, info, api)
 
     def _field_owner(self, ctx: FunctionContext) -> tuple[str, str, TypeInfo] | None:
         """The model, addon and class whose body a field definition is in, if a model's."""
@@ -216,7 +205,9 @@ class FieldDefinitionHooks(Hooks):
     ) -> Type:
         """Check the fields that ``@api.depends(...)``, ``constrains``, ``onchange`` name.
 
-        Only in the body of a concrete model's class, as for field definitions.
+        Only in the body of a concrete model's class, as for field definitions. A lambda
+        given instead of names (``depends``, ``constrains``) is checked with the model's
+        records, as for a field's ``default=`` (:func:`check_with_records`).
         """
         owner = self._field_owner(ctx) if not errors_hidden(ctx.api) else None
         if owner is not None and self.registry.concrete(owner[0], owner[1]):
@@ -224,7 +215,8 @@ class FieldDefinitionHooks(Hooks):
             fields_of = self._fields_of(addon_name, ctx.api)
             for argument in [item for arguments in ctx.args for item in arguments]:
                 if not isinstance(argument, StrExpr):
-                    continue  # a lambda, ``*names``
+                    check_with_records(argument, owner[2], ctx.api)  # ``lambda self: ...``
+                    continue
                 problem = decorator_problem(
                     decorator, argument.value, model, fields_of, self._field_ignored
                 )
@@ -286,6 +278,28 @@ def _comodel_expression(ctx: FunctionContext) -> StrExpr | None:
     if len(actuals) == 1 and isinstance(actuals[0], StrExpr):
         return actuals[0]
     return None
+
+
+def check_with_records(value: Expression, info: TypeInfo, api: CheckerPluginInterface) -> None:
+    """Check a lambda of one parameter again, with the records of a model class as it.
+
+    The call it is given to took it without a type for its parameter. In the class body
+    mypy cannot defer: a field or method it reads may still be unknown there, declared
+    further down the class or in a class of the same import cycle ("Cannot determine
+    type", ``has-type``), which says nothing of the code and is left out.
+    """
+    if not isinstance(value, LambdaExpr) or value.arg_kinds != [ARG_POS]:
+        return
+    checker = type_checker(api)
+    context = CallableType(
+        [Instance(info, [])],
+        [ARG_POS],
+        [None],
+        checker.named_type("builtins.object"),
+        checker.named_type("builtins.function"),
+    )
+    with checker.msg.filter_errors(filter_errors=_cannot_determine):
+        checker.expr_checker.accept(value, type_context=context)
 
 
 def _cannot_determine(_file: str, info: ErrorInfo) -> bool:

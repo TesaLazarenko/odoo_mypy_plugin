@@ -87,7 +87,7 @@ def callable_first_signature(
     if isinstance(declared, AnyType):
         return signature
     function = CallableType(
-        [_decorated_records(ctx, base_model) or AnyType(TypeOfAny.special_form)],
+        [AnyType(TypeOfAny.special_form)],  # checked with the records after the call
         [ARG_POS],
         [None],
         ctx.api.named_generic_type("builtins.object", []),
@@ -101,16 +101,18 @@ def callable_first_signature(
 def decorator_function_signature(
     base_model: str, ctx: FunctionSigContext | MethodSigContext
 ) -> FunctionLike:
-    """``@api.depends(lambda self: ...)`` in a model class: the function takes its records.
+    """``@api.depends(lambda self: ...)`` in a model class: no ``BaseModel`` for its records.
 
     Odoo 19+ declares ``func: Callable[[BaseModel], Collection[str]]``, records of no
     model, whose every field and method is an unknown attribute; Odoo calls the function
-    with the records of the model whose method it decorates.
+    with the records of the model whose method it decorates. The parameter is ``Any``
+    here, and the lambda is checked with those records after the call
+    (:func:`odoo_typing.hooks.field_definitions.check_with_records`).
     """
     signature = ctx.default_signature
-    records = _decorated_records(ctx, base_model)
-    if records is None:
+    if _decorated_records(ctx, base_model) is None:
         return signature
+    records = AnyType(TypeOfAny.special_form)
     items = signature.items if isinstance(signature, Overloaded) else [signature]
     found = [_taking_records(item, records, base_model) for item in items]
     if all(new is old for new, old in zip(found, items, strict=True)):
@@ -118,7 +120,7 @@ def decorator_function_signature(
     return Overloaded(found) if isinstance(signature, Overloaded) else found[0]
 
 
-def _taking_records(item: CallableType, records: Instance, base_model: str) -> CallableType:
+def _taking_records(item: CallableType, records: Type, base_model: str) -> CallableType:
     """A signature whose ``Callable[[BaseModel], ...]`` parameters take the records."""
     arg_types = []
     for arg in item.arg_types:

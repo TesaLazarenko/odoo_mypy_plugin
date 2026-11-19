@@ -188,3 +188,43 @@ def test_commands_built_with_comprehensions_and_concatenation(run_mypy: RunMypy)
     assert [message.split(":")[0] for message in messages] == ["15", "17"]
     assert '"nmae"' in messages[0]
     assert '"nme"' in messages[1]
+
+
+ROWS_AND_OTHER_DICTS = """
+from odoo import fields, models
+
+class Order(models.Model):
+    _name = "t.order"
+
+    name = fields.Char()
+
+    def rows(self) -> None:
+        values: dict = {}
+        values["extra"] = 1
+        rows = self.search_read([], ["name"])
+        rows[0]["preview"] = 1
+        first = self.read(["name"])[0]
+        first.pop("name")
+        reveal_type(rows)
+        reveal_type(first)
+"""
+
+
+def test_only_the_rows_take_the_written_keys(run_mypy: RunMypy) -> None:
+    result = run_mypy({"t_mod": {"depends": ["base"], "models.py": ROWS_AND_OTHER_DICTS}})
+
+    messages = result.messages("t_mod/models.py")
+    assert "'preview'?: Any" in messages[0]
+    assert "extra" not in messages[0]
+    assert "'name'?: str" in messages[1]
+    assert "extra" not in messages[1] and "preview" not in messages[1]
+
+
+def test_an_unknown_splice_keeps_the_known_items() -> None:
+    import ast
+
+    from odoo_typing.scanner.evaluation import UNKNOWN, evaluate
+
+    value = evaluate(ast.parse('[*IMPORTED, "mail.thread"]', mode="eval").body, {})
+
+    assert value == [UNKNOWN, "mail.thread"]

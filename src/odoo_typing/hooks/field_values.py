@@ -32,6 +32,7 @@ from mypy.types import (
     TupleType,
     Type,
     TypeOfAny,
+    TypeType,
     UnionType,
     get_proper_type,
 )
@@ -48,6 +49,7 @@ from odoo_typing.hooks.models import Hooks
 from odoo_typing.hooks.nodes import checked_function, record_type, type_checker
 from odoo_typing.model_fields import value_required
 from odoo_typing.references import resolve_path
+from odoo_typing.registry.scans import IdOriginReads
 from odoo_typing.scanner import FieldInfo
 from odoo_typing.searched import filtered_fields, restricted_fields, searched_domain
 from odoo_typing.vals import RECORDS, VALUE_TYPES, stored, value_type_named
@@ -64,7 +66,7 @@ class FieldValueHooks(Hooks):
     """Type what reading a field gives, as the reading addon sees the models."""
 
     # Where the module checked last reads ``x.id.origin`` (see saved_id).
-    _origin_reads: tuple[MypyFile | None, frozenset[tuple[int, int, int]]] = (None, frozenset())
+    _origin_reads: tuple[MypyFile | None, IdOriginReads] = (None, IdOriginReads())
 
     def get(self, ctx: MethodSigContext) -> FunctionLike:
         """Type reading a field: a relational one gives its comodel's records."""
@@ -170,6 +172,30 @@ class FieldValueHooks(Hooks):
         kept = [item for item in items if item is not string]
         return signature.copy_modified(ret_type=make_simplified_union([*keys, *kept]))
 
+    def active_name(self, ctx: AttributeContext) -> Type:
+        """``records._active_name`` (Odoo 18 leaves ``_active_name = None`` unannotated).
+
+        mypy reads ``None``: ``self.filtered(self._active_name)`` was an error and the
+        body of ``if self._active_name:`` unreachable. Odoo sets it up as ``"active"`` or
+        ``"x_active"`` when the model has such a field (``_setup_fields``): a ``str`` on
+        such a model, ``str | None`` on another one (what Odoo 19 declares).
+        """
+        default = get_proper_type(ctx.default_attr_type)
+        if ctx.is_lvalue or isinstance(ctx.context, NameExpr) or not isinstance(default, NoneType):
+            return ctx.default_attr_type
+        checker = type_checker(ctx.api)
+        text = checker.named_type("builtins.str")
+        records = receiver_type(ctx.type)
+        if isinstance(records, TypeType):
+            records = receiver_type(records.item)
+        model = self._models.model_of(records.type) if isinstance(records, Instance) else None
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if model is not None and addon_name is not None:
+            fields = self._fields_of(addon_name, ctx.api)(model)
+            if "active" in fields or "x_active" in fields:
+                return text
+        return make_simplified_union([text, NoneType()])
+
     def display_name(self, ctx: AttributeContext) -> Type:
         """``required_values``: ``display_name`` (annotated on ``BaseModel``) without ``False``.
 
@@ -230,12 +256,13 @@ class FieldValueHooks(Hooks):
         tree = type_checker(ctx.api).tree
         if self._origin_reads[0] is not tree:
             self._origin_reads = (tree, self.registry.id_origin_reads(tree.path))
+        found = self._origin_reads[1]
         position = (member.line, member.column, member.end_column or 0)
-        return position in self._origin_reads[1]
+        return position in found.positions or member.line in found.lines
 
     def forget_trees(self) -> None:
         """Forget what was read from a module's statements (each daemon update)."""
-        self._origin_reads = (None, frozenset())
+        self._origin_reads = (None, IdOriginReads())
 
     def _stored(self, expression: Context, api: CheckerPluginInterface) -> bool:
         """Whether a value read types a variable that later values are checked against.

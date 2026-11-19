@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from functools import cached_property, partial
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 from odoo_typing.addons import Addon, AddonIndex, LoadKey
 from odoo_typing.config import Settings
@@ -50,6 +50,19 @@ from odoo_typing.stamps import UNREADABLE, Stamp, Stamps, matches, read_index, s
 from odoo_typing.written_keys import WrittenKeys, written_keys
 
 __all__ = ["NO_REFERENCES", "FileReferences", "IndexLoader", "ScanCache", "ScannedAddons"]
+
+
+class IdOriginReads(NamedTuple):
+    """Where a file reads ``x.id.origin``: the ``x.id`` of each.
+
+    Attributes:
+        positions: The line and the start and end columns of each ``x.id``, in bytes of
+            UTF-8 (Python's parser, mypy's) and in characters (mypy's native parser).
+        lines: The lines where every ``x.id`` read is one of ``x.id.origin``.
+    """
+
+    positions: frozenset[tuple[int, int, int]] = frozenset()
+    lines: frozenset[int] = frozenset()
 
 
 class ScanCache(Protocol):
@@ -407,19 +420,39 @@ class ScannedAddons:
         tree = self._parsed_tree(path)
         return written_keys(tree, line) if tree is not None else WrittenKeys()
 
-    def id_origin_reads(self, path: str | Path) -> frozenset[tuple[int, int, int]]:
-        """Where a source file reads ``x.id.origin``: the line and columns of each ``x.id``."""
+    def id_origin_reads(self, path: str | Path) -> IdOriginReads:
+        """Where a source file reads ``x.id.origin`` (see :class:`IdOriginReads`)."""
         tree = self._parsed_tree(path)
         if tree is None:
-            return frozenset()
-        return frozenset(
-            (node.value.lineno, node.value.col_offset, node.value.end_col_offset or 0)
+            return IdOriginReads()
+        try:
+            lines = Path(self.addons.real_path(path)).read_bytes().splitlines()
+        except OSError:
+            lines = []
+        inner = {
+            id(node.value)
             for node in ast.walk(tree)
             if isinstance(node, ast.Attribute)
             and node.attr == "origin"
             and isinstance(node.value, ast.Attribute)
             and node.value.attr == "id"
-        )
+        }
+        positions: set[tuple[int, int, int]] = set()
+        origin_lines: set[int] = set()
+        plain_lines: set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute) or node.attr != "id":
+                continue
+            line = node.lineno
+            if id(node) not in inner:
+                plain_lines.add(line)
+                continue
+            start, end = node.col_offset, node.end_col_offset or 0
+            text = lines[line - 1] if line <= len(lines) else b""
+            characters = len(text[:start].decode("utf-8", "replace"))
+            positions |= {(line, start, end), (line, characters, characters + end - start)}
+            origin_lines.add(line)
+        return IdOriginReads(frozenset(positions), frozenset(origin_lines - plain_lines))
 
     def _parsed_tree(self, path: str | Path) -> ast.AST | None:
         """A source file's tree, kept while the questions are about its same version."""
