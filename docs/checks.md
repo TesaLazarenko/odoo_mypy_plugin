@@ -291,7 +291,9 @@ did you mean "city"?  [odoo-field-ref]
   looked up in the declaring addon's view of the model.
 - The paths of `@api.depends(...)`, checked the same way. `@api.constrains(...)` and
   `@api.onchange(...)` take field names of the model only (Odoo ignores a dotted name
-  there).
+  there). `depends` and `constrains` also take a function that returns the names
+  (`@api.depends(lambda self: self._fields_to_watch())`), called with the model's
+  records.
 - The string argument of `mapped("a.b")`, `filtered("a.b")`, `sorted(...)` and
   `grouped("a")` (a literal, or a `Final` / `Literal` str). `grouped`, and `sorted`
   before Odoo 19, take one field name; `sorted` in 19+ takes an order such as

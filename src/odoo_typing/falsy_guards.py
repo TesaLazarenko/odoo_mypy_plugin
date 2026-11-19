@@ -55,11 +55,15 @@ class Guard:
         booleans: Parameters it returns as they are when they are a ``bool``.
         none_only_for: Parameters whose false value is the only way the function returns
             ``None`` / ``False``: for a true argument the result is neither.
+        callable_first: Whether the function takes a function in place of its ``*args``:
+            it tests ``callable(args[0])`` (``api.depends``, ``api.constrains`` of Odoo 17
+            and 18, which declare ``*args: str``).
     """
 
     falsy: frozenset[str] = frozenset()
     booleans: frozenset[str] = frozenset()
     none_only_for: frozenset[str] = frozenset()
+    callable_first: bool = False
 
 
 NO_GUARD: Final = Guard()
@@ -231,7 +235,31 @@ def _guard(text: str, passes: Passes | None = None) -> Guard:
     )
     single = len(empty_returns) == 1 and not other_empty and ends
     falsy |= guarded_parameters(function, parameters, passes)
-    return Guard(frozenset(falsy), frozenset(booleans), frozenset(empty_returns if single else ()))
+    return Guard(
+        frozenset(falsy),
+        frozenset(booleans),
+        frozenset(empty_returns if single else ()),
+        _tests_callable_first(function),
+    )
+
+
+def _tests_callable_first(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether a function tests ``callable(args[0])`` of its ``*args``."""
+    star = function.args.vararg
+    if star is None:
+        return False
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "callable"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Subscript)
+        and isinstance(node.args[0].value, ast.Name)
+        and node.args[0].value.id == star.arg
+        and isinstance(node.args[0].slice, ast.Constant)
+        and node.args[0].slice.value == 0
+        for node in ast.walk(function)
+    )
 
 
 def guarded_parameters(

@@ -20,8 +20,9 @@ def evaluate(node: ast.expr, scope: Mapping[str, object]) -> object:
     """Value of a constant expression, or :data:`UNKNOWN`.
 
     Handles literals, lists, tuples and dicts, names bound earlier, ``+`` of strings,
-    lists or tuples and f-strings of known values: what model names, ``_inherit`` lists and
-    ``_inherits`` dicts are made of.
+    lists or tuples, ``*`` of a known list, tuple or dict view in a display, and f-strings
+    of known values: what model names, ``_inherit`` lists and ``_inherits`` dicts are
+    made of.
     """
     if isinstance(node, ast.Constant):
         return node.value
@@ -30,7 +31,15 @@ def evaluate(node: ast.expr, scope: Mapping[str, object]) -> object:
     if isinstance(node, ast.Name):
         return scope.get(node.id, UNKNOWN)
     if isinstance(node, ast.List | ast.Tuple):
-        items = [evaluate(item, scope) for item in node.elts]
+        items: list[object] = []
+        for item in node.elts:
+            if not isinstance(item, ast.Starred):
+                items.append(evaluate(item, scope))
+                continue
+            spliced = _spliced(item.value, scope)  # ``*CLOSED_STATES.items()``
+            if spliced is None:
+                return UNKNOWN
+            items.extend(spliced)
         return items if isinstance(node, ast.List) else tuple(items)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         return _concatenate(evaluate(node.left, scope), evaluate(node.right, scope))
@@ -39,6 +48,28 @@ def evaluate(node: ast.expr, scope: Mapping[str, object]) -> object:
         strings = [part for part in parts if isinstance(part, str)]
         return "".join(strings) if len(strings) == len(parts) else UNKNOWN
     return UNKNOWN
+
+
+def _spliced(node: ast.expr, scope: Mapping[str, object]) -> list[object] | None:
+    """The items ``*value`` puts in a display: of a list or tuple, of a dict's view.
+
+    ``*CLOSED_STATES.items()`` in ``fields.Selection([...])`` (``project.task.state``),
+    for a dict the scan knows; ``None`` for anything else.
+    """
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and not node.args
+        and not node.keywords
+        and node.func.attr in {"items", "keys", "values"}
+    ):
+        known = evaluate(node.func.value, scope)
+        if not isinstance(known, dict) or UNKNOWN in known.values():
+            return None
+        views = {"items": list(known.items()), "keys": list(known), "values": list(known.values())}
+        return list(views[node.func.attr])
+    value = evaluate(node, scope)
+    return list(value) if isinstance(value, list | tuple) else None
 
 
 def _concatenate(left: object, right: object) -> object:

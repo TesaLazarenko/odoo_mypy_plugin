@@ -47,11 +47,14 @@ from mypy.nodes import (
     Expression,
     FloatExpr,
     IntExpr,
+    ListComprehension,
     ListExpr,
     MemberExpr,
     NameExpr,
+    OpExpr,
     RefExpr,
     SetExpr,
+    StarExpr,
     StrExpr,
     TupleExpr,
     TypeInfo,
@@ -96,6 +99,7 @@ __all__ = [
     "ContextDefault",
     "ValsChecker",
     "ValsTarget",
+    "command_items",
     "context_defaults",
     "selection_problem",
     "stored",
@@ -441,11 +445,12 @@ class ValsChecker:
             self._check_selection_keys(model, info, items, value)
         if info.field_type in RELATIONAL_CLASSES and info.comodel and "comodel" not in info.dynamic:
             self._check_comodel(model, info, items, value)
-            if info.field_type in X2MANY_CLASSES and isinstance(value, ListExpr):
-                self._check_commands(model, info, info.comodel, value)
+            commands = command_items(value) if info.field_type in X2MANY_CLASSES else None
+            if commands is not None:
+                self._check_commands(model, info, info.comodel, commands)
 
     def _check_commands(
-        self, model: str, info: FieldInfo, comodel: str, commands: ListExpr
+        self, model: str, info: FieldInfo, comodel: str, commands: list[Expression]
     ) -> None:
         """The ids and the vals of the x2many commands given to a field."""
         target = self.target_for(comodel)
@@ -468,14 +473,14 @@ class ValsChecker:
                 code=ODOO_VALS_TYPE,
             )
 
-    def _check_command_ids(self, model: str, info: FieldInfo, commands: ListExpr) -> None:
+    def _check_command_ids(self, model: str, info: FieldInfo, commands: list[Expression]) -> None:
         """Report x2many commands with the ids of another model's records, or no command.
 
         ``Command.link(partner.id)`` / ``(4, partner.id)`` / ``Command.set(partners.ids)`` /
         ``(6, 0, partners.ids)`` on a field of another comodel link whatever records have
         those ids; a tuple whose first item is not 0-6 is not a command.
         """
-        for item in commands.items:
+        for item in commands:
             for node in _command_ids(item):
                 if not isinstance(node, MemberExpr) or node.name not in {"id", "ids"}:
                     continue
@@ -675,9 +680,32 @@ def _literal_strings(items: Sequence[ProperType]) -> Iterator[str]:
             yield literal.value
 
 
-def _command_vals(commands: ListExpr) -> Iterator[Expression]:
+def command_items(value: Expression) -> list[Expression] | None:
+    """The commands of an x2many value, by syntax; ``None`` if it is no list of them.
+
+    A list display (``[Command.create({...})]``), lists joined with ``+``, a comprehension
+    of commands (``[Command.create({"name": n}) for n in names]``, the command is its
+    item), and ``*`` of such a list in a display.
+    """
+    if isinstance(value, ListExpr):
+        found: list[Expression] = []
+        for item in value.items:
+            spliced = command_items(item.expr) if isinstance(item, StarExpr) else [item]
+            found.extend(spliced or [])
+        return found
+    if isinstance(value, OpExpr) and value.op == "+":
+        left, right = command_items(value.left), command_items(value.right)
+        if left is None and right is None:
+            return None
+        return [*(left or []), *(right or [])]
+    if isinstance(value, ListComprehension):
+        return [value.generator.left_expr]
+    return None
+
+
+def _command_vals(commands: list[Expression]) -> Iterator[Expression]:
     """The comodel vals of an x2many value: ``Command.create({...})``, ``(0, 0, vals)``."""
-    for item in commands.items:
+    for item in commands:
         if isinstance(item, CallExpr):
             position = COMMAND_VALS.get(_command_name(item.callee) or "")
             if position is not None and len(item.args) > position:

@@ -95,3 +95,96 @@ def test_a_method_decorated_with_wraps_is_bound_on_an_instance(run_mypy: RunMypy
     messages = result.messages("t_mod/tools.py")
     assert len(messages) == 1
     assert messages[0].startswith('14: error: Missing positional argument "key"')
+
+
+DECORATED = """
+from odoo import api, fields, models
+
+class Order(models.Model):
+    _name = "t.order"
+
+    name = fields.Char()
+    total = fields.Float(compute="_compute_total")
+
+    def _checked_fields(self) -> list[str]:
+        return ["name"]
+
+    @api.constrains(lambda self: self._checked_fields())
+    def _check_name(self) -> None:
+        pass
+
+    @api.depends(lambda self: ["name"])
+    def _compute_total(self) -> None:
+        for order in self:
+            order.total = 1.0
+
+    @api.depends("nmae")
+    def _compute_other(self) -> None:
+        pass
+"""
+
+
+def test_field_decorators_take_a_function(run_mypy: RunMypy) -> None:
+    """Odoo tests ``callable(args[0])`` (17, 18) or declares an overload (19+)."""
+    result = run_mypy({"t_mod": {"depends": ["base"], "models.py": DECORATED}})
+
+    messages = result.messages("t_mod/models.py")
+    assert len(messages) == 1
+    assert messages[0].startswith('22: error: Odoo model "t.order" has no field "nmae"')
+
+
+SPLICED = """
+from odoo import fields, models
+
+CLOSED_STATES = {"1_done": "Done", "1_canceled": "Canceled"}
+OPEN = [("01_in_progress", "In Progress")]
+
+class Task(models.Model):
+    _name = "t.task"
+
+    state = fields.Selection([*OPEN, *CLOSED_STATES.items(), ("04_waiting_normal", "Waiting")])
+
+    def check(self) -> None:
+        if self.state != "04_waiting_normal" and self.state not in CLOSED_STATES:
+            pass
+        if self.state == "1_done" or self.state == "04_waiting":
+            pass
+"""
+
+
+def test_a_selection_spliced_from_constants_is_checked(run_mypy: RunMypy) -> None:
+    result = run_mypy({"t_mod": {"depends": ["base"], "models.py": SPLICED}})
+
+    messages = result.messages("t_mod/models.py")
+    assert len(messages) == 1
+    assert messages[0].startswith('15: error: Value "04_waiting" is not in the selection')
+    assert '("01_in_progress", "1_done", "1_canceled", "04_waiting_normal")' in messages[0]
+
+
+COMMANDS = """
+from odoo import Command, fields, models
+
+class Tag(models.Model):
+    _name = "t.tag"
+
+    name = fields.Char()
+
+class Task(models.Model):
+    _name = "t.task"
+
+    tag_ids = fields.Many2many("t.tag")
+
+    def tag(self, names: list[str]) -> None:
+        self.tag_ids = [Command.set([])] + [Command.create({"nmae": name}) for name in names]
+        extra = [Command.create({"name": "x"})]
+        self.write({"tag_ids": [*extra, Command.create({"nme": "y"})]})
+"""
+
+
+def test_commands_built_with_comprehensions_and_concatenation(run_mypy: RunMypy) -> None:
+    result = run_mypy({"t_mod": {"depends": ["base"], "models.py": COMMANDS}})
+
+    messages = result.messages("t_mod/models.py")
+    assert [message.split(":")[0] for message in messages] == ["15", "17"]
+    assert '"nmae"' in messages[0]
+    assert '"nme"' in messages[1]

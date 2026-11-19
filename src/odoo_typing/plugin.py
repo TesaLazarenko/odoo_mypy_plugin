@@ -169,7 +169,11 @@ from odoo_typing.hooks.env import (
     test_cursor,
     type_request,
 )
-from odoo_typing.hooks.falsy_parameters import guarded_result, guarded_signature
+from odoo_typing.hooks.falsy_parameters import (
+    decorator_function_signature,
+    guarded_result,
+    guarded_signature,
+)
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
 from odoo_typing.hooks.field_objects import FieldObjectHooks
 from odoo_typing.hooks.field_values import FILTER, FieldValueHooks, falsy_filter_signature
@@ -789,6 +793,10 @@ class OdooPlugin(Plugin):
                 self._field_tuple_hook(fullname) or self._registered_hook(fullname),
                 self._context_hook(fullname, method=False),
                 self._guard_signature_hook(fullname, method=False),
+                # ``@api.depends(lambda self: ...)``: the function takes the model's records
+                partial(decorator_function_signature, self._models.profile.base_model)
+                if fullname in self._models.profile.field_decorators
+                else None,
             ]
             chained: Callable[[FunctionSigContext], FunctionLike] | None = None
             for then in hooks:
@@ -1194,7 +1202,9 @@ class OdooPlugin(Plugin):
         self, fullname: str, method: bool
     ) -> Callable[[MethodSigContext | FunctionSigContext], FunctionLike] | None:
         guard = self._guard_of(fullname, method) if "." in fullname else NO_GUARD
-        return partial(guarded_signature, guard) if guard.falsy or guard.booleans else None
+        if guard.falsy or guard.booleans or guard.callable_first:
+            return partial(guarded_signature, guard, self._models.profile.base_model)
+        return None
 
     def _guard_result_hook(
         self, fullname: str, method: bool

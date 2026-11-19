@@ -172,6 +172,14 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   `request.future_response.set_cookie("name", max_age=0)` is no error.
 - A parameter that an Odoo function hands as it is to a function of the same file that
   handles it when false takes `False` too: `format_date(env, value, lang_code=user.lang)`.
+- `@api.depends(lambda self: ...)` / `@api.constrains(...)` take a function on Odoo 17
+  and 18 too (Odoo declares `*args: str` and tests `callable(args[0])`), and on every
+  version the function takes the records of the model whose method it decorates (Odoo
+  19+ declares `BaseModel`).
+- A selection spliced from constants (`[*OPEN, *CLOSED_STATES.items(), (...)]`) is read
+  by the scan: its keys are checked in comparisons (`project.task.state`).
+- x2many commands built with `+`, a comprehension or `*` are checked like a list of them:
+  `self.tag_ids = [Command.set([])] + [Command.create({"nmae": n}) for n in names]`.
 
 - Data built from displays is not typed from its first values: a variable bound to a
   display of dicts or to a value with an empty display inside (`[{...}, {...}]`,
