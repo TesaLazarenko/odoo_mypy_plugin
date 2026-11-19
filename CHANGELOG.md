@@ -90,7 +90,13 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   which declares the attribute as the `frozendict` it builds from it.
 - A field delegated through `_inherits` is required when the parent's field is, as in
   Odoo; `create_date` and `write_date` read without `| Literal[False]`
-  (`required_values`).
+  (`required_values`), and so does `parent_path` of a model with `_parent_store`.
+- A model's own field that redefines one its earlier classes get only through
+  `_inherits` is no error, whatever the order mypy analyzes the model's classes in; the
+  first class of a model keeps mypy's checks for its fields, and so does a field an
+  earlier class declares itself.
+- `parent_path` reads as a string also when a later addon says `_parent_store = True`
+  again; turned off and on again, the old rows keep an empty path.
 - `record.id` is an `int` (Odoo 17, 18): Odoo 18 declares `int | NewId`, the id of a
   record of `new()` or of a form's onchange, which made every `values[record.id]` of a
   `dict[int, ...]` and every `id: int` parameter an error for saved records too. Option

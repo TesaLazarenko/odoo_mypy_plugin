@@ -57,6 +57,11 @@ plugin:
 - **Log-access fields**: `self.create_date` is `datetime` (`create` and `write` set the
   dates on every record; `datetime | Literal[False]` with `required_values = false`) and
   `self.create_uid` a `res.users` record, unless `_log_access` / `_auto` is `False`.
+- **`parent_path`** of a model with `_parent_store = True` is `str`
+  (`loc.parent_path.split("/")`): `create` and `write` give every record its path. Not
+  when a later addon turns `_parent_store` on for a field that was already there: Odoo
+  computes the paths of the existing rows only when it adds the column. A new record
+  reads `False`, as for a required field (`required_values`).
 - **Attributes a class method defines**: `cls.partner = cls.env["res.partner"].create(...)`
   in `setUpClass` defines `partner` for the class and its subclasses, with the type of
   the value. Plain mypy takes only `self.name = ...` of an instance method for a

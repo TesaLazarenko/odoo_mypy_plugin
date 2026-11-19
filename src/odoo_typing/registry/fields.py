@@ -15,10 +15,12 @@ from odoo_typing.addons import BASE
 from odoo_typing.computed import Call, computed_calls, recomputed_text
 from odoo_typing.config import Settings
 from odoo_typing.model_fields import (
+    PARENT_PATH,
     chain_definitions,
     delegated_field,
     delegation_fields,
     merge_definitions,
+    parent_path_filled,
     service_definitions,
 )
 from odoo_typing.references import RELATIONAL
@@ -231,6 +233,9 @@ class ModelFields(ModelViews):
         for name, found in chain_definitions(view.chain).items():
             definitions.setdefault(name, []).extend(found)
         fields = {name: merge_definitions(found) for name, found in definitions.items()}
+        path = fields.get(PARENT_PATH)
+        if path is not None and path.required is None and parent_path_filled(view.chain):
+            fields[PARENT_PATH] = replace(path, required=True)
         inherited: dict[str, FieldInfo] = {}
         for delegate, field_name in delegation_fields(view.chain, fields).items():
             if delegate != model:

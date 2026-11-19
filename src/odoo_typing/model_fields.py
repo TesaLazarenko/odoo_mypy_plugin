@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
+from itertools import takewhile
 from typing import Final, TypeVar
 
 from odoo_typing.frozen import frozen
@@ -31,12 +32,14 @@ __all__ = [
     "LOG_ACCESS_FIELDS",
     "MAGIC_FIELDS",
     "MAGIC_FIELDS_17",
+    "PARENT_PATH",
     "chain_definitions",
     "delegated_field",
     "delegation_fields",
     "literal_argument",
     "merge_definitions",
     "merge_keys",
+    "parent_path_filled",
     "service_definitions",
     "stored",
     "value_required",
@@ -83,6 +86,38 @@ LOG_ACCESS_FIELDS: Final = (
     FieldInfo("write_uid", "Many2one", comodel="res.users", readonly=True),
     FieldInfo("write_date", "Datetime", readonly=True, required=True),
 )
+# The field of a model with ``_parent_store``: Odoo gives every record its path (the ids
+# of its ancestors and its own, ``"1/4/"``). ``create`` writes it right after the insert
+# (``_parent_store_create``), ``write`` when the parent changes (``_parent_store_update``),
+# and ``_auto_init`` computes it for the rows that are there when it adds the column. So a
+# saved record has it like the value of a required field; a new record reads ``False``.
+PARENT_PATH: Final = "parent_path"
+
+
+def parent_path_filled(chain: Sequence[Contribution]) -> bool:
+    """Whether the records of a registry class all have their ``parent_path``.
+
+    Odoo computes the paths of the rows that exist only when it adds the column, so the
+    model must have ``_parent_store`` from the moment the field is there: the classes
+    that set it, from the most derived one back, say True without a break, and the most
+    base of them is of the addon that first declares the field or comes before it. Rows
+    saved before a later addon turned ``_parent_store`` on would keep an empty path; a
+    later class that says True again changes nothing.
+
+    Args:
+        chain: The classes of the registry class, most derived first.
+    """
+    setters = [index for index, item in enumerate(chain) if item.parent_store is not None]
+    on = list(takewhile(lambda index: chain[index].parent_store is True, setters))
+    declared = [
+        index
+        for index, item in enumerate(chain)
+        if any(info.name == PARENT_PATH for info in item.fields)
+    ]
+    if not on or not declared:
+        return False
+    since, first = on[-1], declared[-1]
+    return since >= first or chain[since].addon == chain[first].addon
 
 
 def chain_definitions(chain: Sequence[Contribution]) -> dict[str, list[FieldInfo]]:

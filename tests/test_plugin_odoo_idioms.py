@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import RunMypy
 
 FILTERED = """
@@ -69,6 +70,100 @@ def test_own_fields_redefine_display_name_and_delegated_fields(run_mypy: RunMypy
     result = run_mypy({"t_mod": {"depends": ["base"], "models.py": REDEFINED}})
 
     assert result.messages("t_mod/models.py") == []
+
+
+PAGE = """
+from odoo import fields, models
+
+class View(models.Model):
+    _name = "t.view"
+
+class Page(models.Model):
+    _name = "t.page"
+    _inherits = {"t.view": "view_id"}
+
+    view_id = fields.Many2one("t.view", required=True, ondelete="cascade")
+"""
+THEME = """
+from odoo import fields, models
+
+class ThemeView(models.Model):
+    _name = "t.theme.view"
+
+class View(models.Model):
+    _inherit = "t.view"
+
+    theme_id = fields.Many2one("t.theme.view")
+
+class Page(models.Model):
+    _inherit = "t.page"
+
+    theme_id = fields.Many2one("t.page")
+
+    def themed(self) -> None:
+        reveal_type(self.theme_id)
+"""
+
+
+@pytest.mark.parametrize(("first", "second"), [("page", "theme"), ("theme_page", "page_theme")])
+def test_own_field_redefines_a_delegated_one_whatever_the_order_of_analysis(
+    run_mypy: RunMypy, first: str, second: str
+) -> None:
+    """The earlier class of the page may get the delegated field after the later one is analyzed.
+
+    ``website.page`` of Odoo: ``theme_models.py`` gives ``ir.ui.view`` a field and the page
+    its own of that name. Neither module imports the other, so mypy analyzes them in the
+    order of its own choosing: the test names them both ways.
+    """
+    files = {
+        "__init__.py": f"from . import {first}\nfrom . import {second}\n",
+        f"{first}.py": PAGE,
+        f"{second}.py": THEME,
+    }
+
+    result = run_mypy({"t_mod": {"depends": ["base"], **files}})
+
+    assert result.messages(".py") == [
+        f'18: note: Revealed type is "t_mod.{second}.Page"',
+    ]
+
+
+DELEGATING_BASES = """
+from odoo import fields, models
+
+class View(models.Model):
+    _name = "t.view"
+    foo = fields.Char()
+
+class X(models.Model):
+    _name = "t.x"
+    _inherits = {"t.view": "view_id"}
+    view_id = fields.Many2one("t.view", required=True, ondelete="cascade")
+    foo = fields.Integer()
+
+class Other(models.Model):
+    _name = "t.other"
+    foo = fields.Char()
+
+class Y(models.Model):
+    _name = "t.y"
+    _inherit = ["t.other", "t.x"]
+
+class Y2(models.Model):
+    _name = "t.y2"
+    _inherit = ["t.x", "t.other"]
+"""
+
+
+def test_own_field_beside_a_delegated_one_still_conflicts_with_other_bases(
+    run_mypy: RunMypy,
+) -> None:
+    """The first class of ``t.x`` overrides nothing: its field keeps mypy's checks as a base."""
+    result = run_mypy({"t_mod": {"depends": ["base"], "models.py": DELEGATING_BASES}})
+
+    messages = result.messages("models.py")
+    assert [message.split(":")[0] for message in messages] == ["18", "22"]
+    assert all('Definition of "foo" in base class' in message for message in messages)
 
 
 WRAPS = """

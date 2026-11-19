@@ -158,6 +158,7 @@ class Contribution:
         log_access: ``_log_access`` as the class body sets it, ``False`` if it only
             sets ``_auto = False`` (Odoo's default follows ``_auto``), ``None`` if
             neither is set.
+        parent_store: ``_parent_store`` as the class body sets it, ``None`` if it does not.
         abstract: Whether the class is abstract: ``_abstract`` of its body, else whether
             it derives from ``AbstractModel`` rather than ``Model`` / ``TransientModel``;
             ``None`` if neither tells.
@@ -196,6 +197,7 @@ class Contribution:
     delegates: tuple[str, ...] = ()
     inherits: tuple[tuple[str, str], ...] = ()
     log_access: bool | None = None
+    parent_store: bool | None = None
     abstract: bool | None = None
     value_keys: tuple[str, ...] = ()
     dispatches: tuple[tuple[str, str, tuple[str, ...]], ...] = ()

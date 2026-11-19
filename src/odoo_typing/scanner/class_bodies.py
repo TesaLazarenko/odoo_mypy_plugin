@@ -28,6 +28,7 @@ __all__ = [
     "inherits_pairs",
     "log_access",
     "model_name",
+    "parent_store",
     "passed_containers",
     "read_value_keys",
     "record_dispatches",
@@ -147,6 +148,12 @@ def inherits_pairs(inherits: object) -> tuple[tuple[str, str], ...]:
 def log_access(attrs: dict[str, object]) -> bool | None:
     """``_log_access`` of a class body; MetaModel defaults it to ``_auto``."""
     value = attrs.get("_log_access", attrs.get("_auto"))
+    return value if isinstance(value, bool) else None
+
+
+def parent_store(attrs: dict[str, object]) -> bool | None:
+    """``_parent_store`` of a class body, ``None`` if it does not set it."""
+    value = attrs.get("_parent_store")
     return value if isinstance(value, bool) else None
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection, Sequence
 from functools import partial
 
 from mypy.nodes import (
@@ -271,7 +272,9 @@ class ModelClassHooks(Hooks):
             [item.class_name, item.model, item.parents, item.inherits, item.delegates]
             for item in scan.contributions
         ]
-        details = [[item.log_access, item.abstract] for item in scan.contributions]
+        details = [
+            [item.log_access, item.parent_store, item.abstract] for item in scan.contributions
+        ]
         fields = [item.fields for item in scan.contributions]
         # What the methods assign decides whether a computed field may be empty; which
         # class defines the compute method last, which of them assign on every path; which
@@ -293,6 +296,38 @@ class ModelClassHooks(Hooks):
         self._fields_digests[scan.module] = (scan, value)
         return value
 
+    def _delegated_names(self, contribution: Contribution) -> set[str]:
+        """The names of the fields a class gets through ``_inherits`` (its whole chain)."""
+        chain = self.registry.linearization(contribution)
+        delegates = self.registry.delegate_closure(chain, contribution.model, contribution.addon)
+        return {
+            name
+            for delegate in delegates
+            for name in self.registry.fields(delegate, contribution.addon)
+        }
+
+    def _delegated_to_bases(
+        self, contribution: Contribution, chain: Sequence[Contribution]
+    ) -> set[str]:
+        """The class's own fields that its bases hold only as delegated fields.
+
+        A base holds a delegated field when ``_inherits`` gives it one and no base declares
+        a field of that name itself: only then is the own field no override of a field
+        the bases declare (that one keeps mypy's check, in whatever order mypy analyzes).
+        """
+        own = {info.name for info in contribution.fields}
+        if not own:
+            return set()
+        earlier = chain[1:]
+        declared = {info.name for item in earlier for info in item.fields}
+        candidates = own - declared
+        held: set[str] = set()
+        for item in earlier:
+            if not candidates - held:
+                break
+            held |= candidates & self._delegated_names(item)
+        return held
+
     def _delegate_fields(self, contribution: Contribution, ctx: ClassDefContext) -> None:
         """Add the fields of the models a class delegates to (``_inherits``).
 
@@ -303,6 +338,7 @@ class ModelClassHooks(Hooks):
         chain = self.registry.linearization(contribution)
         sources: list[tuple[TypeInfo, tuple[str, ...]]] = []
         delegates = self.registry.delegate_closure(chain, contribution.model, contribution.addon)
+        _own_fields_override_delegated(ctx.cls.info, self._delegated_to_bases(contribution, chain))
         for delegate in delegates:
             classes = self.registry.delegate_chain(delegate, contribution.addon)
             found = field_sources(classes, ctx.api.modules, incomplete_modules(ctx))
@@ -311,29 +347,24 @@ class ModelClassHooks(Hooks):
                 return
             sources += found or []
         add_delegated_fields(ctx.cls.info, sources)
-        _own_fields_override_delegated(ctx.cls.info)
 
 
-def _own_fields_override_delegated(info: TypeInfo) -> None:
-    """Let a class's own field redefine one an earlier class of its model delegates to.
+def _own_fields_override_delegated(info: TypeInfo, names: Collection[str]) -> None:
+    """Let a class's own fields redefine the delegated ones its bases get.
 
     ``website.page`` delegates to ``ir.ui.view`` (``_inherits``), whose
-    ``theme_template_id`` an earlier class of the page got; a later class of the page
+    ``theme_template_id`` an earlier class of the page gets; a later class of the page
     declares its own ``theme_template_id`` (another comodel). Odoo then sets up the
     model's own field, not the delegated one: the type of the delegated field in the
-    earlier class is no type the own one must fit.
+    earlier class is no type the own one must fit. The earlier class may get the
+    delegated field after this one is analyzed (the classes import each other), so the
+    names come from the registry (:meth:`ModelClassHooks._delegated_to_bases`), not from
+    what the bases hold so far.
     """
-    for name, node in info.names.items():
-        if node.plugin_generated or not isinstance(node.node, Var):
-            continue
-        for base in info.mro[1:]:
-            found = base.names.get(name)
-            if found is None:
-                continue
-            source = found.node
-            if found.plugin_generated and isinstance(source, Var) and source.info is not base:
-                node.node.allow_incompatible_override = True
-            break
+    for name in names:
+        node = info.names.get(name)
+        if node is not None and not node.plugin_generated and isinstance(node.node, Var):
+            node.node.allow_incompatible_override = True
 
 
 def _meta_field_names(
