@@ -7,12 +7,13 @@ first question, and an addon's files are scanned only when a question needs the 
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from functools import cached_property, partial
 from pathlib import Path
-from typing import NamedTuple, Protocol
+from typing import Final, NamedTuple, Protocol
 
 from odoo_typing.addons import Addon, AddonIndex, LoadKey
 from odoo_typing.config import Settings
@@ -50,6 +51,10 @@ from odoo_typing.stamps import UNREADABLE, Stamp, Stamps, matches, read_index, s
 from odoo_typing.written_keys import WrittenKeys, written_keys
 
 __all__ = ["NO_REFERENCES", "FileReferences", "IndexLoader", "ScanCache", "ScannedAddons"]
+
+
+# ``x.id.origin`` in a file's text (``.id . origin`` too): only such files are parsed for it.
+ID_ORIGIN: Final = re.compile(rb"\.\s*id\s*\.\s*origin\b")
 
 
 class IdOriginReads(NamedTuple):
@@ -421,28 +426,34 @@ class ScannedAddons:
         return written_keys(tree, line) if tree is not None else WrittenKeys()
 
     def id_origin_reads(self, path: str | Path) -> IdOriginReads:
-        """Where a source file reads ``x.id.origin`` (see :class:`IdOriginReads`)."""
+        """Where a source file reads ``x.id.origin`` (see :class:`IdOriginReads`).
+
+        Asked for each module that reads ``record.id``: a file without ``.id.origin`` in
+        its text is not parsed.
+        """
+        try:
+            source = Path(self.addons.real_path(path)).read_bytes()
+        except OSError:
+            return IdOriginReads()
+        if ID_ORIGIN.search(source) is None:
+            return IdOriginReads()
         tree = self._parsed_tree(path)
         if tree is None:
             return IdOriginReads()
-        try:
-            lines = Path(self.addons.real_path(path)).read_bytes().splitlines()
-        except OSError:
-            lines = []
-        inner = {
-            id(node.value)
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Attribute)
-            and node.attr == "origin"
-            and isinstance(node.value, ast.Attribute)
-            and node.value.attr == "id"
-        }
+        lines = source.splitlines()
+        ids: list[ast.Attribute] = []
+        inner: set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute):
+                continue
+            if node.attr == "id":
+                ids.append(node)
+            elif node.attr == "origin" and isinstance(node.value, ast.Attribute):
+                inner.add(id(node.value))
         positions: set[tuple[int, int, int]] = set()
         origin_lines: set[int] = set()
         plain_lines: set[int] = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Attribute) or node.attr != "id":
-                continue
+        for node in ids:
             line = node.lineno
             if id(node) not in inner:
                 plain_lines.add(line)
