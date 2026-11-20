@@ -72,9 +72,9 @@ def test_binary_and_reference_fields_read_typed(run_mypy: RunMypy, odoo_version:
     ]
     assert messages[2].startswith('12: note: Revealed type is "odoo.addons.base.')
     assert "t_base.models.Line" in messages[2]
-    assert messages[2].endswith('| Literal[False]"')
+    assert messages[2].endswith('| None"')  # empty, a Reference reads None, not False
     # A selection the scan cannot read: records of a model known only at run time.
-    assert messages[3] == '13: note: Revealed type is "Any | Literal[False]"'
+    assert messages[3] == '13: note: Revealed type is "Any | None"'
     computed = "Any" if odoo_version < 20 else declared
     assert messages[4:] == [
         '14: note: Revealed type is "str | Literal[False]"',
@@ -447,6 +447,7 @@ class Wizard(models.Model):
 
     target = fields.Reference(selection="_selection_target", required=True)
     optional = fields.Reference(selection="_selection_target")
+    partner = fields.Reference(selection=[("res.partner", "Partner")], required=True)
 
     def _selection_target(self):
         return []
@@ -454,6 +455,9 @@ class Wizard(models.Model):
     def use(self) -> None:
         self.target.collaborator_ids
         self.optional.collaborator_ids
+        reveal_type(self.partner)
+        for found in self.search([("optional", "!=", False)]):
+            reveal_type(found.optional)
 """
 
 
@@ -464,13 +468,18 @@ def test_reference_to_a_model_known_at_run_time(run_mypy: RunMypy) -> None:
         {"my_mod": {"models.py": REFERENCE_FIELDS}}, options='dynamic_env = "base"\n'
     ).messages("my_mod/models.py")
 
-    # The field may be empty: a record whose model is not known, or False.
-    assert plain == [
-        '15: error: Item "bool" of "Any | Literal[False]" has no attribute "collaborator_ids"'
-        "  [union-attr]"
-    ]
-    assert [message.partition(": error: ")[2].split('"')[1] for message in base] == [
+    # The field may be empty: a record whose model is not known, or None.
+    assert plain[0] == (
+        '16: error: Item "None" of "Any | None" has no attribute "collaborator_ids"  [union-attr]'
+    )
+    # Required: no None. Found by a search that asks for a value: none either.
+    assert plain[1].startswith('17: note: Revealed type is "odoo.addons.base.')
+    assert ".res_partner." in plain[1]  # Partner, ResPartner on Odoo 19
+    assert "None" not in plain[1]
+    assert plain[2:] == ['19: note: Revealed type is "Any"']
+    errors = [message for message in base if ": error: " in message]
+    assert [message.partition(": error: ")[2].split('"')[1] for message in errors] == [
         "BaseModel",
         "BaseModel",
-        "bool",
+        "None",
     ]

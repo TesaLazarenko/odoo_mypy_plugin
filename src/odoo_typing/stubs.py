@@ -57,7 +57,7 @@ VALUES: Final = {
     "Datetime": f"_datetime.datetime | {FALSE}",
     "Binary": f"builtins.bytes | {FALSE}",
     "Image": f"builtins.bytes | {FALSE}",
-    "Reference": f"odoo.models.BaseModel | {FALSE}",
+    "Reference": "odoo.models.BaseModel | None",
 }
 ANY: Final = "typing.Any"
 # The real classes of a model disagree with each other at times (Odoo does not mind).
@@ -91,6 +91,8 @@ def _vals_value(info: FieldInfo, classes: Mapping[str, str]) -> str:
         return f"builtins.int | {_value(info, classes)} | {FALSE} | None"
     if info.field_type in {"One2many", "Many2many"}:
         return f"builtins.list[{ANY}]"
+    if info.field_type == "Reference":  # ``"model,id"``, a record, or empty either way
+        return f"builtins.str | odoo.models.BaseModel | {FALSE} | None"
     value = _value(info, classes)
     return value if value == ANY else f"{value} | None"
 

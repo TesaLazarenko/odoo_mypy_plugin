@@ -57,6 +57,8 @@ plugin:
 - **Log-access fields**: `self.create_date` is `datetime` (`create` and `write` set the
   dates on every record; `datetime | Literal[False]` with `required_values = false`) and
   `self.create_uid` a `res.users` record, unless `_log_access` / `_auto` is `False`.
+- **`max(values, default=False)`** (and `min`) is `datetime | Literal[False]`: the only
+  `bool` the call gives is the default it was passed, so `if latest:` leaves the date.
 - **`parent_path`** of a model with `_parent_store = True` is `str`
   (`loc.parent_path.split("/")`): `create` and `write` give every record its path. Not
   when a later addon turns `_parent_store` on for a field that was already there: Odoo
@@ -553,9 +555,10 @@ creates.
 - `Binary` and `Image` read as `bytes | Literal[False]` (Odoo 18-19 declare them without
   a value type; Odoo 20's own type is kept), except computed fields that are not stored:
   Odoo uses those to hold any value for a widget (a dict), so they stay `Any`.
-- `Reference` reads as a record of the models of its literal `selection`, or `False`.
+- `Reference` reads as a record of the models of its literal `selection`, or `None`:
+  an empty reference reads `None` in Odoo, not `False` (`Reference.convert_to_record`).
   A selection given by a method names the models at run time: the record is `Any` then
-  (`| Literal[False]` unless the field is required), as `env[name]` of a name made at
+  (`| None` unless the field is required), as `env[name]` of a name made at
   run time (`dynamic_env = "base"` keeps `BaseModel`). Odoo types it as the `str` of
   `Selection`, but the value is a record.
 - With `literal_selection = true`, a `Selection` field with literal keys reads as
@@ -930,7 +933,8 @@ With real recordset types, some plain mypy codes appear more often:
   one whose only value is a dict display of values of different types (then
   `values[key] = x` takes any value too).
 - A **record dict**: a local variable built only by dict displays with string keys
-  (`context = {"default_move_type": "out_invoice"}`, also `{}`) that the function changes
+  (`context = {"default_move_type": "out_invoice"}`, also `{}`, `dict()` and
+  `dict(name=...)`) that the function changes
   under string keys (`context.update({"default_partner_id": partner.id})`,
   `vals["name"] = name`). mypy takes its value type from the first display (or the first
   change of `{}`), so every change with a value of another type was an error. Its values

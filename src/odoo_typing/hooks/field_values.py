@@ -109,7 +109,7 @@ class FieldValueHooks(Hooks):
         return signature.copy_modified(ret_type=resolved or comodel)
 
     def _required_value(self, signature: FunctionLike, ctx: MethodSigContext) -> FunctionLike:
-        """A field that is set on the records read, without ``False``.
+        """A field that is set on the records read, without ``False`` (``None`` of a ``Reference``).
 
         ``required_values``: a required field (and ``display_name``). Odoo reads
         ``False`` for a required field of a new record or of a form whose value is not set
@@ -132,7 +132,8 @@ class FieldValueHooks(Hooks):
         value = get_proper_type(signature.ret_type)
         if not isinstance(value, UnionType):
             return signature
-        kept = [item for item in value.items if not _is_false(item)]
+        reference = info is not None and info.field_type == "Reference"
+        kept = [item for item in value.items if not _is_empty(item, reference)]
         if len(kept) == len(value.items) or self._stored(member, ctx.api):
             return signature
         return signature.copy_modified(ret_type=make_simplified_union(kept))
@@ -285,7 +286,8 @@ class FieldValueHooks(Hooks):
 
         ``Binary`` / ``Image`` (``Field`` without a value type, so ``Any``) read as
         ``bytes | Literal[False]``; ``Reference`` reads as a record of one of the models
-        of a literal ``selection`` (``BaseModel`` otherwise), not as Selection's ``str``;
+        of a literal ``selection`` (``BaseModel`` otherwise) or ``None``, not as
+        Selection's ``str | Literal[False]``;
         with ``literal_selection``, a ``Selection`` with literal keys reads as
         ``Literal[<keys>] | Literal[False]``.
         """
@@ -315,8 +317,9 @@ class FieldValueHooks(Hooks):
             value: Type = make_simplified_union([checker.named_type("builtins.bytes"), false])
             return signature.copy_modified(ret_type=value)
         if kind == "Reference":
+            # Empty, it reads ``None``, not ``False`` (``Reference.convert_to_record``).
             models = self._reference_types(info, records, ctx.api)
-            return signature.copy_modified(ret_type=make_simplified_union([*models, false]))
+            return signature.copy_modified(ret_type=make_simplified_union([*models, NoneType()]))
         if info is None or not info.selection or "selection" in info.dynamic:
             if self._profile.untyped_fields:
                 return _class_value_get(descriptor, signature, self._profile, checker)
@@ -501,6 +504,11 @@ def _is_false(item: Type) -> bool:
     """Whether a type is ``Literal[False]``."""
     proper = get_proper_type(item)
     return isinstance(proper, LiteralType) and proper.value is False
+
+
+def _is_empty(item: Type, reference: bool) -> bool:
+    """Whether a type is the empty value of a field: ``False``, ``None`` of a ``Reference``."""
+    return _is_false(item) or (reference and isinstance(get_proper_type(item), NoneType))
 
 
 # Odoo 17: what reading a field gives, by field class (as Odoo 18 declares them).

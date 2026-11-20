@@ -20,7 +20,8 @@ mypy calls no hook for a dict or list display, so the hooks are those of the rea
   different types.
 
 A **record dict** is a local variable built only by dict displays with string keys
-(``context = {"default_move_type": "out_invoice"}``, also ``{}``) that the function then
+(``context = {"default_move_type": "out_invoice"}``, also ``{}``, ``dict()`` and
+``dict(name=...)``) that the function then
 changes under string keys (``context.update({"default_partner_id": partner.id})``,
 ``vals["name"] = name``): a record of named values, not a mapping of one type. mypy
 takes its value type from the first display (or the first change of ``{}``), and every
@@ -407,7 +408,17 @@ def _receiver(context: object) -> Expression | None:
 
 
 def _is_record_display(value: Expression | None) -> bool:
-    """``{"name": ..., "amount": ...}`` or ``{}``: a dict display with string keys only."""
+    """``{"name": ..., "amount": ...}`` or ``{}``: a dict display with string keys only.
+
+    Also ``dict()`` and ``dict(name=..., amount=...)``: the keys of the keyword
+    arguments are strings too.
+    """
+    if isinstance(value, CallExpr):
+        return (
+            isinstance(value.callee, RefExpr)
+            and value.callee.fullname == DICT
+            and all(name is not None for name in value.arg_names)
+        )
     return isinstance(value, DictExpr) and all(isinstance(key, StrExpr) for key, _ in value.items)
 
 

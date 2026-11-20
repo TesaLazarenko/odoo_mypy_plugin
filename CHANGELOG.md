@@ -91,6 +91,11 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - A field delegated through `_inherits` is required when the parent's field is, as in
   Odoo; `create_date` and `write_date` read without `| Literal[False]`
   (`required_values`), and so does `parent_path` of a model with `_parent_store`.
+- `values = dict()` and `dict(name=...)`, then changed under string keys, are record
+  dicts like `values = {}`: their values take any type.
+- An empty `Reference` field reads `None`, as Odoo gives it, not `False`.
+- `max(dates, default=False)` and `min(...)` give `datetime | Literal[False]`, not
+  `datetime | bool`: `if latest:` then leaves the date.
 - A model's own field that redefines one its earlier classes get only through
   `_inherits` is no error, whatever the order mypy analyzes the model's classes in; the
   first class of a model keeps mypy's checks for its fields, and so does a field an

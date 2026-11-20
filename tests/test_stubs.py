@@ -9,7 +9,15 @@ import pytest
 from conftest import OdooNames, run_mypy_in_process, write_addon
 
 from odoo_typing.config import Settings
-from odoo_typing.stubs import _environment_stub, main, model_class_name, write_stubs
+from odoo_typing.scanner import FieldInfo
+from odoo_typing.stubs import (
+    _environment_stub,
+    _vals_value,
+    _value,
+    main,
+    model_class_name,
+    write_stubs,
+)
 
 ENV_STUB = """\
 import typing
@@ -154,3 +162,13 @@ def test_main_check_reports_stale_stubs(
 
     assert main([*arguments, "--check"]) == 1
     assert "odoo_typing_models.pyi is out of date" in capsys.readouterr().out
+
+
+def test_reference_reads_none_and_takes_false() -> None:
+    """Empty, a ``Reference`` reads ``None``; ``create`` takes ``"model,id"`` and ``False`` too."""
+    info = FieldInfo("ref", "Reference")
+
+    assert _value(info, {}) == "odoo.models.BaseModel | None"
+    assert _vals_value(info, {}) == (
+        "builtins.str | odoo.models.BaseModel | typing.Literal[False] | None"
+    )

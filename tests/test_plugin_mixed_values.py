@@ -135,6 +135,11 @@ class Thing(models.Model):
         changed.update({"thing_id": self.id})
         changed.update({"name": self.name})
         changed.update(amount=self.amount)
+        built = dict()
+        built["ids"] = self.ids
+        built["logo"] = False
+        named = dict(name=self.name)
+        named["amount"] = self.amount
 
     def mappings_keep_their_type(self, key: str) -> None:
         by_key = {"a": "x"}
@@ -143,6 +148,8 @@ class Thing(models.Model):
         totals = {}
         totals[self.id] = 1.0
         totals[self.id] = "x"
+        pairs = dict([("a", 1)])
+        pairs["b"] = "x"
 
     def protocol_joins(self) -> None:
         data = {"thing": self, "seen": set(), "rows": []}
@@ -167,11 +174,14 @@ def test_record_dicts_joins_and_numbers_of_containers(run_mypy: RunMypy) -> None
     result = run_mypy({"my_mod": {"models.py": RECORDS}})
 
     messages = result.messages("models.py")
-    assert [message.split(":")[0] for message in messages] == ["25", "26", "29", "46"], messages
+    # ``dict()`` and ``dict(name=...)`` are record dicts like ``{}``; ``dict(pairs)`` is not
+    lines = ["30", "31", "34", "36", "53"]
+    assert [message.split(":")[0] for message in messages] == lines, messages
     assert 'expression has type "int", target has type "str"' in messages[0]
     assert '"str" has no attribute "missing"' in messages[1]
     assert 'expression has type "str", target has type "float"' in messages[2]
-    assert 'expression has type "float", target has type "int"' in messages[3]
+    assert 'expression has type "str"' in messages[3]  # ``dict(pairs)`` keeps its type
+    assert 'expression has type "float", target has type "int"' in messages[4]
 
 
 DATA = """

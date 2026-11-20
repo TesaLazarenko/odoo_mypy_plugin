@@ -177,6 +177,7 @@ from odoo_typing.hooks.falsy_parameters import (
 from odoo_typing.hooks.field_definitions import FieldDefinitionHooks
 from odoo_typing.hooks.field_objects import FieldObjectHooks
 from odoo_typing.hooks.field_values import FILTER, FieldValueHooks, falsy_filter_signature
+from odoo_typing.hooks.literal_defaults import DEFAULTED_CALLS, literal_default
 from odoo_typing.hooks.mixed_values import (
     MIXED_CALLS,
     MIXED_ITERATIONS,
@@ -1022,6 +1023,8 @@ class OdooPlugin(Plugin):
             return self._domains.wrapped
         if fullname in MIXED_CALLS:
             return self._mixed.called
+        if fullname in DEFAULTED_CALLS:
+            return literal_default
         if fullname == HASATTR:
             return self._asked.has_attribute
         if factory is None:
