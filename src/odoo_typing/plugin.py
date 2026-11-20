@@ -133,6 +133,7 @@ from odoo_typing.domains import DOMAIN_METHODS, PARAMETER_DOMAIN_METHODS
 from odoo_typing.errors import RAISE_VARIABLE, fail_soft, report_internal_error
 from odoo_typing.falsy_guards import NO_GUARD, FalsyGuards, Guard
 from odoo_typing.fingerprint import Fingerprints
+from odoo_typing.guards import VIEWS
 from odoo_typing.hooks.annotations import (
     DICT_GET,
     AnnotationHooks,
@@ -721,6 +722,8 @@ class OdooPlugin(Plugin):
             method = self._method_fullname(fullname)
             hook = self._with_own_view(method, self._find_method_hook(method))
             hook = _result_then(hook, self._inherited_return_hook(method))
+            if method.rpartition(".")[2] in VIEWS:
+                hook = _result_then(hook, self._asked.view)
             found[fullname] = _soft(
                 _result_then(hook, self._guard_result_hook(method, method=True)),
                 _default_return,

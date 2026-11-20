@@ -53,6 +53,39 @@ class Thing(models.Model):
         if "extra" in things._fields and things.extra:
             things.extra
 
+    def asked_through_get(self, other: "Thing") -> None:
+        field = self._fields.get("extra")
+        if field and field.type == "char":
+            thing = self.sudo()
+            thing.extra
+            thing.other
+            other.sudo().extra
+            other.sudo().other
+            other.extra
+            self.extra
+        else:
+            self.sudo().extra
+        self.with_context(a=1).extra
+        if "extra" not in other._fields:
+            return
+        other.with_user(1).extra
+
+    def answered_no(self, other: "Thing") -> None:
+        if "extra" not in self:
+            self.extra
+        if "extra" in other._fields:
+            other.extra
+        else:
+            other.extra
+            self.name
+        for thing in self:
+            if "extra" in thing:
+                continue
+            thing.extra
+        if "extra" in other:
+            return
+        other.extra
+
     def asked_of_the_model(self) -> None:
         self.env["t.thing"].extra
         if "extra" in self.env["t.thing"]:
@@ -78,9 +111,23 @@ def test_a_field_asked_for_is_read_without_an_error(run_mypy: RunMypy) -> None:
         '12: error: "Thing" has no attribute "other"  [attr-defined]',
         '17: note: Revealed type is "str | Literal[False]"',
         '20: error: "Thing" has no attribute "extra"  [attr-defined]',
-        '28: error: "Thing" has no attribute "extra"  [attr-defined]',
-        '33: error: "Thing" has no attribute "extra"  [attr-defined]',
-        '36: error: "Thing" has no attribute "missing"  [attr-defined]',
+        # ``field = self._fields.get("extra")``, tested: ``self.sudo()`` has the field there
+        '32: error: "Thing" has no attribute "other"  [attr-defined]',
+        '33: error: "Thing" has no attribute "extra"  [attr-defined]',  # other was not asked
+        '34: error: "Thing" has no attribute "other"  [attr-defined]',
+        '35: error: "Thing" has no attribute "extra"  [attr-defined]',
+        '36: error: "Thing" has no attribute "extra"  [attr-defined]',  # self: no new type
+        '38: error: "Thing" has no attribute "extra"  [attr-defined]',  # the else branch
+        '39: error: "Thing" has no attribute "extra"  [attr-defined]',  # after the test
+        # where the answer is no: the body of ``not in``, the ``else`` branch, after
+        # ``continue`` and after ``return``
+        '46: error: "Thing" has no attribute "extra"  [attr-defined]',
+        '50: error: "Thing" has no attribute "extra"  [attr-defined]',
+        '55: error: "Thing" has no attribute "extra"  [attr-defined]',
+        '58: error: "Thing" has no attribute "extra"  [attr-defined]',
+        '61: error: "Thing" has no attribute "extra"  [attr-defined]',
+        '66: error: "Thing" has no attribute "extra"  [attr-defined]',
+        '69: error: "Thing" has no attribute "missing"  [attr-defined]',
     ]
 
 
@@ -369,3 +416,152 @@ def test_addons_odoo_installs_with_the_closure_are_there(run_mypy: RunMypy) -> N
         ("10", "odoo-vals-key]"),
         ("11", "odoo-model-depends]"),
     ], messages
+
+
+VIEWS_KEPT = """
+from odoo import models
+
+class Thing(models.Model):
+    _inherit = "t.thing"
+
+    def views(self) -> None:
+        field = self._fields.get("extra")
+        if field:
+            thread = self.sudo()
+            thread.extra
+            thread._compute_display_name()
+            self.sudo().extra
+        other = self.browse()
+        if field:
+            other = self.sudo()
+            other.extra
+        other.extra
+        if field:
+            later = self.sudo()
+        later.extra
+        if field:
+            for each in self.sudo():
+                each.extra
+        each.extra
+        if field:
+            self.cached = self.sudo()
+
+    def through(self) -> None:
+        field = self._fields.get("extra")
+        alias = self.browse()
+        if field:
+            thread = self.sudo()
+            alias = thread.filtered("name")
+        alias.extra
+        kept = []
+        if field:
+            kept.append(self.sudo())
+        for item in kept:
+            item.extra
+        last = self.browse()
+        if field:
+            [(last := record) for record in self.sudo()]
+        last.extra
+        joined = self.browse()
+        if field:
+            thread = self.sudo()
+            joined = thread.union(self)
+        joined.extra
+
+    def denied(self) -> None:
+        if "extra" not in self:
+            y = "é"; self.extra
+            y = "é"; self.other
+        if "extra" not in self:
+            z = "é"; print(self.extra, self.extra)
+            z = "é"; print(self.other, self.other)
+"""
+
+
+def test_a_view_is_given_the_field_only_where_its_value_goes_nowhere(
+    run_mypy: RunMypy, odoo_version: int
+) -> None:
+    """A field given to ``self.sudo()`` goes with the value: the view, or the name it is
+    bound to, may only be read through an attribute, on the lines the guard covers."""
+    result = run_mypy(
+        {"t_base": T_BASE, "t_use": {"depends": ["t_base"], "models.py": VIEWS_KEPT}},
+        check=["t_use"],
+        flags=["--show-column-numbers"],
+    )
+
+    messages = [message.split(": error: ")[0] for message in result.messages("t_use/models.py")]
+    lines = [message.split(":")[0] for message in messages]
+    # After the block (18, 21, 25). Inside it too where the variable is read after it
+    # (17, 24): the type cannot hold the field in one place and not in the other. An
+    # alias, a list, a walrus and a method declared ``-> Self`` (``union``) carry no
+    # field out of it (35, 40, 44, 49). Odoo 17 leaves ``union`` without annotations:
+    # it gives ``Any``, so ``joined`` is ``Any`` there.
+    union = ["49"] if odoo_version >= 18 else []
+    assert lines[: 8 + len(union)] == ["17", "18", "21", "24", "25", "35", "40", "44", *union]
+    # mypy's columns, also after a character of more than one byte: the read reported
+    # here (53; 56, the first of two) where mypy reports its own error on such a line
+    assert lines[8 + len(union) :] == ["53", "54", "56", "57"]
+    columns = [message.split(":")[1] for message in messages[8 + len(union) :]]
+    assert columns[0] == columns[1]
+    assert columns[2] == columns[3]
+
+
+INSIDE_OTHER_TYPES = """
+from typing import NoReturn, Self
+
+from odoo import models
+
+class Thing(models.Model):
+    _inherit = "t.thing"
+
+    def by_name(self) -> dict[str, Self]:
+        return {}
+
+    def maybe(self) -> Self | None:
+        return self or None
+
+    def stop(self) -> NoReturn:
+        raise ValueError(self)
+
+    def held(self) -> None:
+        field = self._fields.get("extra")
+        if field:
+            groups = self.sudo().by_name()
+            found = self.sudo().maybe()
+        for records in groups.values():
+            records.extra
+        if found:
+            found.extra
+
+    def grouped_out(self) -> None:
+        field = self._fields.get("extra")
+        if field:
+            groups = self.sudo().grouped("name")
+        for records in groups.values():
+            records.extra
+
+    def ended(self) -> None:
+        if "extra" not in self:
+            self.stop()
+            self.extra
+        if "extra" not in self:
+            print(self)
+            self.extra
+"""
+
+
+def test_a_view_passed_on_inside_another_type_takes_no_field_out(
+    run_mypy: RunMypy, odoo_version: int
+) -> None:
+    """``-> dict[str, Self]``, ``-> Self | None``, Odoo 19's ``grouped() -> dict[Any, Self]``.
+
+    And the reads after a call declared ``NoReturn`` are not reached: none is reported.
+    """
+    result = run_mypy(
+        {"t_base": T_BASE, "t_use": {"depends": ["t_base"], "models.py": INSIDE_OTHER_TYPES}},
+        check=["t_use"],
+    )
+
+    lines = [message.split(":")[0] for message in result.messages("t_use/models.py")]
+    grouped = ["33"] if odoo_version >= 19 else []
+    assert lines == ["24", "26", *grouped, "41"]

@@ -17,13 +17,16 @@ from typing import Final, NamedTuple, Protocol
 
 from odoo_typing.addons import Addon, AddonIndex, LoadKey
 from odoo_typing.config import Settings
+from odoo_typing.denied_reads import IfStatements, denied_reads, if_statements, line_reads
 from odoo_typing.frozen import frozen
 from odoo_typing.guards import (
     Guard,
+    asked_fields,
     call_strings,
     guarded_fields,
     is_guarded,
     model_guards,
+    view_stays_inside,
 )
 from odoo_typing.node_index import index_nodes
 from odoo_typing.records import Record
@@ -159,6 +162,7 @@ class ScannedAddons:
         self._unreached: dict[Path, _UnreachedFile] = {}  # files the addon scans miss
         # The file parsed last for call_strings(): its path, stamp and tree.
         self._parsed: tuple[Path, Stamp | None, ast.AST | None] | None = None
+        self._if_statements: tuple[ast.AST, IfStatements] | None = None  # of that tree
         self._xml_ids: dict[str, Mapping[str, str]] = {}  # of a closure (_ClosureIds)
         self._own_xml_ids: dict[str, Mapping[str, str]] = {}  # of one addon's data files
         self._own_data_ids: dict[str, frozenset[str]] = {}  # of its files that are no demo
@@ -387,29 +391,48 @@ class ScannedAddons:
             return scan.annotations
         return self._unreached_file(resolved).found.annotations
 
+    def _guards(self, path: str | Path) -> tuple[Guard, ...]:
+        """The guards of a source file; one the addon scan did not reach is parsed once."""
+        addon = self.addons.addon_for_path(path)
+        if addon is not None:
+            self._models_of(addon.name)  # scans the addon
+        resolved = self.addons.real_path(path)
+        scan = self._by_path.get(resolved)
+        return scan.guards if scan is not None else self._unreached_file(resolved).found.guards
+
     def guarded(self, path: str | Path, model: str, line: int) -> bool:
         """Whether a line of a source file runs only when a model is installed.
 
         See :mod:`odoo_typing.guards`; a file the addon scan did not reach is parsed
         once (:meth:`_unreached_file`).
         """
-        addon = self.addons.addon_for_path(path)
-        if addon is not None:
-            self._models_of(addon.name)  # scans the addon
-        resolved = self.addons.real_path(path)
-        scan = self._by_path.get(resolved)
-        guards = scan.guards if scan is not None else self._unreached_file(resolved).found.guards
+        guards = self._guards(path)
         return is_guarded(guards, model, line)
 
     def guarded_fields(self, path: str | Path, line: int) -> frozenset[str]:
         """The fields whose guards cover a line of a source file (see :meth:`guarded`)."""
-        addon = self.addons.addon_for_path(path)
-        if addon is not None:
-            self._models_of(addon.name)  # scans the addon
-        resolved = self.addons.real_path(path)
-        scan = self._by_path.get(resolved)
-        guards = scan.guards if scan is not None else self._unreached_file(resolved).found.guards
+        guards = self._guards(path)
         return guarded_fields(guards, line)
+
+    def asked_fields(
+        self, path: str | Path, line: int, records: str, keeping: Callable[[], frozenset[str]]
+    ) -> frozenset[str]:
+        """The fields named records were asked for, for their views taken on a line.
+
+        See :func:`asked_fields`; a field counts only where the views stay on the lines
+        its guard covers (:func:`view_stays_inside`). ``keeping`` gives the attributes
+        that hand the same records on; asked only when a guard covers the line.
+        """
+        found = asked_fields(self._guards(path), line, records)
+        tree = self._parsed_tree(path) if found else None
+        if tree is None:
+            return frozenset()
+        kept = keeping()
+        return frozenset(
+            name
+            for name, covered in found.items()
+            if view_stays_inside(tree, line, records, covered, kept)
+        )
 
     def call_strings(self, path: str | Path, line: int) -> frozenset[str]:
         """The strings the function around a line of a source file passes to calls.
@@ -419,6 +442,31 @@ class ScannedAddons:
         """
         tree = self._parsed_tree(path)
         return call_strings(tree, line) if tree is not None else frozenset()
+
+    def denied_reads(
+        self,
+        path: str | Path,
+        line: int,
+        name: str,
+        records: str,
+        may_end: Callable[[int], bool],
+    ) -> list[tuple[int, int, int, int]]:
+        """The reads of a field where the question on a line says it is not there.
+
+        Each as (line, column, rank, count): its rank among the ``records.name`` of its
+        line (:func:`line_reads`), and how many there are, to find mypy's node for it.
+        ``may_end`` is :func:`denied_reads`'s.
+        """
+        tree = self._parsed_tree(path)
+        if tree is None:
+            return []
+        if self._if_statements is None or self._if_statements[0] is not tree:
+            self._if_statements = (tree, if_statements(tree))
+        found = []
+        for at, column in denied_reads(self._if_statements[1], line, name, records, may_end):
+            columns = line_reads(tree, at, name, records)
+            found.append((at, column, columns.index(column), len(columns)))
+        return found
 
     def written_keys(self, path: str | Path, line: int) -> WrittenKeys:
         """The keys the function around a line writes into dicts (see written_keys)."""

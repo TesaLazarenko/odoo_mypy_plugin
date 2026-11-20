@@ -55,19 +55,30 @@ from typing import Final, TypeAlias
 from odoo_typing.node_index import NodeIndex
 
 __all__ = [
+    "VIEWS",
     "Guard",
+    "asked_fields",
+    "asked_guard",
+    "binds",
     "call_strings",
+    "dotted",
     "field_guard",
     "guarded_fields",
     "is_guarded",
     "model_guards",
     "module_guard",
+    "view_stays_inside",
 ]
 
 TERMINATORS: Final = (ast.Return, ast.Raise, ast.Continue, ast.Break)
 REGISTRY_ATTRIBUTES: Final = frozenset({"registry", "pool", "models"})
 BLOCK_FIELDS: Final = ("body", "orelse", "finalbody")
 FIELD_PREFIX: Final = "field:"
+ASKED_PREFIX: Final = "asked:"
+# Methods that give the same records with another environment.
+VIEWS: Final = frozenset(
+    {"sudo", "with_company", "with_context", "with_env", "with_prefetch", "with_user"}
+)
 # ``self.skipTest(...)`` ends a test like ``return`` (unittest raises ``SkipTest``).
 SKIP_TEST: Final = "skipTest"
 
@@ -145,6 +156,109 @@ def guarded_fields(guards: Iterable[Guard], line: int) -> frozenset[str]:
         for guard in guards
         if guard.first <= line <= guard.last and guard.model.startswith(FIELD_PREFIX)
     )
+
+
+def asked_fields(
+    guards: Iterable[Guard], line: int, records: str
+) -> dict[str, list[tuple[int, int]]]:
+    """The fields that named records were asked for where a line is (``"f" in self._fields``).
+
+    ``records`` is the expression asked, as written (``self``, ``order.partner_id``).
+
+    Returns:
+        Each field with the lines (first, last) of the guards that cover the line.
+    """
+    prefix = asked_guard(records, "")
+    found: dict[str, list[tuple[int, int]]] = {}
+    for guard in guards:
+        if guard.first <= line <= guard.last and guard.model.startswith(prefix):
+            found.setdefault(guard.model.removeprefix(prefix), []).append((guard.first, guard.last))
+    return found
+
+
+def view_stays_inside(
+    tree: ast.AST,
+    line: int,
+    records: str,
+    covered: Sequence[tuple[int, int]],
+    keeping: frozenset[str],
+) -> bool:
+    """Whether the views of records taken on a line are read on the lines a guard covers.
+
+    A field given to ``records.sudo()`` travels with the value wherever it goes: a
+    variable keeps the type after the guarded block (mypy joins the types of the
+    branches and keeps the one with the field), and so do an alias, a list it is
+    appended to, a method that returns the same records (``filtered``, ``sudo``:
+    ``keeping``). So the view counts only when its value is read and goes nowhere:
+    it, or a name it is bound to (``thread = self.sudo()``, ``for each in
+    self.sudo():``, ``with ... as``), is only the receiver of an attribute that is not
+    in ``keeping`` (``thread.user_id``, ``thread._message_add(...)``), and each read
+    of the name is on the covered lines. Anything else (an argument, an item, an
+    alias, ``thread[0]``, a walrus, an attribute or subscript target) does not count,
+    nor does a line where the scan finds no such call.
+    """
+    function = _innermost(
+        [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        ],
+        line,
+    )
+    scope: ast.AST = function if function is not None else tree
+    parents = {id(child): node for node in ast.walk(scope) for child in ast.iter_child_nodes(node)}
+    calls = [
+        node
+        for node in ast.walk(scope)
+        if isinstance(node, ast.Call)
+        and node.lineno == line
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in VIEWS
+        and dotted(node.func.value) == records
+    ]
+    if not calls:
+        return False
+    names: set[str] = set()
+    for call in calls:
+        parent = parents.get(id(call))
+        if _read_through(call, parent, keeping):
+            continue
+        bound = _bound_names(call, parent)
+        if bound is None:
+            return False
+        names |= bound
+    for node in ast.walk(scope):
+        if not isinstance(node, ast.Name) or node.id not in names:
+            continue
+        if not isinstance(node.ctx, ast.Load):
+            continue
+        inside = any(first <= node.lineno <= last for first, last in covered)
+        if not inside or not _read_through(node, parents.get(id(node)), keeping):
+            return False
+    return True
+
+
+def _read_through(node: ast.expr, parent: ast.AST | None, keeping: frozenset[str]) -> bool:
+    """Whether a value is only the receiver of an attribute that gives other values."""
+    return isinstance(parent, ast.Attribute) and parent.value is node and parent.attr not in keeping
+
+
+def _bound_names(call: ast.Call, statement: ast.AST | None) -> set[str] | None:
+    """The names the statement a value is directly in binds it to; ``None`` if not names."""
+    targets: list[ast.expr] = []
+    if isinstance(statement, ast.Assign) and statement.value is call:
+        targets = list(statement.targets)
+    elif (isinstance(statement, ast.AnnAssign) and statement.value is call) or (
+        isinstance(statement, ast.For | ast.AsyncFor) and statement.iter is call
+    ):
+        targets = [statement.target]
+    elif isinstance(statement, ast.withitem) and statement.context_expr is call:
+        targets = [statement.optional_vars] if statement.optional_vars is not None else []
+    else:
+        return None
+    if not all(isinstance(target, ast.Name) for target in targets):
+        return None
+    return {target.id for target in targets if isinstance(target, ast.Name)}
 
 
 def call_strings(tree: ast.AST, line: int) -> frozenset[str]:
@@ -227,9 +341,55 @@ def model_guards(nodes: Iterable[ast.AST] | NodeIndex) -> tuple[Guard, ...]:
         guards += _cover(when_false, [expression.orelse])
     for operation in index.of(ast.BoolOp):
         guards += _operand_guards(operation, _known_at(operation.lineno, flags, helpers))
+    # Who was asked is kept for whole statements only: the parts of an expression may
+    # share a line with its test, and a guard is its lines.
+    guards = [guard for guard in guards if not guard.model.startswith(ASKED_PREFIX)]
     for block in blocks:
-        guards += _block_guards(block, _known_at(block[0].lineno, flags, helpers))
+        found = _block_guards(block, _known_at(block[0].lineno, flags, helpers))
+        guards += [guard for guard in found if _still_asked(guard, functions)]
     return tuple(guards)
+
+
+def _still_asked(guard: Guard, functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef]) -> bool:
+    """Whether the records a guard says were asked are still those on the lines it covers.
+
+    The guard names them as written (``asked:record:f``), so the name must hold the same
+    records throughout: a parameter of the function the lines are in, which the function
+    binds nowhere else (no assignment, no loop variable, no parameter of a nested
+    function or lambda, no ``case`` capture, ``except ... as`` or import). Any other guard
+    is kept.
+    """
+    if not guard.model.startswith(ASKED_PREFIX):
+        return True
+    root = guard.model.removeprefix(ASKED_PREFIX).partition(":")[0].partition(".")[0]
+    # The function the test is in: one defined on the first line covered is inside it.
+    outside = [function for function in functions if function.lineno < guard.first]
+    function = _innermost(outside, guard.first)
+    if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+        return False
+    own = function.args
+    parameters = [*own.posonlyargs, *own.args, *own.kwonlyargs]
+    if root not in {parameter.arg for parameter in parameters}:
+        return False
+    for node in ast.walk(function):
+        if isinstance(node, ast.Name) and node.id == root and isinstance(node.ctx, ast.Store):
+            return False
+        if isinstance(node, ast.arg) and node.arg == root and node not in parameters:
+            return False
+        if binds(node, root):
+            return False
+    return True
+
+
+def binds(node: ast.AST, name: str) -> bool:
+    """Whether a node binds a name without a ``Name``: ``case x``, ``except E as x``, an import."""
+    if isinstance(node, ast.MatchAs | ast.MatchStar | ast.ExceptHandler):
+        return node.name == name
+    if isinstance(node, ast.MatchMapping):
+        return node.rest == name
+    if isinstance(node, ast.alias):
+        return (node.asname or node.name.partition(".")[0]) == name
+    return False
 
 
 def _flag_scopes(
@@ -318,13 +478,20 @@ def _block_guards(block: Sequence[ast.stmt], known: _Known = NO_NAMES) -> list[G
         if not isinstance(statement, ast.If):
             continue
         when_true, when_false = _test_models(statement.test, known)
-        guards += _cover(when_true, statement.body)
-        guards += _cover(when_false, statement.orelse)
+        found = _cover(when_true, statement.body)
+        found += _cover(when_false, statement.orelse)
         rest = block[position + 1 :]
         if rest and isinstance(statement.body[-1], TERMINATORS):
-            guards += _cover(when_false, rest)  # past the if: the test was false
+            found += _cover(when_false, rest)  # past the if: the test was false
         if rest and statement.orelse and isinstance(statement.orelse[-1], TERMINATORS):
-            guards += _cover(when_true, rest)
+            found += _cover(when_true, rest)
+        # Who was asked: not on a line of the test itself (``if test: body`` on one line).
+        tested = statement.test.end_lineno or statement.test.lineno
+        guards += [
+            guard
+            for guard in found
+            if guard.first > tested or not guard.model.startswith(ASKED_PREFIX)
+        ]
     return guards
 
 
@@ -361,20 +528,24 @@ def _test_models(test: ast.expr, known: _Known = NO_NAMES) -> Proves:
             return set().union(*(true for true, _ in parts)), set()
         return set(), set().union(*(false for _, false in parts))  # false: every part false
     if isinstance(test, ast.Compare) and len(test.ops) == 1:
-        name = _contained_name(test.left, test.comparators[0])
-        if name is not None and isinstance(test.ops[0], ast.In):
-            return {name}, set()
-        if name is not None and isinstance(test.ops[0], ast.NotIn):
-            return set(), {name}
+        names = _contained_names(test.left, test.comparators[0])
+        if names and isinstance(test.ops[0], ast.In):
+            return names, set()
+        if names and isinstance(test.ops[0], ast.NotIn):
+            return set(), names
     if (
         isinstance(test, ast.Call)
         and isinstance(test.func, ast.Attribute)
         and test.func.attr == "get"
         and test.args
     ):
-        name = _contained_name(test.args[0], test.func.value)
-        if name is not None:
-            return {name}, set()
+        names = _contained_names(test.args[0], test.func.value)
+        if len(test.args) > 1 or test.keywords:
+            # ``get("f", default)`` is true without the field: only the field's guard,
+            # as before, not who was asked.
+            names = {name for name in names if not name.startswith(ASKED_PREFIX)}
+        if names:
+            return names, set()
     if (
         isinstance(test, ast.Call)
         and isinstance(test.func, ast.Name)
@@ -402,6 +573,29 @@ def _test_models(test: ast.expr, known: _Known = NO_NAMES) -> Proves:
     return set(), set()
 
 
+def _contained_names(key: ast.expr, container: ast.expr) -> set[str]:
+    """The guard names of ``key in container``: also who was asked, of ``records._fields``."""
+    name = _contained_name(key, container)
+    if name is None:
+        return set()
+    names = {name}
+    if isinstance(container, ast.Attribute) and container.attr == "_fields":
+        records = dotted(container.value)
+        if records is not None:
+            names.add(asked_guard(records, name.removeprefix(FIELD_PREFIX)))
+    return names
+
+
+def dotted(node: ast.expr) -> str | None:
+    """A name or the attributes of one, as written (``self``, ``order.partner_id``)."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        owner = dotted(node.value)
+        return f"{owner}.{node.attr}" if owner is not None else None
+    return None
+
+
 def _contained_name(key: ast.expr, container: ast.expr) -> str | None:
     """The guard name of ``key in container``: a model of the registry, a field of ``_fields``."""
     name = _string(key)
@@ -419,6 +613,11 @@ def _contained_name(key: ast.expr, container: ast.expr) -> str | None:
 def field_guard(field_name: str) -> str:
     """The guard name of a field that may be missing (``if "f" in self._fields:``)."""
     return f"{FIELD_PREFIX}{field_name}"
+
+
+def asked_guard(records: str, field_name: str) -> str:
+    """The guard name of a field that named records were asked for (``"f" in self._fields``)."""
+    return f"{ASKED_PREFIX}{records}:{field_name}"
 
 
 def module_guard(addon_name: str) -> str:

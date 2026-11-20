@@ -49,6 +49,46 @@ and when the model is not installed (the method assigns `None` then, line 40). W
 wizard is opened for a record that exists is what the data says, not the code:
 `ir.ui.menu.action` is empty for every menu that only groups others.
 
+### An override is not callable like the method it overrides
+
+17 errors `Signature of "..." incompatible with supertype`, on 15 lines (one line of
+`website/models/ir_actions_server.py` overrides three classes). mypy alone does not
+report them: the class of `sale` and the class of `product` are one model only for the
+plugin, which gives them Odoo's registry order. Each is a call that the overridden
+method takes and the override does not:
+
+- an argument or its default dropped (9 errors): `def _filter_to_unlink(self)` of
+  `sale` and `stock` (`sale/models/product_product.py:99`, `stock/models/product.py:673`)
+  over `def _filter_to_unlink(self, check_access=True)` of `product`, so
+  `products._filter_to_unlink(check_access=False)` raises `TypeError` once `sale` is
+  installed; `view_header_get(self, view_id, view_type)` (`account`, `stock`, `product`)
+  over `view_id=None, view_type='form'` of `base`; `purchase/models/product.py:131`;
+  `_get_eval_context(self, action)` of `website` over `action=None`;
+- `**kwargs` dropped (2): `_get_product_catalog_record_lines(self, product_ids,
+  child_field=False)` (`account/models/account_move.py:2674`,
+  `purchase/models/purchase_order.py:1040`) over `(..., child_field=False, **kwargs)` of
+  the mixin, which passes its `**kwargs` on (`product/models/product_catalog_mixin.py:94`):
+  an Odoo bug;
+- named arguments taken only by keyword (4): `message_post_with_source(self, source_ref,
+  **kwargs)` (`mass_mailing/models/mail_thread.py:39`, and `message_mail_with_source` at
+  line 31) over `(self, source_ref, render_values=None, message_type='notification',
+  ..., **kwargs)` of `mail`;
+  `sale/models/sale_order.py:2176`, `website_sale/models/website_snippet_filter.py:19`.
+  `thread.message_post_with_source(ref, values)` raises. Odoo's own calls pass them by
+  keyword; a rule that accepted such an override would accept the positional call of an
+  addon author as well;
+- a parameter renamed (1): `_remove_provider(self, code, **kwargs)`
+  (`account_payment/models/payment_provider.py:138`) over `(self, provider_code,
+  **kwargs)`: `_remove_provider(provider_code="x")` raises;
+- a positional-only marker dropped (1): `_to_store(self, store, **kwargs)`
+  (`im_livechat/models/mail_message.py:24`) over `(self, store, /, *, fields=None,
+  **kwargs)` of `rating`. The base takes `store=` as one of its `**kwargs`, the override
+  binds it to its parameter: `_to_store(s, store=...)` raises "multiple values". No code
+  writes that call, and the error is still what the two signatures say; to accept it the
+  plugin would have to decide which calls nobody writes.
+
+The fix is in the override, not in the checker.
+
 ### Odoo's own bugs
 
 The plugin reports them and they stay: `(1, "=", 0)` as a domain leaf
@@ -137,12 +177,8 @@ the literal.
 Groups of errors that only the plugin reports and that have no entry above and no rule
 yet. They are work to do:
 
-- a field read under a guard that goes through a variable or an alias (`user_field =
-  self._fields.get('user_id')`, then `thread = self.sudo()` and `thread.user_id`:
-  `mail/models/mail_thread.py:1970-1976`; `isinstance(self.env[self._name],
-  self.env.registry["mail.activity.mixin"])`: `mail/models/mail_thread.py:4783`);
-- overrides with a narrower signature than the method they override (17 errors:
-  `account/models/account_analytic_line.py:117`);
+- a field read under `isinstance(self.env[self._name],
+  self.env.registry["mail.activity.mixin"])` (`mail/models/mail_thread.py:4783`);
 - tuples and lists that grow by a value of another shape (`domain += (...)`:
   `mrp/models/stock_rule.py:148`, `stock/models/stock_move.py:1370`);
 - the errors of the empty-field group that sit under a guard Odoo wrote and that a rule
@@ -164,3 +200,29 @@ yet. They are work to do:
   `self.message_post_with_source` of `mail.activity.mixin`): mypy reports them without
   the plugin too. A rule needs the models that inherit the mixin on the whole addons
   path, and the mixin's module checked again when one of them changes;
+- `self.f` read directly under a test kept in a variable (`field = self._fields.get("f")`,
+  `if field:`, `self.f`): the records taken from `self` there have the field
+  (`self.sudo().f`), `self` itself does not, because mypy calls no hook where the
+  variable is tested. No such read in the 36 addons; to do when one is found;
+- the views of records asked with `"f" in records` (not kept in a variable) bound to a
+  variable inside the block and read after it: `first = self.browse()`, `if "f" in
+  self._fields: first = self.sudo()`, then `first.f` is not reported. mypy keeps the
+  type with the field when it joins the branches (the field does not change the class,
+  and the union keeps the first item), as it does for its own `hasattr`. The views
+  given the field by a test kept in a variable (`field = self._fields.get("f")`) are
+  checked against this; those of the `in` question are not yet;
+- reads of a field where a test says it is missing that are not reported. mypy gives
+  the records the field in both branches of `if "f" in records:` (it narrows the operand
+  of `in` to the recorded type either way and calls no hook where a branch begins), so
+  the plugin finds the reads in the source, and reports only the plain ones. Left:
+  - inside one expression (`"f" in records or records.f`, `records.f if "f" not in
+    records else None`): the parts may share a line with the test; to do with columns;
+  - through another name or a view (`r = records`, then `r.f`; `records.sudo().f`): the
+    scan matches the records as written;
+  - after an `elif` branch that returns, and after a branch whose last statement is an
+    `if` that returns on every path: the scan follows one `if` and its literal last
+    statement;
+  - where the statements bind the name again (also by a walrus in a comprehension, by
+    `nonlocal` or `global` in a nested function, by assigning to `self.partner` when
+    the records are `self.partner`) or ask again (`hasattr`, `isinstance`, another
+    `in`): nothing is reported there at all, since the name may hold other records.

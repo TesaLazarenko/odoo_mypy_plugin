@@ -237,6 +237,31 @@ that model which the function gets from `env[...]` or from the attributes of a t
 case after it. A variable that got its records before the question keeps its type: ask
 the variable itself. A field the model has keeps its type.
 
+A read of `records.f` where the answer is no is reported as before: in the `else`
+branch of `if "f" in records:`, in the body of `if "f" not in records:`, after a branch
+that ends with `return`, `raise`, `continue` or `break`, and up to a call that may not
+return (declared `NoReturn`, such as `self.fail(...)`, or a callee not known yet), as
+mypy checks no unreachable code. Only where the source leaves no doubt: not when those statements give the name other records, ask again, or read the
+field through another name ([what is left](not-implemented.md)).
+
+The answer may be kept and tested later: `field = self._fields.get("user_id")`, then
+`if field and field.type == "many2one":`. mypy narrows nothing there, so `self.user_id`
+stays an error; the records taken from `self` on the lines the test covers
+(`thread = self.sudo()`, also `with_context()`, `with_user()`, `with_company()`,
+`with_env()`, `with_prefetch()`) have the field: `thread.user_id`. The lines are those
+of the guards above, for whole statements (the body of the `if`, the code after an
+early `return`), and the records are those that were asked, as written (`self`,
+`order.partner_id`): a parameter of the function that it binds nowhere else, so the name
+still holds the records that were asked. The field goes with the view's value, so the
+value must go nowhere: the view, or the name it is bound to (`thread = self.sudo()`,
+`for each in self.sudo():`), is only the receiver of an attribute that gives other
+values (`thread.user_id`, `thread._message_add(...)`; not `thread.filtered(...)` nor any
+method whose declared result may hold the records: `-> Self`, such as `union`, or
+`Self` inside another type, such as `grouped() -> dict[Any, Self]` of Odoo 19), on those
+lines. An alias, a list it is appended to, an argument or a walrus makes it not
+count (`other = self.browse()`, `if field: other = self.sudo()`, then `other.f` after it
+is an error, and so is `other.f` inside, the variable having one type).
+
 Code written **for an addon outside the dependencies** also uses that addon's models.
 A model is not reported (and its records are `Any`):
 

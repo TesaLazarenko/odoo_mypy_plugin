@@ -91,6 +91,12 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - A field delegated through `_inherits` is required when the parent's field is, as in
   Odoo; `create_date` and `write_date` read without `| Literal[False]`
   (`required_values`), and so does `parent_path` of a model with `_parent_store`.
+- `if "f" in records: ... else: records.f` reports the read in the `else` branch (also
+  the body of `not in` and the code after a branch that returns, up to a call declared
+  `NoReturn`): the field was given in the whole statement.
+- `field = self._fields.get("f")`, tested later (`if field and ...:`): `self.sudo()`
+  and the other views of `self` taken where the test is true have the field, while
+  their value goes nowhere else (not through a method whose result may hold them).
 - `values = dict()` and `dict(name=...)`, then changed under string keys, are record
   dicts like `values = {}`: their values take any type.
 - An empty `Reference` field reads `None`, as Odoo gives it, not `False`.
