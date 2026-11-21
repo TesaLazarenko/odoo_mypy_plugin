@@ -212,7 +212,7 @@ and its records are `Any`:
   `self.pool`, `env.registry`, inside `and`);
 - the `else` of `not in`;
 - the rest of the block after `if "sale.order" not in self.env: return` (or `raise` /
-  `continue` / `break`);
+  `continue` / `break` / `self.skipTest(...)`, which raises `SkipTest`);
 - `x if "sale.order" in self.env else y`;
 - the operands of `and` after the test (`"intrastat_code_id" in self._fields and
   self.env["account.intrastat.code"].search(...)`), and those of `or` after a test that
@@ -223,8 +223,9 @@ self.env`, then `if has_sale:`) or a method of the same class whose body is
 `return <test>` (`if self._has_sale():`).
 
 A **field** that another addon may add is guarded the same way by
-`"x_flag" in self._fields`, `self._fields.get("x_flag")`, `"x_flag" in self.env["model"]`
-or `hasattr(record, "x_flag")`. There the name is not reported as an unknown key of
+`"x_flag" in self._fields`, `self._fields.get("x_flag")`, `"x_flag" in self.env["model"]`,
+`"x_flag" in self.env.company` (`env.user`, `env.companies`: the records `Environment`
+gives; not `self.env.lang`, a string) or `hasattr(record, "x_flag")`. There the name is not reported as an unknown key of
 `vals`, a domain field, or a field of `mapped()` / `filtered()` / `sorted()` /
 `grouped()` / `read()` (whatever the records are).
 

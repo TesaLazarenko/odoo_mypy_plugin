@@ -72,6 +72,8 @@ __all__ = [
 
 TERMINATORS: Final = (ast.Return, ast.Raise, ast.Continue, ast.Break)
 REGISTRY_ATTRIBUTES: Final = frozenset({"registry", "pool", "models"})
+# The properties of ``Environment`` that are records: ``env.user``, ``env.company``.
+ENV_RECORDS: Final = frozenset({"user", "company", "companies"})
 BLOCK_FIELDS: Final = ("body", "orelse", "finalbody")
 FIELD_PREFIX: Final = "field:"
 ASKED_PREFIX: Final = "asked:"
@@ -481,9 +483,9 @@ def _block_guards(block: Sequence[ast.stmt], known: _Known = NO_NAMES) -> list[G
         found = _cover(when_true, statement.body)
         found += _cover(when_false, statement.orelse)
         rest = block[position + 1 :]
-        if rest and isinstance(statement.body[-1], TERMINATORS):
+        if rest and _ends(statement.body[-1]):
             found += _cover(when_false, rest)  # past the if: the test was false
-        if rest and statement.orelse and isinstance(statement.orelse[-1], TERMINATORS):
+        if rest and statement.orelse and _ends(statement.orelse[-1]):
             found += _cover(when_true, rest)
         # Who was asked: not on a line of the test itself (``if test: body`` on one line).
         tested = statement.test.end_lineno or statement.test.lineno
@@ -607,6 +609,12 @@ def _contained_name(key: ast.expr, container: ast.expr) -> str | None:
         return field_guard(name)
     if isinstance(container, ast.Subscript) and _is_registry(container.value):
         return field_guard(name)  # ``"f" in env["model"]``: a recordset contains its fields
+    if (
+        isinstance(container, ast.Attribute)
+        and container.attr in ENV_RECORDS
+        and _is_env(container.value)
+    ):
+        return field_guard(name)  # ``"f" in self.env.company``
     return None
 
 
@@ -647,6 +655,11 @@ def _is_registry(node: ast.expr) -> bool:
         node = node.value
         if isinstance(node, ast.Name) and node.id in {"self", "cls"}:
             return True  # self.pool
+    return _is_env(node)
+
+
+def _is_env(node: ast.expr) -> bool:
+    """``env``, ``self.env``, ``record.env``."""
     return (isinstance(node, ast.Attribute) and node.attr == "env") or (
         isinstance(node, ast.Name) and node.id == "env"
     )

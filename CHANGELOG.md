@@ -11,6 +11,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 
 ### Models and records
 
+- `if "m" not in self.env: self.skipTest(...)` (and of a field) guards the rest of the
+  test as `return` does; `"f" in self.env.company` (`env.user`, `env.companies`) is a
+  field guard.
 - Model classes get the MRO of Odoo's registry class as their addon sees it
   (`_inherit`, `base`, mixins), so fields and methods of earlier classes and of the
   dependencies are known on `self`; `_inherits` delegation, transitively.

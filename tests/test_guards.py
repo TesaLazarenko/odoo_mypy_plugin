@@ -308,3 +308,46 @@ def test_who_was_asked_is_kept_only_for_a_parameter_the_function_never_rebinds()
             "x_module",
         )
     }
+
+
+def test_skip_test_ends_a_model_or_field_guard_like_return() -> None:
+    """``if "m" not in self.env: self.skipTest(...)``: the rest runs with the model."""
+    source = """
+    def test_it(self):
+        if "m.skip" not in self.env:
+            self.skipTest("m.skip is not installed")
+        a = 1
+        if "x_skip" not in self.env["m.skip"]._fields:
+            self.skipTest("no x_skip")
+        b = 2
+        if "x_company" not in self.env.company:
+            self.skipTest("no x_company")
+        c = 3
+    """
+    guards = set(model_guards(ast.walk(ast.parse(textwrap.dedent(source)))))
+
+    assert Guard("m.skip", 5, 11) in guards
+    assert Guard(field_guard("x_skip"), 8, 11) in guards
+    assert Guard(field_guard("x_company"), 11, 11) in guards
+
+
+def test_skip_test_not_last_and_other_containers_guard_nothing() -> None:
+    """A ``skipTest`` not last, ``in env.lang`` (a string), ``in env.registry.company``."""
+    source = """
+    def test_it(self, flag):
+        if "m.skip" not in self.env:
+            if flag:
+                self.skipTest("m.skip is not installed")
+        a = 1
+        if "x_lang" not in self.env.lang:
+            self.skipTest("no x_lang")
+        b = 2
+        if "x_company" not in self.env.registry.company:
+            self.skipTest("no x_company")
+        c = 3
+    """
+    guarded = {guard.model for guard in model_guards(ast.walk(ast.parse(textwrap.dedent(source))))}
+
+    assert "m.skip" not in guarded
+    assert field_guard("x_lang") not in guarded
+    assert field_guard("x_company") not in guarded

@@ -534,6 +534,49 @@ def test_guarded_models_outside_depends_are_any(run_mypy: RunMypy) -> None:
     ]
 
 
+def test_skip_test_guards_the_rest_of_the_test(run_mypy: RunMypy) -> None:
+    """``if "m" not in self.env: self.skipTest(...)`` as ``return``; ``in self.env.company``.
+
+    The writes go to ``res.partner``: Odoo 20 types ``env.company`` as ``BaseModel``, and a
+    field guard covers the name whatever the records are.
+    """
+    result = run_mypy(
+        {
+            "t_base": {"models.py": T_PARTNER},
+            "t_nodep": {
+                "depends": ["base"],
+                "models.py": """
+                from odoo.tests import TransactionCase
+
+                class TestThing(TransactionCase):
+                    def test_skipped(self) -> None:
+                        if "ee.only" not in self.env:
+                            self.skipTest("ee.only is not installed")
+                        self.env["ee.only"].search([])
+                        if "flag_ok" not in self.env.company:
+                            self.skipTest("no flag_ok")
+                        self.env["res.partner"].write({"flag_ok": True})
+
+                    def test_kept(self, flag: bool) -> None:
+                        if "ee.only" not in self.env:
+                            if flag:
+                                self.skipTest("ee.only is not installed")
+                        self.env["ee.only"].search([])
+                        if "flag_other" not in self.env.context:
+                            self.skipTest("no flag_other")
+                        self.env["res.partner"].write({"flag_other": True})
+                """,
+            },
+        },
+        check=["t_nodep"],
+    )
+
+    assert result.messages("t_nodep/models.py") == [
+        '17: error: Unknown Odoo model "ee.only"  [odoo-model]',
+        '20: error: Odoo model "res.partner" has no field "flag_other"  [odoo-vals-key]',
+    ]
+
+
 def test_models_in_code_for_an_addon_outside_depends_are_any(run_mypy: RunMypy) -> None:
     """Under the guard of a field no model has, or in a function that names the addon."""
     result = run_mypy(
