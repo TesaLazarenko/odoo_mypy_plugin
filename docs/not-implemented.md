@@ -172,6 +172,33 @@ where the left operand is typed the cast is redundant, which mypy reports under
 `warn_redundant_casts`. `max(..., default=False)` is a call, and there the plugin keeps
 the literal.
 
+## Errors not reported
+
+### A field redefined across an import cycle, over one an earlier class declares
+
+`theme_id = fields.Char()` in one class of a model, `theme_id = fields.Many2one(...)` in
+a later class of it in another module of the same addon: the second is an incompatible
+override, and it is reported or not by the order mypy checks the two modules in, when
+they form an import cycle (`_inherits` and the addon's modules make one). mypy does the
+same without the plugin: with `class A: theme = make()` (`make() -> str`) in `a.py`,
+`class B(a.A): theme = 1` in `b.py` and `a.py` importing `b`, `mypy b.py a.py` reports
+the `int` over `str` and `mypy a.py b.py` reports nothing (mypy 2.1.0 and 2.4.1,
+`-m b -m a` and `-m a -m b` alike); without the cycle both orders report it. The type of
+a class attribute inferred from its value is known only once its module is checked, and
+mypy checks the overriding class against a base whose type is not known yet as
+compatible.
+
+The plugin takes the types of fields from mypy's own inference of `fields.X(...)`; to
+know them before the check it would have to type every field at semantic analysis,
+itself, which is a second implementation of what mypy infers for each field, for one
+error mypy misses in Python too. A check of its own that compares the field classes of
+the two definitions (the scan has them) is not that: it would see `Char` over
+`Many2one`, but not a `Many2one` to another comodel or a `Selection` with other keys,
+which mypy's check of the override compares; and in the order mypy reports, the line
+would have two errors for one cause. Taking mypy's check away for fields
+(`allow_incompatible_override`) to leave only the plugin's would lose those other
+cases in both orders.
+
 ## Not gone through yet
 
 Groups of errors that only the plugin reports and that have no entry above and no rule

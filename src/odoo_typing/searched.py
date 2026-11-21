@@ -10,10 +10,21 @@ domain's top-level conjunction (not under ``|`` or ``!``) on a field of the mode
 * ``in`` with a display of literals that are all true, or with a value whose type holds
   no false item (a ``Query``, records, ``list[int]``);
 * ``!=`` with ``False`` / ``None``;
-* ``like`` / ``ilike`` / ``=like`` / ``=ilike`` with a string literal that is not empty.
+* ``like`` / ``ilike`` / ``=like`` / ``=ilike`` with a string that cannot be empty: a
+  literal that is not empty, or an f-string or a ``+`` with a part that is one
+  (``f"{prefix}%"``). An empty pattern finds the records without a value (Odoo 18 adds
+  ``OR f IS NULL``, 19 makes ``=like ""`` an ``= False``), so a ``str`` variable does not;
+* ``<`` / ``<=`` / ``>`` / ``>=`` on a ``Date``, ``Datetime`` or ``Many2one`` field that
+  Odoo searches in SQL (no ``search=`` method, not ``related``), with any value
+  (``fields.Datetime.to_string(...)`` too): Odoo adds ``OR f IS NULL`` to an inequality
+  only for a field with a falsy value of its own (numbers, and from Odoo 19 strings and
+  booleans), which these fields have not. A ``search=`` method gives what it wants
+  (purchase_stock's ``days_to_arrive`` finds pickings whose value is ``False``).
 
 A read of such a field from the result of ``read`` / ``search_read``, from a local bound
-once to ``search(...)`` / ``search_fetch(...)`` (``x |= v`` binds it again), or from the
+once to ``search(...)`` / ``search_fetch(...)`` (``x |= v`` binds it again; ``x =
+x.filtered(...)``, ``x.sorted(...)`` and the like keep some of its records, which counts as
+bound once; a parameter is never bound once), or from the
 variable of a ``for`` over such a local, has no ``False``. The ``for`` is the one that
 binds the variable, or, for a variable bound more than once (two loops, ``for lead in
 team1_leads:`` then ``for lead in team2_leads:``), the innermost ``for`` binding it whose
@@ -24,7 +35,7 @@ around the read.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from mypy.nodes import (
     ARG_POS,
@@ -37,6 +48,7 @@ from mypy.nodes import (
     ListExpr,
     MemberExpr,
     NameExpr,
+    OpExpr,
     Statement,
     StrExpr,
     TupleExpr,
@@ -46,6 +58,7 @@ from mypy.nodes import (
 from mypy.types import Instance, Type, get_proper_type
 
 from odoo_typing.rebound import function_bindings, nested_blocks
+from odoo_typing.scanner import FieldInfo
 
 __all__ = [
     "SEARCH_METHODS",
@@ -53,11 +66,17 @@ __all__ = [
     "filtered_fields",
     "restricted_fields",
     "searched_domain",
+    "sql_kinds",
 ]
 
 SEARCH_METHODS = frozenset({"search", "search_fetch"})
 EQUAL = frozenset({"=", "==", "child_of", "parent_of"})
 LIKE = frozenset({"like", "ilike", "=like", "=ilike"})
+INEQUALITIES = frozenset({"<", "<=", ">", ">="})
+# Field classes with no falsy value of their own: an inequality matches no NULL.
+NO_FALSY_VALUE = frozenset({"Date", "Datetime", "Many2one"})
+# Methods that give some of the records they are called on, with the same field values.
+SUBSETS = frozenset({"filtered", "filtered_domain", "sorted", "exists", "sudo"})
 EMPTY_NAMES = frozenset({"builtins.False", "builtins.None"})
 TERM_SIZE = 3
 
@@ -70,10 +89,37 @@ def domain_argument(call: CallExpr) -> Expression | None:
     return None
 
 
+def sql_kinds(fields: Mapping[str, FieldInfo]) -> dict[str, str]:
+    """The field class of the fields Odoo searches in SQL, not by a ``search=`` method.
+
+    Not of a ``related`` field (one of ``_inherits`` too): Odoo searches it through the
+    field it relates to, whose ``search=`` method or x2many path decides. Odoo 17 gives a
+    ``company_dependent`` field a ``search`` of its own, on ``ir.property``, which compares
+    the stored values in SQL as well, and records without one read the default found.
+    """
+    return {
+        name: info.field_type
+        for name, info in fields.items()
+        if info.search is None
+        and info.related is None
+        and not {"search", "related"} & info.dynamic
+        and not info.compute_sql
+    }
+
+
 def restricted_fields(
-    domain: Expression | None, type_of: Callable[[Expression], Type | None]
+    domain: Expression | None,
+    type_of: Callable[[Expression], Type | None],
+    kinds: Mapping[str, str],
 ) -> frozenset[str]:
-    """The fields a literal domain makes set on every record it finds (see the module)."""
+    """The fields a literal domain makes set on every record it finds (see the module).
+
+    Args:
+        domain: The domain.
+        type_of: The type mypy has for an expression.
+        kinds: The field class of the fields Odoo searches in SQL (``Datetime``), from
+            :func:`sql_kinds`.
+    """
     if not isinstance(domain, ListExpr | TupleExpr):
         return frozenset()
     found: set[str] = set()
@@ -83,7 +129,9 @@ def restricted_fields(
             continue
         if "." in field.value:
             continue  # a path: through a relational field, other records
-        if _sets(operator.value, value, type_of):
+        if _sets(operator.value, value, type_of) or (
+            operator.value in INEQUALITIES and kinds.get(field.value) in NO_FALSY_VALUE
+        ):
             found.add(field.value)
     return frozenset(found)
 
@@ -142,10 +190,23 @@ def _records_source(function: FuncItem, receiver: Expression) -> Expression | No
     for target in collected.augmented:  # ``x |= v``
         if isinstance(target, NameExpr) and isinstance(target.node, Var):
             bound.setdefault(target.node, []).append(target)
+    parameters = {argument.variable for argument in function.arguments}
 
     def once(variable: Var) -> Expression | None:
-        """The value of a local bound once (``None`` for a ``for`` target)."""
-        return values.get(variable) if len(bound.get(variable, [])) == 1 else None
+        """The value of a local bound once (``None`` for a ``for`` target).
+
+        Also of one bound again only to some of its own records (``x = x.filtered(...)``).
+        Not of a parameter: under an ``if`` it may still hold the caller's records.
+        """
+        if variable in parameters:
+            return None
+        names = bound.get(variable, [])
+        bindings = collected.names.get(variable, [])
+        if len(names) != len(bindings):
+            return None  # ``x |= v`` among them
+        if all(_subset_of(value, variable) for _, value in bindings[1:]):
+            return values.get(variable)
+        return None
 
     names = bound.get(receiver.node, [])
     value = once(receiver.node)
@@ -209,6 +270,17 @@ def _loop_over(function: FuncItem, read: NameExpr, bound: list[NameExpr]) -> Exp
     return loop.expr
 
 
+def _subset_of(value: Expression | None, variable: Var) -> bool:
+    """``variable.filtered(...).sorted(...)``: some of the records the variable holds."""
+    while (
+        isinstance(value, CallExpr)
+        and isinstance(value.callee, MemberExpr)
+        and value.callee.name in SUBSETS
+    ):
+        value = value.callee.expr
+    return isinstance(value, NameExpr) and value.node is variable
+
+
 def _holds(node: Statement | Block, expression: Expression) -> bool:
     """Whether the source of a statement or block holds an expression."""
     end = (node.end_line or node.line, node.end_column if node.end_column is not None else 10**9)
@@ -256,12 +328,31 @@ def _sets(operator: str, value: Expression, type_of: Callable[[Expression], Type
     if operator == "!=":
         return isinstance(value, NameExpr) and value.fullname in EMPTY_NAMES
     if operator in LIKE:
-        return isinstance(value, StrExpr) and bool(value.value)
+        return _not_empty(value)
     if operator == "in":
         if isinstance(value, ListExpr | TupleExpr):
             return bool(value.items) and all(_true_literal(item) for item in value.items)
         return _holds_no_false(type_of(value))
     return False
+
+
+def _not_empty(value: Expression) -> bool:
+    """A string that cannot be empty: ``"x"``, ``f"{prefix}%"``, ``prefix + "%"``."""
+    if isinstance(value, StrExpr):
+        return bool(value.value)
+    if isinstance(value, OpExpr) and value.op == "+":
+        return _not_empty(value.left) or _not_empty(value.right)
+    # mypy parses an f-string as ``"".join([parts])``
+    return (
+        isinstance(value, CallExpr)
+        and isinstance(value.callee, MemberExpr)
+        and value.callee.name == "join"
+        and isinstance(value.callee.expr, StrExpr)
+        and not value.callee.expr.value
+        and len(value.args) == 1
+        and isinstance(value.args[0], ListExpr)
+        and any(_not_empty(part) for part in value.args[0].items)
+    )
 
 
 def _true_literal(value: Expression) -> bool:

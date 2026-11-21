@@ -51,7 +51,7 @@ from odoo_typing.model_fields import value_required
 from odoo_typing.references import resolve_path
 from odoo_typing.registry.scans import IdOriginReads
 from odoo_typing.scanner import FieldInfo
-from odoo_typing.searched import filtered_fields, restricted_fields, searched_domain
+from odoo_typing.searched import filtered_fields, restricted_fields, searched_domain, sql_kinds
 from odoo_typing.vals import RECORDS, VALUE_TYPES, stored, value_type_named
 
 __all__ = ["FILTER", "FieldValueHooks", "falsy_filter_signature"]
@@ -127,7 +127,7 @@ class FieldValueHooks(Hooks):
         required = self._settings.required_values and (
             name == "display_name" or self._value_required(info, records, ctx.api)
         )
-        if not required and not self._searched(member, ctx.api):
+        if not required and not self._searched(member, info, ctx.api):
             return signature
         value = get_proper_type(signature.ret_type)
         if not isinstance(value, UnionType):
@@ -346,7 +346,9 @@ class FieldValueHooks(Hooks):
         view = self._models.view_type(comodel, addon_name, ctx.api)
         return signature.copy_modified(ret_type=view) if isinstance(view, Instance) else signature
 
-    def _searched(self, member: Context, api: CheckerPluginInterface) -> bool:
+    def _searched(
+        self, member: Context, info: FieldInfo | None, api: CheckerPluginInterface
+    ) -> bool:
         """Whether the search or the ``filtered("f")`` that gave the records read sets the field."""
         function = checked_function(api)
         if not isinstance(member, MemberExpr) or function is None:
@@ -355,7 +357,8 @@ class FieldValueHooks(Hooks):
             return True
         domain = searched_domain(function, member.expr)
         checker = type_checker(api)
-        return member.name in restricted_fields(domain, checker.lookup_type_or_none)
+        kinds = sql_kinds({member.name: info}) if info is not None else {}
+        return member.name in restricted_fields(domain, checker.lookup_type_or_none, kinds)
 
     def _value_required(
         self, info: FieldInfo | None, records: Instance, api: CheckerPluginInterface

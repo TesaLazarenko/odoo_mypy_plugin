@@ -81,7 +81,7 @@ from odoo_typing.references import (
     resolve_path,
 )
 from odoo_typing.scanner import FieldInfo
-from odoo_typing.searched import domain_argument, restricted_fields
+from odoo_typing.searched import domain_argument, restricted_fields, sql_kinds
 from odoo_typing.vals import RELATIONAL_CLASSES
 
 __all__ = ["RECORD_FUNCTIONS", "RecordsetHooks"]
@@ -170,7 +170,11 @@ class RecordsetHooks(Hooks):
             if method == "search_read" and isinstance(call, CallExpr)
             else None
         )
-        searched = restricted_fields(domain, checker.lookup_type_or_none)
+        searched = (
+            restricted_fields(domain, checker.lookup_type_or_none, sql_kinds(fields))
+            if domain is not None
+            else frozenset()
+        )
         for node in names:
             info = fields.get(node.value)
             if info is None:

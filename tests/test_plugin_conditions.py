@@ -326,6 +326,136 @@ def test_fields_the_search_domain_sets_have_no_false(run_mypy: RunMypy) -> None:
     ], revealed
 
 
+SEARCHED_COMPARED = """
+from datetime import datetime
+
+from odoo import fields, models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    arrive = fields.Datetime(compute="_compute_arrive", search="_search_arrive")
+
+    def _compute_arrive(self) -> None:
+        self.arrive = False
+
+    def _search_arrive(self, operator: str, value: datetime) -> list[tuple[str, str, datetime]]:
+        return [("day", operator, value)]
+
+    def check(self, start: datetime, prefix: str, flag: datetime | bool) -> None:
+        late = self.search([("day", "<=", fields.Datetime.now()), ("day", ">", start)])
+        reveal_type(late.day)
+        late = late.filtered(lambda order: order.partner_id).sorted("day")
+        for order in late:
+            reveal_type(order.day)
+        coded = self.search([("name", "=like", f"{prefix}%")])
+        reveal_type(coded.name)
+        named = self.search([("name", "<", "m")])  # Odoo 19: "" < "m" takes the empty names
+        reveal_type(named.name)
+        either = self.search([("day", "<", flag)])  # a Datetime field, whatever the value
+        reveal_type(either.day)
+        wide = self.search([("name", "like", prefix)])  # "" matches every record
+        reveal_type(wide.name)
+        grown = self.search([("day", "<", start)])
+        grown = self.search([])
+        reveal_type(grown.day)
+        texts = self.search([("day", ">=", fields.Datetime.to_string(start))])
+        reveal_type(texts.day)  # a Datetime field: NULL is not greater
+        exact = self.search([("name", "=like", prefix)])  # Odoo 19: "" is ``= False``
+        reveal_type(exact.name)
+        joined = self.search([("name", "=ilike", prefix + "%")])
+        reveal_type(joined.name)
+        arriving = self.search([("arrive", "<", start)])  # its search= method decides
+        reveal_type(arriving.arrive)
+"""
+
+
+def test_inequalities_with_a_date_and_exact_patterns_set_the_field(run_mypy: RunMypy) -> None:
+    """``search([("date_from", "<=", now)])``, ``search([("code", "=like", f"{prefix}%")])``.
+
+    ``x = x.filtered(...).sorted(...)`` keeps some of the records: still the search's.
+    """
+    files = {"t_use": {"depends": ["t_base"], "models.py": SEARCHED_COMPARED}}
+    result = run_mypy({"t_base": {"models.py": T_BASE}, **files}, check=["t_use"])
+
+    revealed = [line.partition('"')[2].rstrip('"') for line in result.messages("t_use/models.py")]
+    assert revealed == [
+        "datetime.datetime",
+        "datetime.datetime",
+        "str",
+        "str | Literal[False]",
+        "datetime.datetime",
+        "str | Literal[False]",
+        "datetime.datetime | Literal[False]",
+        "datetime.datetime",
+        "str | Literal[False]",
+        "str",
+        "datetime.datetime | Literal[False]",
+    ], revealed
+
+
+SEARCHED_THROUGH = """
+from datetime import date, datetime
+from typing import Any
+
+from odoo import fields, models
+
+class Move(models.Model):
+    _name = "t.move"
+
+    due = fields.Date(compute="_compute_due", search="_search_due")
+
+    def _compute_due(self) -> None:
+        self.due = False
+
+    def _search_due(self, operator: str, value: date) -> list[Any]:
+        return [("id", "!=", 0)]
+
+class Line(models.Model):
+    _name = "t.line"
+    _inherits = {"t.move": "move_id"}
+
+    move_id = fields.Many2one("t.move", required=True, ondelete="cascade")
+    move_due = fields.Date(related="move_id.due")
+
+    def check(self, day: date) -> None:
+        inherited = self.search([("due", "<", day)])  # the search= of t.move decides
+        reveal_type(inherited.due)
+        related = self.search([("move_due", "<", day)])
+        reveal_type(related.move_due)
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def given(self, start: datetime, orders: "Order", flag: bool) -> None:
+        if flag:
+            orders = self.search([("day", "<", start)])
+        orders = orders.sorted()  # still the caller's records when flag is false
+        reveal_type(orders.day)
+
+    def rows(self) -> None:
+        rows = self.search_read([("partner_id", ">", 3)], ["partner_id"])
+        reveal_type(rows[0]["partner_id"])
+"""
+
+
+def test_related_fields_and_parameters_keep_false_after_an_inequality(run_mypy: RunMypy) -> None:
+    """A ``related`` field, one of ``_inherits``: the field it relates to is searched.
+
+    ``search_read`` with an inequality on a ``Many2one`` gives rows where it is set.
+    """
+    files = {"t_use": {"depends": ["t_base"], "models.py": SEARCHED_THROUGH}}
+    result = run_mypy({"t_base": {"models.py": T_BASE}, **files}, check=["t_use"])
+
+    revealed = [line.partition('"')[2].rstrip('"') for line in result.messages("t_use/models.py")]
+    assert revealed == [
+        "datetime.date | Literal[False]",
+        "datetime.date | Literal[False]",
+        "datetime.datetime | Literal[False]",
+        "tuple[int, str]",
+    ], result.messages("t_use/models.py")
+
+
 SEARCHED_LOOPS = """
 from odoo import models
 

@@ -891,8 +891,17 @@ With real recordset types, some plain mypy codes appear more often:
   of a `for` over them) read `email_from` as `str`. A term of the domain's top-level
   conjunction (not under `|` or `!`) on a field of the model itself sets it when it is
   `=` / `child_of` / `parent_of` with a true literal, `in` with true literals (or a
-  `Query`, records, `list[int]`), `!= False` / `None`, or a `like` / `ilike` with a
-  non-empty string. The local must be bound once (`leads |= other` binds it again). A
+  `Query`, records, `list[int]`), `!= False` / `None`, a `like` / `ilike` / `=like` /
+  `=ilike` with a string that cannot be empty (a non-empty literal, `f"{prefix}%"`,
+  `prefix + "%"`; not a bare `str`, as `=like ""` finds the empty ones), or `<` / `<=` /
+  `>` / `>=` on a `Date`, `Datetime` or `Many2one` field of the model's own, without a
+  `search=` method and not `related` (nor one of `_inherits`)
+  (`("date_from", "<=", fields.Datetime.now())`): Odoo adds `OR f IS NULL` to an
+  inequality only for a field with a falsy value of its own (numbers; from Odoo 19
+  strings and booleans). The local must be bound once (`leads |= other` binds it
+  again; `leads = leads.filtered(...).sorted(...)` keeps some of its records and counts
+  as once), and not be a parameter (`if flag: leads = self.search(...)` may leave the
+  caller's records). A
   loop variable that two loops use (`for lead in team1_leads:` then `for lead in
   team2_leads:`) reads as the records of the loop around the read, unless the loop
   binds it again before the read (or in an inner loop around the read).

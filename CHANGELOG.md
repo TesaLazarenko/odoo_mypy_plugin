@@ -112,6 +112,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   record of `new()` or of a form's onchange, which made every `values[record.id]` of a
   `dict[int, ...]` and every `id: int` parameter an error for saved records too. Option
   `new_record_ids = true` reads it as Odoo declares it.
+- A search with `("date_from", "<=", now)` (an inequality on a date, datetime or
+  many2one field that has no `search=` method) or `("code", "=like", f"{prefix}%")` gives
+  records whose field is set; `records = records.filtered(...).sorted(...)` keeps that.
 - A field that the domain of the search sets has no `False` in what the search gives:
   `search_read([("product_id", "in", subquery)], ["product_id"])`, the records of
   `search([("email_from", "ilike", "x")])` and the variable of a `for` over them, also
