@@ -174,6 +174,8 @@ def test_mapped_of_relational_field_of_unknown_comodel_is_not_a_list(run_mypy: R
                         reveal_type(self.mapped("partner_id"))
                         self.mapped("partner_id").ids
                         reveal_type(self.mapped("name"))
+                        if not self.filtered("partner_id").mapped("partner_id"):
+                            reveal_type(self.name)
                 """
             }
         }
@@ -183,7 +185,11 @@ def test_mapped_of_relational_field_of_unknown_comodel_is_not_a_list(run_mypy: R
     # Any on Odoo 18+ (Many2one[Any] when the comodel is no literal), records on 17.
     assert messages[0].startswith('12: note: Revealed type is "')
     assert "list" not in messages[0]
-    assert messages[1:] == ['14: note: Revealed type is "list[str | Literal[False]]"']
+    assert messages[1:] == [
+        '14: note: Revealed type is "list[str | Literal[False]]"',
+        # The records of the filtered ones may be none (no records at all): reached.
+        '16: note: Revealed type is "str | Literal[False]"',
+    ]
 
 
 def test_fields_made_in_the_database_are_not_reported_outside_vals(run_mypy: RunMypy) -> None:
@@ -277,18 +283,63 @@ class Order(models.Model):
         reveal_type(self.filtered("name").mapped("name"))
         reveal_type(self.filtered("amount").mapped("name"))
         reveal_type(self.filtered("line_ids.label").mapped("line_ids.label"))
+        reveal_type(self.filtered(lambda order: order.name).mapped("name"))
+        kept = self.filtered(lambda order: order.amount and order.name)
+        reveal_type(kept.grouped("name"))
+        reveal_type(kept.mapped("name"))
+        reveal_type(self.filtered(lambda order: order.amount or order.name).mapped("name"))
+        reveal_type(self.filtered(lambda order: self.name).mapped("name"))
+        reveal_type(self.filtered(lambda order: order.partner_id.name).mapped("name"))
+        reveal_type(self.filtered("name").grouped("name"))
+        reveal_type(self.filtered(lambda order, *rest, limit=1, **more: order.name).mapped("name"))
+        reveal_type(self.filtered(lambda order, other: order.name).mapped("name"))
+        reveal_type(self.filtered(lambda order=None: order.name).mapped("name"))
+        reveal_type(self.filtered(lambda order, *, key: order.name).mapped("name"))
+        reveal_type(self.filtered(lambda order: (order := order) and order.name).mapped("name"))
+        reveal_type(self.filtered(lambda order: order.name).filtered("amount").mapped("name"))
+        for order in self.filtered(lambda order: order.name):
+            reveal_type(order.name)
+        twice = self.filtered(lambda order: order.name)
+        twice = self
+        reveal_type(twice.mapped("name"))
+        reveal_type(self.filtered("partner_id").grouped("partner_id"))
 """
 
 
 def test_mapped_of_the_field_records_are_filtered_by_has_no_empty_value(
     run_mypy: RunMypy,
 ) -> None:
-    """``filtered("default_code").mapped("default_code")`` is a list of ``str``."""
-    assert _messages(run_mypy, FILTERED_MAPPED) == [
+    """``filtered("default_code").mapped("default_code")`` is a list of ``str``.
+
+    So is it after ``filtered(lambda p: p.default_code)``, of each field ``and`` joins
+    there, also through a local; ``grouped`` of such a field has no empty key.
+    """
+    order = "t_use.models.Order"
+    messages = _messages(run_mypy, FILTERED_MAPPED)
+    # records: as they were (Odoo names the partner class otherwise in each version)
+    assert messages[-1].startswith('30: note: Revealed type is "dict[odoo.addons.base.')
+    assert messages[-1].endswith(f'Partner, {order}]"')
+    assert messages[:-1] == [
         '8: note: Revealed type is "list[str]"',
         '9: note: Revealed type is "list[str | Literal[False]]"',
         # Through a relational field the other lines' labels are mapped too.
         '10: note: Revealed type is "list[str | Literal[False]]"',
+        '11: note: Revealed type is "list[str]"',
+        f'13: note: Revealed type is "dict[str, {order}]"',
+        '14: note: Revealed type is "list[str]"',
+        # ``or``, another name's field, a path: nothing said of ``name``.
+        '15: note: Revealed type is "list[str | Literal[False]]"',
+        '16: note: Revealed type is "list[str | Literal[False]]"',
+        '17: note: Revealed type is "list[str | Literal[False]]"',
+        f'18: note: Revealed type is "dict[str, {order}]"',
+        '19: note: Revealed type is "list[str]"',  # Odoo calls it with the record alone
+        '20: note: Revealed type is "list[str | Literal[False]]"',  # a second, required
+        '21: note: Revealed type is "list[str]"',  # the record goes to a defaulted first one
+        '22: note: Revealed type is "list[str | Literal[False]]"',  # a required keyword
+        '23: note: Revealed type is "list[str | Literal[False]]"',  # a lambda that binds a name
+        '24: note: Revealed type is "list[str]"',  # each call of a chain keeps its fields
+        '26: note: Revealed type is "str"',  # a record of a ``for`` over them
+        '29: note: Revealed type is "list[str | Literal[False]]"',  # a local bound twice
     ]
 
 

@@ -62,6 +62,7 @@ from odoo_typing.classes import receiver_type
 from odoo_typing.hooks.models import Hooks
 from odoo_typing.hooks.nodes import (
     call_argument,
+    checked_function,
     literal_string,
     literal_strings_argument,
     type_checker,
@@ -81,7 +82,13 @@ from odoo_typing.references import (
     resolve_path,
 )
 from odoo_typing.scanner import FieldInfo
-from odoo_typing.searched import domain_argument, restricted_fields, sql_kinds
+from odoo_typing.searched import (
+    domain_argument,
+    filtered_fields,
+    kept_fields,
+    restricted_fields,
+    sql_kinds,
+)
 from odoo_typing.vals import RELATIONAL_CLASSES
 
 __all__ = ["RECORD_FUNCTIONS", "RecordsetHooks"]
@@ -241,15 +248,22 @@ class RecordsetHooks(Hooks):
         if value is None:
             return result
         checker = type_checker(ctx.api)
+        records = get_proper_type(value)
+        relational = isinstance(records, Instance) and records.type.has_base(
+            self._profile.base_model
+        )
+        # Records of a comodel mypy cannot type: ``Any``, and records that may be empty.
+        untyped = isinstance(records, AnyType) and self._relational_end(
+            receiver, argument.value, ctx
+        )
+        if not relational and not untyped and _filtered_by(ctx.context, argument.value, ctx.api):
+            value = true_only(value)  # ``filtered("code").mapped("code")``: no empty code
         if method == "grouped":
             return checker.named_generic_type("builtins.dict", [value, receiver])
-        records = get_proper_type(value)
-        if isinstance(records, Instance) and records.type.has_base(self._profile.base_model):
+        if relational:
             return records
-        if isinstance(records, AnyType) and self._relational_end(receiver, argument.value, ctx):
-            return value  # records of a comodel mypy cannot type, not a list
-        if _filtered_by(ctx.context, argument.value):
-            value = true_only(value)  # ``filtered("code").mapped("code")``: no empty code
+        if untyped:
+            return value  # records, not a list
         return checker.named_generic_type("builtins.list", [value])
 
     def _function_result(
@@ -782,24 +796,22 @@ def _read_value(
     return None
 
 
-def _filtered_by(call: Context, field: str) -> bool:
-    """Whether a call is made on ``records.filtered(field)`` of one field (no path).
+def _filtered_by(call: Context, field: str, api: CheckerPluginInterface) -> bool:
+    """Whether a call is made on records ``filtered`` by one field (no path).
 
-    ``filtered("default_code")`` keeps the records whose field is set, so ``mapped`` of the
-    same field gives no empty value. Through a relational field the values of the other
-    records it holds are mapped too, so a path does not count.
+    ``filtered("default_code")`` (or ``filtered(lambda p: p.default_code)``) keeps the
+    records whose field is set, so ``mapped`` of the same field gives no empty value, and
+    ``grouped`` no empty key; also through a local bound to such records
+    (:func:`odoo_typing.searched.filtered_fields`). Through a relational field the values
+    of the other records it holds are mapped too, so a path does not count.
     """
     if "." in field or not isinstance(call, CallExpr) or not isinstance(call.callee, MemberExpr):
         return False
     receiver = call.callee.expr
-    return (
-        isinstance(receiver, CallExpr)
-        and isinstance(receiver.callee, MemberExpr)
-        and receiver.callee.name == "filtered"
-        and len(receiver.args) == 1
-        and isinstance(receiver.args[0], StrExpr)
-        and receiver.args[0].value == field
-    )
+    if field in kept_fields(receiver):
+        return True
+    function = checked_function(api)
+    return function is not None and field in filtered_fields(function, receiver)
 
 
 def _untyped_function(signature: FunctionLike, name: str) -> FunctionLike:

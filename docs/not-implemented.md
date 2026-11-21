@@ -199,6 +199,27 @@ would have two errors for one cause. Taking mypy's check away for fields
 (`allow_incompatible_override`) to leave only the plugin's would lose those other
 cases in both orders.
 
+### A field written between the filter (or search) and the read keeps the proof
+
+`todo = self.filtered(lambda a: a.res_model)`, then `todo.write({"res_model": False})`
+or `for a in todo: a.res_model = False`, then `todo.grouped("res_model")`: the plugin
+types the keys `str`, and at run time one is `False`. The same holds for a search whose
+domain set the field and for `filtered("res_model")`.
+
+- After a direct assignment (`todo.res_model = False`) mypy reads the field as `Any`,
+  with or without the proof: Odoo leaves the value parameter of `Field.__set__` without
+  annotation, and mypy narrows the attribute to the type the setter takes (`Any`). So
+  the proof changes no read after such a write; it keeps `str` after a write through
+  `write()` / `update()`, through another name of the records or in a loop over them,
+  and in every `mapped()` / `grouped()` call (mypy narrows no call).
+- Dropping the proof wherever the function writes the field would bring back the false
+  positives the rule removes: a compute method reads the field it is about to assign
+  (`for rec in self.filtered("code"): rec.code = rec.code.strip()`), and so do most
+  `onchange` methods. Telling the reads before the write from those after it, through
+  loops, `write()` calls with computed dicts and aliases of the records, is a flow
+  analysis of the function that the plugin does not have (mypy gives hooks no flow
+  facts of attribute writes on records).
+
 ## Not gone through yet
 
 Groups of errors that only the plugin reports and that have no entry above and no rule

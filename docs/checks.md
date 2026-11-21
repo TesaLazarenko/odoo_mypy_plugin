@@ -78,9 +78,14 @@ plugin:
   the comodel's records, and `grouped("partner_id")` a `dict` from the field's values to
   records. `filtered("default_code").mapped("default_code")` is `list[str]`: the
   records kept have the field set (a path through a relational field maps the values of
-  other records too, so it keeps `False`). So has each record of a `for` over them
+  other records too, so it keeps `False`), and `grouped("default_code")` of them has no
+  `False` key. So has each record of a `for` over them
   (`for product in self.filtered("default_code"):`, also through a local bound once to
-  the call, and chained `filtered("a").filtered("b")`).
+  the call, and chained `filtered("a").filtered("b")`). A function keeps them as the
+  string does: `filtered(lambda p: p.default_code)`, and each field of
+  `lambda p: p.a and p.b` read off its parameter (not `or`, a path, another name, a
+  lambda with another parameter that the call `func(record)` leaves without a value, or
+  one with `:=`).
 - **The functions the ORM calls with records** are checked with those records: the
   parameter of `filtered(lambda line: ...)`, `mapped(...)`, `sorted(key=...)` and
   `grouped(...)` is a record of the receiver (Odoo 17 and 18 declare no type for it;

@@ -349,7 +349,7 @@ class FieldValueHooks(Hooks):
     def _searched(
         self, member: Context, info: FieldInfo | None, api: CheckerPluginInterface
     ) -> bool:
-        """Whether the search or the ``filtered("f")`` that gave the records read sets the field."""
+        """Whether the search or the ``filtered(...)`` that gave the records read sets the field."""
         function = checked_function(api)
         if not isinstance(member, MemberExpr) or function is None:
             return False

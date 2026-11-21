@@ -24,6 +24,10 @@ class Site(models.Model):
             site.url.upper() + site.note.upper()
         for site in self.filtered("partner_id.email"):
             site.note.upper()
+        for site in self.filtered(lambda site: site.url and site.note):
+            site.url.upper() + site.note.upper()
+        for site in self.filtered(lambda site: site.url or site.note):
+            site.note.upper()
 """
 
 
@@ -35,6 +39,53 @@ def test_records_kept_by_filtered_have_the_field_set(run_mypy: RunMypy) -> None:
         '14: error: Item "bool" of "str | Literal[False]" has no attribute "startswith"'
         "  [union-attr]",
         f"19: error: {bool_item}",  # a path: some partner has an email, not the field
+        f"23: error: {bool_item}",  # ``or``: either may be set
+    ]
+
+
+WRITTEN = """
+from odoo import fields, models
+
+class Site(models.Model):
+    _name = "t.site"
+
+    url = fields.Char()
+    note = fields.Char()
+    name = fields.Char(required=True)
+
+    def check(self) -> None:
+        for site in self.filtered("url"):
+            site.url = site.url.strip()
+            reveal_type(site.url)
+        for site in self.filtered("url"):
+            site.url += "/"
+        for site in self.filtered("url"):
+            site.url = False
+            reveal_type(site.url)
+        self.note = self.note.strip()
+        self.note = False
+        reveal_type(self.note)
+        self.name = False
+        reveal_type(self.name)
+"""
+
+
+def test_a_field_assigned_is_read_as_mypy_narrows_it_whatever_the_proof(
+    run_mypy: RunMypy,
+) -> None:
+    """After ``site.url = ...`` mypy reads the field as ``Any`` (Odoo leaves the value of
+    ``Field.__set__`` without annotation), past ``filtered("url")`` or not, on a required
+    field too: the proof makes no read after a direct write ``str``. The read on the
+    right of the assignment (13) and of ``+=`` (16) keeps the proof, where the field
+    without one is reported (20)."""
+    result = run_mypy({"t_mod": {"depends": ["base"], "models.py": WRITTEN}})
+
+    assert result.messages("t_mod/models.py") == [
+        '14: note: Revealed type is "Any"',
+        '19: note: Revealed type is "Any"',
+        '20: error: Item "bool" of "str | Literal[False]" has no attribute "strip"  [union-attr]',
+        '22: note: Revealed type is "Any"',
+        '24: note: Revealed type is "Any"',
     ]
 
 

@@ -11,6 +11,10 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 
 ### Models and records
 
+- `filtered(lambda r: r.f)` keeps the records whose `f` is set, as `filtered("f")` does
+  (also each field of `lambda r: r.a and r.b`): their `mapped("f")` has no `False`, also
+  through a local bound once to them; nor have the keys of `grouped("f")` of records
+  filtered either way.
 - `if "m" not in self.env: self.skipTest(...)` (and of a field) guards the rest of the
   test as `return` does; `"f" in self.env.company` (`env.user`, `env.companies`) is a
   field guard. After `if "f" in records: self.skipTest(...)` a read of `records.f` is

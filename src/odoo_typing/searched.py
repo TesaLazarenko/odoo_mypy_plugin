@@ -39,12 +39,14 @@ from collections.abc import Callable, Mapping
 
 from mypy.nodes import (
     ARG_POS,
+    AssignmentExpr,
     Block,
     CallExpr,
     Expression,
     ForStmt,
     FuncItem,
     IntExpr,
+    LambdaExpr,
     ListExpr,
     MemberExpr,
     NameExpr,
@@ -55,6 +57,7 @@ from mypy.nodes import (
     Var,
     WhileStmt,
 )
+from mypy.server.subexpr import get_subexpressions
 from mypy.types import Instance, Type, get_proper_type
 
 from odoo_typing.rebound import function_bindings, nested_blocks
@@ -64,6 +67,7 @@ __all__ = [
     "SEARCH_METHODS",
     "domain_argument",
     "filtered_fields",
+    "kept_fields",
     "restricted_fields",
     "searched_domain",
     "sql_kinds",
@@ -153,28 +157,71 @@ def searched_domain(function: FuncItem, receiver: Expression) -> Expression | No
 
 
 def filtered_fields(function: FuncItem, receiver: Expression) -> frozenset[str]:
-    """The fields that ``filtered("field")`` set on the records a name holds.
+    """The fields that ``filtered(...)`` set on the records a name holds.
 
     ``for website in self.filtered("homepage_url"):`` keeps the records whose field is true
     (Odoo's ``rec[func]``): ``website.homepage_url`` is no ``False``. A local bound once to
     such a call or the variable of a ``for`` over one, as for a search; the calls may be
-    chained (``filtered("a").filtered("b")``). A path (``"partner_id.email"``) keeps the
-    records of which some value is true, which says nothing of the first field alone.
+    chained (``filtered("a").filtered("b")``). What each call keeps: :func:`filter_fields`.
     """
-    value = _records_source(function, receiver)
+    return kept_fields(_records_source(function, receiver))
+
+
+def kept_fields(value: Expression | None) -> frozenset[str]:
+    """The fields set on the records of ``records.filtered(...)``, chained calls too."""
     found: set[str] = set()
     while (
         isinstance(value, CallExpr)
         and isinstance(value.callee, MemberExpr)
         and value.callee.name == "filtered"
         and len(value.args) == 1
-        and isinstance(value.args[0], StrExpr)
     ):
-        name = value.args[0].value
-        if name and "." not in name:
-            found.add(name)
+        found |= filter_fields(value.args[0])
         value = value.callee.expr
     return frozenset(found)
+
+
+def filter_fields(argument: Expression) -> frozenset[str]:
+    """The fields that the argument of ``filtered`` proves true on the records it keeps.
+
+    Odoo keeps the records for which ``rec[name]`` (a string) or ``func(rec)`` (a
+    function) is true: ``filtered("f")`` and ``filtered(lambda r: r.f)`` keep those whose
+    ``f`` is set, ``lambda r: r.f and r.g and ...`` those whose every field read off the
+    parameter in the conjunction is. A path (``"partner_id.email"``, ``r.partner_id.email``)
+    keeps the records of which some value is true, which says nothing of the last field
+    of the others. Odoo calls the function with the record alone (``func(rec)``): its
+    first parameter takes it, the others must take nothing (a default, ``*args``,
+    ``**kwargs``). Nothing is proved by a lambda that binds a name
+    (``lambda r: (r := r.parent_id) and r.name``).
+    """
+    if isinstance(argument, StrExpr):
+        name = argument.value
+        return frozenset({name}) if name and "." not in name else frozenset()
+    if (
+        not isinstance(argument, LambdaExpr)
+        or not argument.arguments
+        or not argument.arguments[0].kind.is_positional()
+        or any(item.kind.is_required() for item in argument.arguments[1:])
+    ):
+        return frozenset()
+    body = argument.expr()
+    if any(isinstance(node, AssignmentExpr) for node in get_subexpressions(body)):
+        return frozenset()
+    parameter = argument.arguments[0].variable
+    return frozenset(
+        operand.name
+        for operand in _and_operands(body)
+        if isinstance(operand, MemberExpr)
+        and isinstance(operand.expr, NameExpr)
+        and operand.expr.node is parameter
+    )
+
+
+def _and_operands(expression: Expression) -> list[Expression]:
+    """The operands of ``a and b and ...``: each is true where the whole is."""
+    if isinstance(expression, OpExpr) and expression.op == "and":
+        return [*_and_operands(expression.left), *_and_operands(expression.right)]
+    return [expression]
 
 
 def _records_source(function: FuncItem, receiver: Expression) -> Expression | None:
