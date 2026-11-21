@@ -57,6 +57,7 @@ from mypy.types import (
     ProperType,
     Type,
     TypeOfAny,
+    TypeType,
     TypeVarType,
     UninhabitedType,
     UnionType,
@@ -149,7 +150,7 @@ class AskedFieldHooks(Hooks):
             return
         calls = cache(partial(_line_calls, checked_function(ctx.api) or checker.tree))
         reads = self.registry.denied_reads(
-            ctx.api.path, line, name, written, lambda at: _may_end(calls(), at)
+            ctx.api.path, line, name, written, lambda at, method: _may_end(calls(), at, method)
         )
         if not reads:
             return
@@ -322,39 +323,72 @@ def _line_calls(scope: Node) -> dict[int, list[CallExpr]]:
     return found
 
 
-def _may_end(calls: dict[int, list[CallExpr]], line: int) -> bool:
+def _may_end(calls: dict[int, list[CallExpr]], line: int, method: str | None) -> bool:
     """Whether a call on a line may not return: declared ``NoReturn``, or not known.
+
+    With ``method``, whether the first call of a method of that name on the line (the
+    statement's own: :mod:`odoo_typing.denied_reads` asks no line that another statement
+    of the branch shares) is declared not to return, as ``unittest``'s ``skipTest`` is:
+    one not known does not count.
 
     The records of the question are typed and mypy has not checked the statements of
     the branch yet, so the callee is taken from what semantic analysis bound: a
-    function, a method of a name whose type is known (``self.fail()``), a class.
+    function, a method of a name whose type is known (``self.fail()``; ``cls.fail()``, of a
+    name typed ``type[C]``), a class.
     """
-    return any(_may_not_return(call) for call in calls.get(line, ()))
+    if method is None:
+        return any(_may_not_return(call) for call in calls.get(line, ()))
+    named = [
+        call
+        for call in calls.get(line, ())
+        if isinstance(call.callee, MemberExpr) and call.callee.name == method
+    ]
+    first = min(named, key=lambda call: call.column, default=None)
+    return first is not None and _never_returns(first)
 
 
 def _may_not_return(call: CallExpr) -> bool:
+    signatures = _signatures(call)
+    return signatures is None or any(
+        not isinstance(item, CallableType)
+        or isinstance(get_proper_type(item.ret_type), UninhabitedType)
+        for item in signatures
+    )
+
+
+def _never_returns(call: CallExpr) -> bool:
+    signatures = _signatures(call)
+    return bool(signatures) and all(
+        isinstance(item, CallableType)
+        and isinstance(get_proper_type(item.ret_type), UninhabitedType)
+        for item in signatures or ()
+    )
+
+
+def _signatures(call: CallExpr) -> list[ProperType] | None:
+    """The signatures of the callee of a call; ``None`` when the callee is not known.
+
+    An empty list for a class or a function without annotations: they return.
+    """
     callee = call.callee
     node = callee.node if isinstance(callee, RefExpr) else None
     if node is None and isinstance(callee, MemberExpr) and isinstance(callee.expr, NameExpr):
         owner = callee.expr.node
         typ = get_proper_type(owner.type) if isinstance(owner, Var) else None
+        if isinstance(typ, TypeType):  # ``cls.method()``
+            typ = typ.item
         found = typ.type.get(callee.name) if isinstance(typ, Instance) else None
         node = found.node if found is not None else None
     if isinstance(node, TypeInfo):
-        return False
+        return []
     if isinstance(node, Decorator):
         node = node.func
     if not isinstance(node, FuncBase | Var):
-        return True
+        return None
     signature = get_proper_type(node.type) if node.type is not None else None
     if signature is None:
-        return isinstance(node, Var)  # an unannotated function returns
-    items = signature.items if isinstance(signature, Overloaded) else [signature]
-    return any(
-        not isinstance(item, CallableType)
-        or isinstance(get_proper_type(item.ret_type), UninhabitedType)
-        for item in items
-    )
+        return None if isinstance(node, Var) else []  # an unannotated function returns
+    return list(signature.items) if isinstance(signature, Overloaded) else [signature]
 
 
 def _read_nodes(

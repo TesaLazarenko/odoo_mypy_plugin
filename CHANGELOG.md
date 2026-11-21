@@ -13,7 +13,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 
 - `if "m" not in self.env: self.skipTest(...)` (and of a field) guards the rest of the
   test as `return` does; `"f" in self.env.company` (`env.user`, `env.companies`) is a
-  field guard.
+  field guard. After `if "f" in records: self.skipTest(...)` a read of `records.f` is
+  reported, as after `return`; the reads past `cls.method()` declared to return (`cls`
+  typed `type[C]`, as in a class method) are checked as past `self.method()`.
 - Model classes get the MRO of Odoo's registry class as their addon sees it
   (`_inherit`, `base`, mixins), so fields and methods of earlier classes and of the
   dependencies are known on `self`; `_inherits` delegation, transitively.

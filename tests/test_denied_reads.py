@@ -122,9 +122,9 @@ def stopped(self, rec, other):
 """
 
 
-def _ends(line: int) -> bool:
+def _ends(line: int, method: str | None) -> bool:
     """No call ends the statements after it but ``rec.stop()``, of line 62."""
-    return line == 62
+    return line == 62 and method is None
 
 
 def _doubtful(line: int) -> list[int]:
@@ -165,3 +165,80 @@ def test_an_assignment_to_the_records_attribute_is_a_doubt() -> None:
 
     assert denied_reads(statements, 3, "f", "self.partner", _ends) == []
     assert [at for at, _ in denied_reads(statements, 6, "f", "self.partner", _ends)] == [7]
+
+
+SKIPPED = """
+def test_has_it(self, rec):
+    if "f" in rec:
+        self.skipTest("rec has f")
+    rec.f
+
+def test_returns(self, rec, helper):
+    if "f" in rec:
+        helper.skipTest("rec has f")
+    rec.f
+
+def test_lacks_it(self, rec):
+    if "f" not in rec:
+        rec.g
+    else:
+        self.skipTest("rec has f")
+    rec.f
+
+def test_skipped_inside(self, rec, flag):
+    if "f" in rec:
+        if flag:
+            self.skipTest("rec has f")
+    rec.f
+
+def test_wrapped(self, rec):
+    if "f" in rec:
+        (
+            self.skipTest("rec has f")
+        )
+    rec.f
+
+def test_two_on_a_line(self, rec, flag, helper):
+    if "f" in rec:
+        flag and self.skipTest("a"); helper.skipTest("b")
+    rec.f
+
+def test_logged(self, rec):
+    if "f" in rec:
+        print("rec has f")
+        self.skipTest("rec has f")
+    rec.f
+
+def test_opened(self, rec):
+    if "f" in rec:
+        print("rec has f"); (
+            self.skipTest("rec has f")
+        )
+    rec.f
+"""
+
+
+def test_a_branch_that_skips_the_test_ends_as_return_does() -> None:
+    """``self.skipTest(...)`` raises ``SkipTest``: what follows runs when the answer is no.
+
+    Only a call ``may_end`` says is declared not to return (false for ``skipTest``: a
+    method of that name declared ``-> None``, or not known), whatever the other calls of
+    its line; asked on the line of the call, also in parentheses.
+    """
+    statements = if_statements(ast.parse(textwrap.dedent(SKIPPED)))
+
+    def may_end(line: int, method: str | None) -> bool:
+        # On line 9 ``helper.skipTest`` returns; another call there is not known.
+        return line in {4, 16, 22, 28, 34, 40, 46} or (line == 9 and method is None)
+
+    def reads(line: int) -> list[int]:
+        return [at for at, _ in denied_reads(statements, line, "f", "rec", may_end)]
+
+    assert reads(3) == [5]  # the field is missing past the skipped branch
+    assert reads(8) == []  # a skipTest that returns ends nothing
+    assert reads(13) == [17]  # ``not in``: the else branch skips, the rest lacks the field
+    assert reads(20) == []  # the branch ends with an ``if`` without ``else``, not a skip
+    assert reads(26) == [30]  # the statement begins on 27, its call on 28
+    assert reads(33) == []  # ``may_end`` answers for line 34, which two statements share
+    assert reads(38) == [41]  # a statement before the skip, on a line of its own
+    assert reads(44) == [48]  # the statement before ends on 45, the skip's call is on 46

@@ -4,8 +4,9 @@
 (:mod:`odoo_typing.hooks.asked_fields`), through the type mypy records for the operand
 of ``in``. mypy narrows that operand to the recorded type in both branches, and calls no
 plugin hook where a branch begins: the field is there in the ``else`` branch too, in the
-body of ``if "f" not in records:`` and after ``if "f" in records: return``. A read of the
-field there raises ``AttributeError`` each time it runs, and mypy would not report it.
+body of ``if "f" not in records:`` and after ``if "f" in records: return`` (or
+``self.skipTest(...)``, declared not to return). A read of the field there raises
+``AttributeError`` each time it runs, and mypy would not report it.
 
 So the reads are found in the source: the ``if`` statement whose test is the question
 (or ``not`` of it), the statements that run when the answer is no, and in them the
@@ -26,12 +27,15 @@ import ast
 from collections.abc import Callable, Iterator, Mapping
 from typing import Final, TypeAlias
 
-from odoo_typing.guards import BLOCK_FIELDS, TERMINATORS, binds, dotted
+from odoo_typing.guards import BLOCK_FIELDS, SKIP_TEST, TERMINATORS, binds, dotted, ends
 
-__all__ = ["IfStatements", "denied_reads", "if_statements", "line_reads"]
+__all__ = ["IfStatements", "MayEnd", "denied_reads", "if_statements", "line_reads"]
 
 # The ``if`` statements of a file by the line of their test, with the statements after each.
 IfStatements: TypeAlias = Mapping[int, tuple[tuple[ast.If, tuple[ast.stmt, ...]], ...]]
+# Whether a call on a line may not return (declared ``NoReturn``, or not known); with a
+# method name, whether the first call of that method there is declared not to return.
+MayEnd: TypeAlias = Callable[[int, str | None], bool]
 
 SCOPES: Final = (
     ast.FunctionDef,
@@ -66,7 +70,7 @@ def denied_reads(
     line: int,
     name: str,
     records: str,
-    may_end: Callable[[int], bool],
+    may_end: MayEnd,
 ) -> list[tuple[int, int]]:
     """The reads of ``records.name`` where the question on a line is answered no.
 
@@ -76,7 +80,8 @@ def denied_reads(
         name: The field asked for.
         records: The records asked, as written (``self``, ``order.partner_id``).
         may_end: Whether the call that is a statement on a line may not return: the
-            statements after it in its block are not read.
+            statements after it in its block are not read. Asked of ``skipTest`` for a
+            branch that ends with a call of it (see :data:`MayEnd`).
 
     Returns:
         The line and column of each read, in source order; none when the question is
@@ -92,7 +97,7 @@ def denied_reads(
     if len(found) != 1:
         return []
     statement, rest = found[0]
-    denied = _denied(statement, name, records, list(rest))
+    denied = _denied(statement, name, records, list(rest), may_end)
     nodes = list(_nodes(denied, may_end))
     root = records.partition(".")[0]
     if any(_doubts(node, root, name, records) for node in nodes) or _rebinds_inside(denied, root):
@@ -147,20 +152,32 @@ def _question(test: ast.expr, name: str, records: str) -> ast.Compare | None:
     return test if dotted(container) == records else None
 
 
-def _denied(statement: ast.If, name: str, records: str, rest: list[ast.stmt]) -> list[ast.stmt]:
-    """The statements that run when the answer is no: a branch, and after one that ends."""
+def _denied(
+    statement: ast.If,
+    name: str,
+    records: str,
+    rest: list[ast.stmt],
+    may_end: MayEnd,
+) -> list[ast.stmt]:
+    """The statements that run when the answer is no: a branch, and after one that ends.
+
+    A branch ends with ``return``, ``raise``, ``continue``, ``break``, or a call of
+    ``skipTest`` (:func:`odoo_typing.guards.ends`) that ``may_end`` says is declared not
+    to return, on a line no other statement of the branch shares: ``unittest``'s raises
+    ``SkipTest``; a method of that name declared to return, or not known, ends nothing.
+    """
     question = _question(statement.test, name, records)
     assert question is not None
     positive = isinstance(question.ops[0], ast.In) == (statement.test is question)
     granted, denied = (
         (statement.body, statement.orelse) if positive else (statement.orelse, statement.body)
     )
-    if granted and isinstance(granted[-1], TERMINATORS):
+    if granted and _branch_ends(granted, may_end):
         return [*denied, *rest]
     return list(denied)
 
 
-def _nodes(statements: list[ast.stmt], may_end: Callable[[int], bool]) -> Iterator[ast.AST]:
+def _nodes(statements: list[ast.stmt], may_end: MayEnd) -> Iterator[ast.AST]:
     """The nodes of some statements, in their scope, up to a statement that ends them."""
     for statement in statements:
         yield from _inner(statement, may_end)
@@ -168,16 +185,36 @@ def _nodes(statements: list[ast.stmt], may_end: Callable[[int], bool]) -> Iterat
             return
 
 
-def _may_end(statement: ast.stmt, may_end: Callable[[int], bool]) -> bool:
-    """Whether a statement is a call that may not return (``self.fail(...)``)."""
+def _branch_ends(branch: list[ast.stmt], may_end: MayEnd) -> bool:
+    """Whether the last statement of a branch ends it (see :func:`_denied`).
+
+    ``may_end`` answers for a line: a ``skipTest`` that shares its line with another
+    statement of the branch (``a; self.skipTest()``) ends nothing.
+    """
+    last = branch[-1]
+    if isinstance(last, TERMINATORS):
+        return True
+    if not ends(last) or not isinstance(last, ast.Expr):
+        return False
+    before = branch[-2] if len(branch) > 1 else None
+    if before is not None and (before.end_lineno or before.lineno) >= last.value.lineno:
+        return False
+    return _may_end(last, may_end, SKIP_TEST)
+
+
+def _may_end(statement: ast.stmt, may_end: MayEnd, method: str | None = None) -> bool:
+    """Whether a statement is a call that may not return (``self.fail(...)``).
+
+    With ``method``, a call of that method declared not to return (:data:`MayEnd`).
+    """
     return (
         isinstance(statement, ast.Expr)
         and isinstance(statement.value, ast.Call)
-        and may_end(statement.lineno)
+        and may_end(statement.value.lineno, method)
     )
 
 
-def _inner(node: ast.AST, may_end: Callable[[int], bool]) -> Iterator[ast.AST]:
+def _inner(node: ast.AST, may_end: MayEnd) -> Iterator[ast.AST]:
     yield node
     if isinstance(node, SCOPES):
         return

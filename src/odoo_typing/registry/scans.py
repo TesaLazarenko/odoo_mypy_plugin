@@ -17,7 +17,13 @@ from typing import Final, NamedTuple, Protocol
 
 from odoo_typing.addons import Addon, AddonIndex, LoadKey
 from odoo_typing.config import Settings
-from odoo_typing.denied_reads import IfStatements, denied_reads, if_statements, line_reads
+from odoo_typing.denied_reads import (
+    IfStatements,
+    MayEnd,
+    denied_reads,
+    if_statements,
+    line_reads,
+)
 from odoo_typing.frozen import frozen
 from odoo_typing.guards import (
     Guard,
@@ -449,7 +455,7 @@ class ScannedAddons:
         line: int,
         name: str,
         records: str,
-        may_end: Callable[[int], bool],
+        may_end: MayEnd,
     ) -> list[tuple[int, int, int, int]]:
         """The reads of a field where the question on a line says it is not there.
 

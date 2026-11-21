@@ -240,10 +240,13 @@ the variable itself. A field the model has keeps its type.
 
 A read of `records.f` where the answer is no is reported as before: in the `else`
 branch of `if "f" in records:`, in the body of `if "f" not in records:`, after a branch
-that ends with `return`, `raise`, `continue` or `break`, and up to a call that may not
-return (declared `NoReturn`, such as `self.fail(...)`, or a callee not known yet), as
-mypy checks no unreachable code. Only where the source leaves no doubt: not when those statements give the name other records, ask again, or read the
-field through another name ([what is left](not-implemented.md)).
+that ends with `return`, `raise`, `continue`, `break` or `self.skipTest(...)` (a call of
+`skipTest` declared not to return, as unittest's is), and up to a call that may not
+return (declared `NoReturn`, such as `self.fail(...)`, or a callee not known yet; the
+methods of a name typed `type[C]`, such as `cls` in a class method, are known as those
+of `self`), as mypy checks no unreachable code. Only where the source leaves no doubt: not when those
+statements give the name other records, ask again, or read the field through another
+name ([what is left](not-implemented.md)).
 
 The answer may be kept and tested later: `field = self._fields.get("user_id")`, then
 `if field and field.type == "many2one":`. mypy narrows nothing there, so `self.user_id`

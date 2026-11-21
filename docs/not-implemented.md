@@ -249,6 +249,11 @@ yet. They are work to do:
   - after an `elif` branch that returns, and after a branch whose last statement is an
     `if` that returns on every path: the scan follows one `if` and its literal last
     statement;
+  - after a branch that ends with a `skipTest` the plugin does not know to raise: of a
+    receiver typed `Any` (a parameter without annotation), of one it does not look up
+    (an attribute such as `self.case`) or of another kind (`super()`), or on a line
+    another statement of the branch shares (`x = 1; self.skipTest()`), since mypy's
+    calls are found by their line;
   - where the statements bind the name again (also by a walrus in a comprehension, by
     `nonlocal` or `global` in a nested function, by assigning to `self.partner` when
     the records are `self.partner`) or ask again (`hasattr`, `isinstance`, another

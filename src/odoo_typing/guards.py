@@ -62,6 +62,7 @@ __all__ = [
     "binds",
     "call_strings",
     "dotted",
+    "ends",
     "field_guard",
     "guarded_fields",
     "is_guarded",
@@ -303,10 +304,10 @@ def _decides(test: ast.If, line: int) -> bool:
     last = test.body[-1]
     if test.body[0].lineno <= line <= (last.end_lineno or last.lineno):
         return True
-    return _ends(last) and (last.end_lineno or last.lineno) < line
+    return ends(last) and (last.end_lineno or last.lineno) < line
 
 
-def _ends(statement: ast.stmt) -> bool:
+def ends(statement: ast.stmt) -> bool:
     """``return``, ``raise``, ``continue``, ``break``, or a call of ``skipTest``."""
     if isinstance(statement, TERMINATORS):
         return True
@@ -483,9 +484,9 @@ def _block_guards(block: Sequence[ast.stmt], known: _Known = NO_NAMES) -> list[G
         found = _cover(when_true, statement.body)
         found += _cover(when_false, statement.orelse)
         rest = block[position + 1 :]
-        if rest and _ends(statement.body[-1]):
+        if rest and ends(statement.body[-1]):
             found += _cover(when_false, rest)  # past the if: the test was false
-        if rest and statement.orelse and _ends(statement.orelse[-1]):
+        if rest and statement.orelse and ends(statement.orelse[-1]):
             found += _cover(when_true, rest)
         # Who was asked: not on a line of the test itself (``if test: body`` on one line).
         tested = statement.test.end_lineno or statement.test.lineno

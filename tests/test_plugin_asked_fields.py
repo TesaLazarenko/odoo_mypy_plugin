@@ -506,6 +506,177 @@ def test_a_view_is_given_the_field_only_where_its_value_goes_nowhere(
     assert columns[2] == columns[3]
 
 
+SKIPPED_TESTS = """
+from odoo.tests import TransactionCase
+
+class TestThing(TransactionCase):
+    def test_has_it(self) -> None:
+        thing = self.env["t.thing"]
+        if "extra" in thing:
+            self.skipTest("extra is there")
+        thing.extra
+
+    def test_lacks_it(self) -> None:
+        thing = self.env["t.thing"]
+        if "extra" not in thing:
+            self.skipTest("extra is missing")
+        thing.extra
+
+    def test_returns(self, helper: "Helper") -> None:
+        thing = self.env["t.thing"]
+        if "extra" in thing:
+            helper.skipTest("extra is there")
+        thing.extra
+
+    def test_unannotated(self):
+        thing = self.env["t.thing"]
+        if "extra" in thing:
+            self.skipTest("extra is there")
+        thing.extra
+
+class Helper:
+    def skipTest(self, reason: str) -> None:
+        print(reason)
+"""
+
+SKIPPED_KEPT = """
+from odoo.tests.common import TransactionCase
+
+class Helper:
+    def skipTest(self, reason: str) -> None:
+        print(reason)
+
+class TestThing(TransactionCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.thing = cls.env["t.thing"].create({"name": "x"})
+
+    def test_has_it(self) -> None:
+        if "extra" in self.thing:
+            self.skipTest("extra is there")
+        self.thing.extra
+
+    def test_lacks_it(self) -> None:
+        if "extra" not in self.thing:
+            self.skipTest("extra is missing")
+        self.thing.extra
+
+    def test_returns(self, helper: Helper, count: int) -> None:
+        if "extra" in self.thing:
+            helper.skipTest("extra is there {}".format(count))
+        self.thing.extra
+
+    def test_unknown(self, helper, flag: bool) -> None:
+        if "extra" in self.thing:
+            helper.skipTest("extra is there")
+        self.thing.extra
+
+    @classmethod
+    def skip_class(cls) -> None:
+        if "extra" in cls.thing:
+            cls.skipTest(cls, "extra is there")
+        cls.thing.extra
+
+    def test_first(self, helper: Helper, flag: bool) -> None:
+        if "extra" in self.thing:
+            helper.skipTest("x" if flag else self.skipTest("y"))
+        self.thing.extra
+
+    def test_two_statements(self, helper: Helper, flag: bool) -> None:
+        if "extra" in self.thing:
+            flag and self.skipTest("a"); helper.skipTest("b")
+        self.thing.extra
+
+    @classmethod
+    def prepare(cls) -> None:
+        print(cls)
+
+    @classmethod
+    def prepared(cls) -> None:
+        if "extra" not in cls.thing:
+            cls.prepare()
+            cls.thing.extra
+
+    @classmethod
+    def skip_unannotated(cls):
+        if "extra" in cls.thing:
+            cls.skipTest(cls, "extra is there")
+        cls.thing.extra
+
+def untyped(function):
+    return function
+
+class TestOther(TestThing):
+    @classmethod
+    @untyped
+    def setUpClass(cls):
+        super().setUpClass()
+        if "extra" in cls.thing:
+            cls.skipTest(cls, "extra is there")
+        cls.thing.extra
+"""
+
+
+def test_a_read_past_a_test_skipped_when_the_field_is_there_is_reported(
+    run_mypy: RunMypy,
+) -> None:
+    """``self.skipTest(...)`` ends the branch as ``return`` does: past ``if "f" in
+    records: self.skipTest(...)`` the records have no field ``f`` (9, and 27 in a method
+    without annotations, as Odoo writes tests); past ``not in`` they do.
+
+    A method of that name declared to return ends nothing: past it the records may not
+    have the field, and mypy reports the read as it does for any field the model lacks
+    (21; also before this rule).
+    """
+    result = run_mypy(
+        {"t_base": T_BASE, "t_use": {"depends": ["t_base"], "models.py": SKIPPED_TESTS}},
+        check=["t_use"],
+    )
+
+    assert [message.split(":")[0] for message in result.messages("t_use/models.py")] == [
+        "9",
+        "21",
+        "27",
+    ]
+
+
+def test_records_a_test_case_keeps_lack_the_field_past_a_skip_where_it_is_there(
+    run_mypy: RunMypy,
+) -> None:
+    """Records a test case keeps take the field on every line after the question, so
+    mypy reports none of these reads by itself: the ones past ``self.skipTest(...)`` (17)
+    and ``cls.skipTest(cls, ...)`` (38, as Odoo's ``setUpClass`` writes it) are the
+    plugin's. Past a ``skipTest`` declared to return, with a call on its line whose
+    callee is not known (``str.format`` of a literal), nothing is (27); nor past one of
+    a receiver not known (32), one whose argument skips (43: the statement's call
+    decides), or one sharing its line with another statement (48). ``cls.prepare()``,
+    declared to return, does not stop the reads where the answer is no (58). A class
+    method without annotations, as Odoo writes ``setUpClass``, knows ``cls`` too (64), also
+    under a decorator without annotations (76).
+    """
+    result = run_mypy(
+        {
+            "t_base": T_BASE,
+            "t_extra": T_EXTRA,
+            "t_use": {
+                "depends": ["t_base"],
+                "tests/__init__.py": "from . import test_thing\n",
+                "tests/test_thing.py": SKIPPED_KEPT,
+            },
+        },
+        check=["t_use"],
+    )
+
+    messages = result.messages("t_use/tests/test_thing.py")
+    lines = [message.split(": error: ")[0] for message in messages]
+    assert lines == ["17", "37", "38", "58", "63", "64", "75", "76"]
+    # mypy's own, of ``cls.skipTest(cls, ...)``
+    assert all(messages[at].endswith("[arg-type]") for at in (1, 4, 6))
+    missing = '"Thing" has no attribute "extra"  [attr-defined]'
+    assert [messages[at].split(": error: ")[1] for at in (0, 2, 3, 5, 7)] == [missing] * 5
+
+
 INSIDE_OTHER_TYPES = """
 from typing import NoReturn, Self
 
