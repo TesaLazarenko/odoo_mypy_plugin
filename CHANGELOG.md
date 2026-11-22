@@ -11,6 +11,15 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 
 ### Models and records
 
+- A field read off the records a search or `filtered(...)` gave keeps `False` until the
+  code tests that there are some (`if found:`, `if not found: return`,
+  `self.assertTrue(found)`, `found.ensure_one()`, `self.assertEqual(len(found), 1)`,
+  `self.assertRecordValues(found, [...])`, `if len(found) != 1: self.skipTest(...)`,
+  `if found.ids:`, `if found.exists():`, `bool(found)`, also through a local bound to
+  such a test, `present = found.exists()`, not one filled in place, `ids.append(0)`,
+  also through a local that may hold it, `rows = ids` then `rows += [0]`): of
+  none, Odoo reads `False`. A fact from before a loop does not hold in it when the loop
+  binds the name again.
 - `filtered(lambda r: r.f)` keeps the records whose `f` is set, as `filtered("f")` does
   (also each field of `lambda r: r.a and r.b`): their `mapped("f")` has no `False`, also
   through a local bound once to them; nor have the keys of `grouped("f")` of records
@@ -126,7 +135,8 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   records whose field is set; `records = records.filtered(...).sorted(...)` keeps that.
 - A field that the domain of the search sets has no `False` in what the search gives:
   `search_read([("product_id", "in", subquery)], ["product_id"])`, the records of
-  `search([("email_from", "ilike", "x")])` and the variable of a `for` over them, also
+  `search([("email_from", "ilike", "x")])` where the code tested that there are some (a
+  field of no records reads `False`) and the variable of a `for` over them, also
   of one of two loops that use the same variable (`for lead in team1_leads:` then `for
   lead in team2_leads:`); `x |= v` binds the local again.
 - An Odoo function that handles an empty argument itself takes it (`format_date(env,
@@ -136,14 +146,21 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   `lang_code: str | None`, read in `if lang_code and lang_code in langs:` alone).
 - A read of the environment that the function proved true before is true again:
   `self.env.context.get("active_ids")` after `if not self.env.context.get("active_ids"):
-  raise`, `env.ref(x, raise_if_not_found=False)` after the same call was tested.
+  raise`, `env.ref(x, raise_if_not_found=False)` after the same call was tested. Not
+  after a binding of a name it reads (`self = ...`, `self |= ...`, `(self := ...)`), nor
+  when `:=` binds one in the part of the statement that runs with the read (its own
+  expressions, an `if` or `while` test; not a `match` guard, which runs after the
+  subject): in `self.env.context.get("k") if (self := self.with_context({})) else ...`
+  the test runs first.
 - A condition kept in a local variable narrows what it tested where an `if`, `while` or
   `assert` tests the variable (`cron_enabled = cron and cron.active`, then `if
   cron_enabled: cron._trigger()`), and `self.assertTrue(value)` narrows `value` after it.
   What the function binds later does not matter, only a binding that may run between the
   variable and the test (in between, or through a loop): `allowed = (self.commitment_date
   and ...) or []`, `if not allowed or self.commitment_date.date() ...`, then
-  `self.commitment_date = allowed[0]`.
+  `self.commitment_date = allowed[0]`. Not a variable filled in place
+  (`allowed.append(v)`, `allowed[k] = v`, also through a local that may hold it, `rows =
+  allowed` then `rows += [v]`): it may be true whatever it was bound to.
 - A local variable that its function binds more than once has the type of each value
   where it is bound (`rebound_variables`, on by default): `products = []` then records,
   `proposal = company` then `proposal = False`, `total = 0` then `total += line.amount`,

@@ -48,10 +48,17 @@ from odoo_typing.compat import OdooProfile
 from odoo_typing.hooks.models import Hooks
 from odoo_typing.hooks.nodes import checked_function, record_type, type_checker
 from odoo_typing.model_fields import value_required
+from odoo_typing.proven import proven
 from odoo_typing.references import resolve_path
 from odoo_typing.registry.scans import IdOriginReads
 from odoo_typing.scanner import FieldInfo
-from odoo_typing.searched import filtered_fields, restricted_fields, searched_domain, sql_kinds
+from odoo_typing.searched import (
+    filtered_fields,
+    loop_record,
+    restricted_fields,
+    searched_domain,
+    sql_kinds,
+)
 from odoo_typing.vals import RECORDS, VALUE_TYPES, stored, value_type_named
 
 __all__ = ["FILTER", "FieldValueHooks", "falsy_filter_signature"]
@@ -349,16 +356,23 @@ class FieldValueHooks(Hooks):
     def _searched(
         self, member: Context, info: FieldInfo | None, api: CheckerPluginInterface
     ) -> bool:
-        """Whether the search or the ``filtered(...)`` that gave the records read sets the field."""
+        """Whether the search or the ``filtered(...)`` that gave the records read sets the field.
+
+        Read off the records themselves, it holds where the code has tested that there
+        are some (``if found:``, ``if not found: return``, ``self.assertTrue(found)``,
+        ``found and found.name``: :func:`odoo_typing.proven.proven`): of none, a field
+        reads ``False``. A record of a ``for`` over them is one.
+        """
         function = checked_function(api)
         if not isinstance(member, MemberExpr) or function is None:
             return False
-        if member.name in filtered_fields(function, member.expr):
-            return True
-        domain = searched_domain(function, member.expr)
-        checker = type_checker(api)
-        kinds = sql_kinds({member.name: info}) if info is not None else {}
-        return member.name in restricted_fields(domain, checker.lookup_type_or_none, kinds)
+        if member.name not in filtered_fields(function, member.expr):
+            domain = searched_domain(function, member.expr)
+            checker = type_checker(api)
+            kinds = sql_kinds({member.name: info}) if info is not None else {}
+            if member.name not in restricted_fields(domain, checker.lookup_type_or_none, kinds):
+                return False
+        return loop_record(function, member.expr) or proven(function, member.expr) == "truthy"
 
     def _value_required(
         self, info: FieldInfo | None, records: Instance, api: CheckerPluginInterface

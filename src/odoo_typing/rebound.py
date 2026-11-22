@@ -56,6 +56,7 @@ from collections.abc import Iterable, Iterator
 
 from mypy.nodes import (
     LDEF,
+    AssignmentExpr,
     AssignmentStmt,
     Block,
     CallExpr,
@@ -71,6 +72,7 @@ from mypy.nodes import (
     FuncItem,
     GeneratorExpr,
     IfStmt,
+    IndexExpr,
     IntExpr,
     LambdaExpr,
     ListComprehension,
@@ -103,9 +105,18 @@ from mypy.patterns import (
     SequencePattern,
     StarredPattern,
 )
+from mypy.server.subexpr import get_subexpressions
 from mypy.types import AnyType, Instance, LiteralType, Type, TypeOfAny, UnionType
 
-__all__ = ["ReboundVariables", "function_bindings", "functions", "nested_blocks", "rebound_names"]
+__all__ = [
+    "ReboundVariables",
+    "filled_names",
+    "function_bindings",
+    "functions",
+    "nested_blocks",
+    "rebound_names",
+    "walrus_targets",
+]
 
 FALSE = "builtins.False"
 # Displays: a variable bound to one with displays inside is declared ``Any``.
@@ -121,6 +132,25 @@ DEFAULT_ARGUMENTS = {"builtins.next": 2, "builtins.getattr": 3}
 DEFAULT_METHODS = {"get": 2}
 # The methods of a list that add an item to it.
 ADDING_METHODS = frozenset({"append", "insert"})
+# Methods that may add items to a container in place (``list``, ``set``, ``dict``, ``deque``,
+# ``Counter``: ``subtract`` adds the keys it is given, with counts below zero).
+FILLING_METHODS = frozenset(
+    {
+        "add",
+        "append",
+        "appendleft",
+        "extend",
+        "extendleft",
+        "insert",
+        "setdefault",
+        "subtract",
+        "symmetric_difference_update",
+        "update",
+    }
+)
+# In-place operators that may add items to a container: ``rows += [v]`` (``list``,
+# ``deque``, ``Counter``), ``d |= {...}`` (``dict``, ``set``, ``Counter``), ``s ^= {...}``.
+FILLING_OPERATORS = frozenset({"+", "|", "^"})
 # ``rows.extend(...)``: mypy completes ``rows = []`` from a list argument only.
 EXTEND = "extend"
 # Calls whose result is a list: ``rows.extend(list(...))`` completes ``rows = []``.
@@ -186,6 +216,197 @@ def rebound_names(function: FuncItem) -> dict[Var, list[Binding]]:
             or (variable in collector.given_dicts and _is_empty_binding(bindings))
         )
     }
+
+
+def walrus_targets(function: FuncItem) -> list[NameExpr]:
+    """The names ``(x := v)`` binds in a function (a name's ``Var`` tells whose local it is)."""
+    found: list[NameExpr] = []
+    for node in get_subexpressions(function):
+        if isinstance(node, AssignmentExpr):
+            found.append(node.target)
+    return found
+
+
+def filled_names(function: FuncItem) -> set[Var]:
+    """The local names a fill in place may make true, so their truth proves nothing of their value.
+
+    A fill: ``x.append(v)``, ``x.update(...)``, ``x[k] = v``, ``x += [v]``, anywhere in the
+    function (a nested one or a method of a class in it too: it may run at any time). It
+    may make true each name whose object the filled one may hold (:func:`_reach` of the
+    filled name: ``rows = ids``, ``rows = c and ids``, ``rows = [] or ids``, ``rows = ids
+    if c else []``, ``rows, n = ids, 0``, ``(rows := ids)``, ``rows = ids = ...``, in a
+    nested function too), and a name bound to ``c and ...`` where ``c`` may share that object
+    (``rows = c and found.ids``: ``rows`` may be ``c``, true while ``found.ids`` was never
+    read; also when ``c = d`` and ``d`` is filled). A name bound to the filled one keeps
+    its proof (``upd = found``, ``found.update(...)``: ``upd`` is that object, and proves
+    ``found``). ``x += v`` in the function's own body binds ``x`` again
+    (:func:`function_bindings`): it makes true the others that may hold its object, not
+    ``x``, whose tests are placed before or after it. Not through a call the container is
+    passed to, nor an attribute, an item or a display that holds it.
+    """
+    found: set[Var] = set()
+    augmented: set[Var] = set()  # ``x += v`` in the function's own body
+    same: list[_Same] = []
+    for node in get_subexpressions(function):
+        if (
+            isinstance(node, CallExpr)
+            and isinstance(node.callee, MemberExpr)
+            and node.callee.name in FILLING_METHODS
+            and isinstance(node.callee.expr, NameExpr)
+            and isinstance(node.callee.expr.node, Var)
+        ):
+            found.add(node.callee.expr.node)
+        elif isinstance(node, AssignmentExpr):
+            same.extend(_same_objects(node.target, node.value))
+    pending = [(function.body, False)]
+    while pending:
+        block, nested = pending.pop()
+        for statement in block.body:
+            if isinstance(statement, AssignmentStmt):
+                same.extend(_bound_alike(statement))
+            operand = _filled_operand(statement)
+            if operand is not None:
+                (found if nested else augmented).add(operand)
+            for target in _store_targets(statement):
+                found.update(_stored(target))
+            pending.extend((inner, nested) for inner in _nested_blocks(statement))
+            if isinstance(statement, (FuncDef, Decorator)):
+                func = statement if isinstance(statement, FuncDef) else statement.func
+                pending.append((func.body, True))
+            elif isinstance(statement, ClassDef):
+                pending.append((statement.defs, True))
+    holds: dict[Var, set[Var]] = {}
+    for name, value, _ in same:
+        holds.setdefault(name, set()).add(value)
+    reached: dict[Var, set[Var]] = {}
+    filled: set[Var] = set()
+    for seed in found | augmented:
+        objects = _reach(seed, holds, reached)
+        marked = objects | {
+            name
+            for name, value, back in same
+            if back and not _reach(value, holds, reached).isdisjoint(objects)
+        }
+        if seed not in found:
+            marked.discard(seed)  # ``x += v`` binds ``x`` again: its own tests are placed
+        filled |= marked
+    return filled
+
+
+def _reach(start: Var, holds: dict[Var, set[Var]], reached: dict[Var, set[Var]]) -> set[Var]:
+    """The name and the names whose object it may hold (``rows = ids``: ``ids``), memoized."""
+    if start in reached:
+        return reached[start]
+    found = {start}
+    pending = [start]
+    while pending:
+        new = holds.get(pending.pop(), set()) - found
+        found |= new
+        pending.extend(new)
+    reached[start] = found
+    return found
+
+
+def _filled_operand(statement: Statement) -> Var | None:
+    """The local ``x op= v`` may fill in place (``rows += [v]``, ``d |= {...}``)."""
+    if (
+        isinstance(statement, OperatorAssignmentStmt)
+        and statement.op in FILLING_OPERATORS
+        and isinstance(statement.lvalue, NameExpr)
+        and isinstance(statement.lvalue.node, Var)
+    ):
+        return statement.lvalue.node
+    return None
+
+
+def _store_targets(statement: Statement) -> list[Expression]:
+    """The targets a statement stores to (assignment, ``x op= v``, ``for``, ``with``)."""
+    if isinstance(statement, AssignmentStmt):
+        return list(statement.lvalues)
+    if isinstance(statement, OperatorAssignmentStmt):
+        return [statement.lvalue]
+    if isinstance(statement, ForStmt):
+        return [statement.index]
+    if isinstance(statement, WithStmt):
+        return [target for target in statement.target if target is not None]
+    return []
+
+
+# A name, a name whose object its value may be, and whether that one is an operand of
+# ``and`` other than the last (``rows = c and found.ids``: ``rows`` may be ``c``, and then
+# a fill of ``c`` makes it true without ``found.ids``).
+_Same = tuple[Var, Var, bool]
+
+
+def _bound_alike(statement: AssignmentStmt) -> Iterator[_Same]:
+    """The pairs an assignment binds (:data:`_Same`).
+
+    Each target with its value, and its name targets with each other (``a = b = ids``:
+    one object).
+    """
+    for lvalue in statement.lvalues:
+        yield from _same_objects(lvalue, statement.rvalue)
+    names = [
+        lvalue.node
+        for lvalue in statement.lvalues
+        if isinstance(lvalue, NameExpr) and isinstance(lvalue.node, Var)
+    ]
+    for first in names:
+        for second in names:
+            yield first, second, False  # with itself too: it adds nothing to a reach
+
+
+def _same_objects(target: Expression, value: Expression) -> Iterator[_Same]:
+    """The pairs of a target bound to a value (:data:`_Same`).
+
+    Item by item for ``rows, n = ids, 0``.
+    """
+    if isinstance(target, (TupleExpr, ListExpr)):
+        if (
+            isinstance(value, (TupleExpr, ListExpr))
+            and len(value.items) == len(target.items)
+            and not any(isinstance(item, StarExpr) for item in [*target.items, *value.items])
+        ):
+            for item, each in zip(target.items, value.items, strict=True):
+                yield from _same_objects(item, each)
+    elif isinstance(target, NameExpr) and isinstance(target.node, Var):
+        for variable, back in _objects(value, back=False):
+            yield target.node, variable, back
+
+
+def _objects(value: Expression, *, back: bool) -> Iterator[tuple[Var, bool]]:
+    """The local names whose object a value may be (``ids``, ``c and ids``).
+
+    Each with whether it is (under) an operand of ``and`` other than the last one (``c and
+    ids``: ``c``, the value when it is false). Of ``or`` only the last operand: an earlier
+    one is the value only when it is true already (``rows = ids or []``: filling ``rows``
+    cannot make ``ids`` true; emptying ``ids`` afterwards, ``ids.clear()``, is not
+    followed).
+    """
+    if isinstance(value, NameExpr) and isinstance(value.node, Var):
+        yield value.node, back
+    elif isinstance(value, OpExpr) and value.op == "and":
+        yield from _objects(value.left, back=True)
+        yield from _objects(value.right, back=back)
+    elif isinstance(value, OpExpr) and value.op == "or":
+        yield from _objects(value.right, back=back)
+    elif isinstance(value, ConditionalExpr):
+        yield from _objects(value.if_expr, back=back)
+        yield from _objects(value.else_expr, back=back)
+    elif isinstance(value, AssignmentExpr):
+        yield from _objects(value.target, back=back)  # its value: the pair of the ``:=``
+
+
+def _stored(target: Expression) -> Iterator[Var]:
+    """The names a target stores an item of (``x[k] = v``, ``a, x[k] = ...``)."""
+    if isinstance(target, IndexExpr):
+        if isinstance(target.base, NameExpr) and isinstance(target.base.node, Var):
+            yield target.base.node
+    elif isinstance(target, (TupleExpr, ListExpr)):
+        for item in target.items:
+            yield from _stored(item)
+    elif isinstance(target, StarExpr):
+        yield from _stored(target.expr)
 
 
 def function_bindings(function: FuncItem) -> _Bindings:

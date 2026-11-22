@@ -59,6 +59,8 @@ from mypy.nodes import (
     WithStmt,
 )
 
+from odoo_typing.guards import SKIP_TEST
+
 __all__ = ["MODULE_TEST_MARKS", "ClassFlags", "ModuleTests"]
 
 # A test that holds one of these asks which modules are installed.
@@ -67,8 +69,6 @@ MODULE_TEST_MARKS: Final = frozenset({"ir.module.module", "installed"})
 ENSURE_INSTALLED: Final = "ensure_installed"
 MODULE_GETTERS: Final = frozenset({"_get", ENSURE_INSTALLED})
 INSTALLED: Final = "_installed"
-# ``self.skipTest(...)`` ends a test as ``return`` does (unittest raises ``SkipTest``).
-SKIP_TEST: Final = "skipTest"
 
 
 # The attributes of ``self`` that the methods of a class bind once, by class definition:

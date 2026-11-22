@@ -258,7 +258,19 @@ once it can be.
   terms that set a field of the model. For a `for` variable bound more than once, the
   loop is the innermost `for` binding it whose body holds the read (the statements
   around the read are found by their source spans), when no other binding of it in
-  that body is before the read or inside a loop of the body around the read.
+  that body is before the read or inside a loop of the body around the read. Read off
+  the local itself, the field is set only where `odoo_typing.proven` finds the local
+  true (a test, also of `len(x)`, `bool(x)`, `x.ids` or `x.exists()`; an early
+  `return` / `raise` / `skipTest(...)`; an `assert`; `ensure_one()`,
+  `assertEqual(len(x), n)`, `assertRecordValues(x, [...])` of a list with an item that
+  is not `*rows`), with no loop begun after the fact binding it again, nor, for a read
+  in a lambda or a generator and a fact from outside it, a later binding of it in the
+  function (a test of another name that holds the records, or a value whose truth
+  proves them, `present = found.exists()`, counts when its last binding surely ran
+  before, as a statement on the way to the read, and while it still holds them
+  unchanged; `x |= v` binds it; not a local filled in place, `ids.append(0)`, also
+  through a local that may hold it, `rows = ids`, `rows += [0]`): a field
+  of an empty recordset reads `False`.
 
 - **Computed text fields** (`odoo_typing.computed`, `scanner.assigned`). The scan of a
   class keeps, per method and attribute name, the kinds of the values assigned
@@ -325,8 +337,14 @@ once it can be.
   being checked proves about the call: the facts along the path from its body to the
   call (the tests of the arms it is in, `if not x: return` / `raise` before it,
   `assert`, the left operands of `and` / `or`), through `not`, `and` / `or`, `is
-  (not) None`, `len(x) < n` and a local name's last value; a fact is about an
-  expression of the same structure, and holds while no name it reads is bound again.
+  (not) None`, `len(x) < n`, `bool(x)`, `x.ids`, `x.exists()` and the value of a local
+  name's last binding when that one surely ran before; a fact is about an expression of
+  the same structure, and holds
+  while no name it reads is bound again (places are lines and columns; a `:=` that
+  binds one in the part of the statement holding the call that runs with it, its own
+  expressions or an `if` / `while` test, leaves it unproven, as the test of a
+  conditional expression or a comprehension's condition runs before what is left of
+  it; a `match` guard runs after the subject).
 
 - **Aliases of conditions and `assertTrue`** (`odoo_typing.conditions`). mypy narrows
   the names a test reads, not the names its value was built from. With the rebound
@@ -340,9 +358,14 @@ once it can be.
   binding counts when it is between the two in that order, in a loop around the test
   (unless the loop holds the alias too and the alias is an earlier statement of a
   block the test is in), in a loop around the alias only, or, for an earlier binding of
-  the alias, when the alias is no such statement. A `self.assertTrue(value)`
-  statement becomes a block of itself and `assert value`, in its place in the list (the
-  function may be the one mypy is walking).
+  the alias, when the alias is no such statement; a name also bound by `:=`, `except
+  ... as` or a `case` capture takes no part, nor an alias the function fills in place
+  (`rows.append(v)`, `rows.update(...)`, `rows[k] = v`, also through a local that may
+  hold the same object, `more = rows` or `more = c and rows`, then `more += [v]`, and
+  `rows = c and ...` where `c` may hold a filled object, as `rows` may be it: true
+  whatever it was bound to; names the alias implies still count). A
+  `self.assertTrue(value)` statement becomes a block of itself and `assert value`, in
+  its place in the list (the function may be the one mypy is walking).
 
 - **Tests about installed modules** (`odoo_typing.module_tests`): where the env hooks
   type records, the function mypy checks (`checker.scope.top_level_function()`) is

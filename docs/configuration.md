@@ -150,8 +150,12 @@ first one is reported where it is appended. A variable that `rebound_variables` 
 `Any` takes each value as it is, and so does one that only `+=` changes
 (`label = self.name`, then `label += " (x)"`): there the required value reads without
 `False`. Odoo does read `False` for a required field of a new record
-(`new()`, a form's onchange) before the value is set: `required_values = false` reads
-these fields as Odoo declares them, for code that must handle such records.
+(`new()`, a form's onchange) before the value is set, and for any field of no records
+(`self.env["res.company"].search([], limit=1).name` when nothing is found):
+`required_values = false` reads these fields as Odoo declares them, for code that must
+handle such records. (A field that only a search's domain or `filtered(...)` sets is
+read without `False` off the records themselves only where the code tested that there
+are some: that is the plugin's own inference, see [checks](checks.md).)
 
 **`new_record_ids`** (off by default) is the same choice for `record.id`. Odoo 18
 declares it `int | NewId | Literal[False]` (the plugin declares the same for Odoo 17,

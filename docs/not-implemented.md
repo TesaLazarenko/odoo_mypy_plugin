@@ -220,6 +220,84 @@ domain set the field and for `filtered("res_model")`.
   analysis of the function that the plugin does not have (mypy gives hooks no flow
   facts of attribute writes on records).
 
+### A required field read off records a search may not have found
+
+`first_company = self.env["res.company"].search([], limit=1)`, then
+`first_company.name[:5]` (`stock/models/res_company.py:126`, Odoo 18): with
+`required_values` on, `name` reads `str`, and of no records Odoo reads `False`. The
+proof of a search's domain or of `filtered(...)` is not trusted there without a test
+that records are there; `required_values` is not tied to the records it is read off.
+
+- Tying it to them (the same test, for locals bound to a search or `filtered`) was
+  measured on the big benchmark (Odoo 18, 36 addons): 3 more errors, each safe through
+  data the function does not see: a database always has a company (the line above), a
+  test reads the move its own setup posted (`account/tests/test_account_move_date_algorithm.py:294`)
+  and the scheduler its event created (`event/tests/test_event_flow.py:60`). None is a
+  bug the plugin could show.
+- `required_values` is the setting that reads saved records as code that reads them
+  sees them (see [configuration](configuration.md#options)); `required_values = false`
+  reads every such field as Odoo declares it, empty records included.
+
+### A list filled where the plugin does not look keeps the proof of what it was bound to
+
+`ids = found.ids`, then `self._remember(ids)` (a helper that appends to its argument),
+then `if ids: found.name`: the test proves `found` has records, and at run time `ids`
+may hold only what the helper added. A local bound to a filled one keeps its proof
+(`upd = found`, `found.update(...)`: the same object), and so does one filled only by its
+own `x += v` after its test. A local the function itself fills proves nothing
+(`ids.append(0)`, `ids.update(...)`, `ids[k] = v`, `ids |= {...}` in a nested function
+or a method of a class in it), nor one a local that may hold the same object fills
+(`rows = ids`, `rows = c and ids`, `rows = [] or ids`, `rows = ids if c else []`, `rows,
+n = ids, 0`, `(rows := ids)`, `rows = ids = ...`, in a nested function too; then
+`rows.append(0)` or `rows += [0]`), nor one bound to `c and ...` where `c` may hold a
+filled object (`ids = c and found.ids`, then `c.append(0)`, or `c = d` and
+`d.append(0)`: `ids` may be that list, true while `found.ids` was never read). These are
+not followed:
+
+- A call the list is passed to. Whether a callee changes its argument is in the
+  callee's body, often in another module or addon, and an override may change it; the
+  rewrite of the tests runs before mypy checks the module, without types. Following
+  calls is an analysis across functions that the plugin does not do. Taking every call
+  that is given the list as a fill would drop the proof of about one in five such
+  locals, and Odoo passes them on to calls that do not fill them (`browse(ids)`,
+  `search([("id", "in", ids)])`, `Command.set(ids)`, `set(ids)`). In Odoo 17, 18, 19 and
+  20, 52, 60, 67 and 77 locals bound to `x.ids`, `x or []` / `{}` or `a and b` are
+  tested and then the records are read; 12, 11, 14 and 17 of them are given to a call
+  somewhere in the function, one before the test (`messages_to_check = self.ids`,
+  `mail/models/mail_message.py:553`, Odoo 17), and that one is bound again to a
+  `set(...)` first (an ast scan of the sources, 2026-11-22).
+- A holder of the list: an attribute, an item or a display (`self.rows = ids`, then
+  `self.rows.append(0)`; `holder = [ids]`, then `holder[0].append(0)`), or a tuple bound
+  whole and unpacked later (`pair = ids, 0`, then `rows, n = pair`). Which attribute or
+  item holds which list is known only at run time, and an attribute may be filled in
+  another method: that is an analysis of objects across the heap. Of the tested locals
+  above, the code reads 3, 5, 4 and 4 at all between the binding and the test (a field
+  of a record, a loop over it, a test, a bool stored in a dict, the `set(...)` above),
+  and none of those reads puts the list in a holder.
+- Names that hold one object from outside the function: two parameters given the same
+  list (`def f(self, a, b)` called as `f(ids, ids)`), or two reads of one attribute (`a =
+  self.cache`, `b = self.cache`). Which names share the object is decided by the caller
+  or by the heap, at run time, as for the holders above; within the function the two
+  names have no binding to each other.
+- A container emptied and then filled again. `y = c or []` holds `c` only when `c` is
+  true then, so filling `y` cannot make `c` true; but `c.clear()`, then `n = y and
+  found.ids`, then `c.append(0)` makes `n` (that same list) true while `found.ids` was
+  never read. Following it means ordering the emptying and the fills, and the scan
+  takes a fill anywhere in the function without an order. In Odoo 17, 18, 19 and 20 no
+  function has it: of 35931, 43349, 47787 and 53936 functions, with 366, 446, 473 and
+  530 locals bound to `c or ...` with `c` a local, none empties `c` (`clear`, `pop`,
+  `remove`, `popitem`, `discard`, `popleft`, `del c[...]`) while the local bound to it
+  is an operand of `and` before the last (an ast scan, 2026-11-22).
+- Fills that only some containers make (`Counter.subtract(...)` is counted, as it adds
+  the keys it is given): `c -= other`, as a `Counter` keeps a count that `other` takes
+  below zero as one above it, and a read of a `defaultdict` item, `d[k]`, which adds the
+  key. On numbers and sets `-=` binds the name again or takes items away, and an item
+  read is how a list is read; the scan runs without types, so taking them as fills
+  would drop the proof of every local counted down through another name and of every
+  one read by item. In Odoo 17, 18, 19 and 20,
+  no tested local of those forms is counted down with `-=`, and 35, 44, 50 and 49 of the
+  308, 358, 422 and 470 are read by item (an ast scan, 2026-11-22).
+
 ## Not gone through yet
 
 Groups of errors that only the plugin reports and that have no entry above and no rule

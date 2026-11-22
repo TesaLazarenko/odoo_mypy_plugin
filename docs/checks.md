@@ -896,8 +896,16 @@ With real recordset types, some plain mypy codes appear more often:
   use another variable name, or annotate it.
 - A **field the search domain sets** has no `False`: `search_read([("product_id", "in",
   subquery), ...], fields=["product_id"])` gives rows whose `product_id` is a pair, and
-  the records of `leads = search([("email_from", "ilike", "@team1")])` (also the variable
-  of a `for` over them) read `email_from` as `str`. A term of the domain's top-level
+  the variable of a `for` over `leads = search([("email_from", "ilike", "@team1")])`
+  reads `email_from` as `str`; so do the records themselves where the code has tested
+  that there are some (`if leads:`, `if not leads: return` / `self.skipTest(...)`,
+  `self.assertTrue(leads)`, `leads.ensure_one()`, `self.assertEqual(len(leads), 1)`,
+  `self.assertRecordValues(leads, [...])`, `if len(leads) == 1:`, `assert len(leads)`,
+  `if leads.ids:`, `if leads.exists():`, `self.assertTrue(bool(leads))`, through a local
+  bound to such a test, `present = leads.exists()` then `if present:`, not one filled in
+  place, `ids = leads.ids` then `ids.append(0)` (or `rows = ids`, `rows += [0]`),
+  `leads and leads.email_from`), and not in a loop, begun after the test, that binds
+  `leads` again: a field read off no records reads `False`. A term of the domain's top-level
   conjunction (not under `|` or `!`) on a field of the model itself sets it when it is
   `=` / `child_of` / `parent_of` with a true literal, `in` with true literals (or a
   `Query`, records, `list[int]`), `!= False` / `None`, a `like` / `ilike` / `=like` /

@@ -24,8 +24,10 @@ domain's top-level conjunction (not under ``|`` or ``!``) on a field of the mode
 A read of such a field from the result of ``read`` / ``search_read``, from a local bound
 once to ``search(...)`` / ``search_fetch(...)`` (``x |= v`` binds it again; ``x =
 x.filtered(...)``, ``x.sorted(...)`` and the like keep some of its records, which counts as
-bound once; a parameter is never bound once), or from the
-variable of a ``for`` over such a local, has no ``False``. The ``for`` is the one that
+bound once; a parameter is never bound once; nor is a name ``:=``, ``except ... as`` or a
+``case`` binds) where the code tested that there are some (of none a field reads
+``False``: ``hooks.field_values``), or from the variable of a ``for`` over such a local,
+has no ``False``. The ``for`` is the one that
 binds the variable, or, for a variable bound more than once (two loops, ``for lead in
 team1_leads:`` then ``for lead in team2_leads:``), the innermost ``for`` binding it whose
 body holds the read, when no other binding of the variable may run in a pass of that
@@ -60,7 +62,7 @@ from mypy.nodes import (
 from mypy.server.subexpr import get_subexpressions
 from mypy.types import Instance, Type, get_proper_type
 
-from odoo_typing.rebound import function_bindings, nested_blocks
+from odoo_typing.rebound import function_bindings, nested_blocks, walrus_targets
 from odoo_typing.scanner import FieldInfo
 
 __all__ = [
@@ -68,6 +70,7 @@ __all__ = [
     "domain_argument",
     "filtered_fields",
     "kept_fields",
+    "loop_record",
     "restricted_fields",
     "searched_domain",
     "sql_kinds",
@@ -224,10 +227,22 @@ def _and_operands(expression: Expression) -> list[Expression]:
     return [expression]
 
 
-def _records_source(function: FuncItem, receiver: Expression) -> Expression | None:
+def loop_record(function: FuncItem, receiver: Expression) -> bool:
+    """Whether a name is the variable of a ``for`` over records: one record each time.
+
+    The records a search or ``filtered`` gave may be none, and a field read off none
+    reads ``False``; a record a ``for`` goes through is one.
+    """
+    return _records_source(function, receiver, loops_only=True) is not None
+
+
+def _records_source(
+    function: FuncItem, receiver: Expression, *, loops_only: bool = False
+) -> Expression | None:
     """The expression that gave a local its records: its one value, or what its ``for`` iterates.
 
-    For the variable of a ``for`` over a local, the local's one value.
+    For the variable of a ``for`` over a local, the local's one value. With
+    ``loops_only``, only for the variable of a ``for``.
     """
     if not isinstance(receiver, NameExpr) or not isinstance(receiver.node, Var):
         return None
@@ -238,6 +253,13 @@ def _records_source(function: FuncItem, receiver: Expression) -> Expression | No
         if isinstance(target, NameExpr) and isinstance(target.node, Var):
             bound.setdefault(target.node, []).append(target)
     parameters = {argument.variable for argument in function.arguments}
+    # Bound where the scan of statements does not look: ``(x := v)``, ``except ... as x``,
+    # a ``case`` capture.
+    elsewhere = {
+        name.node for name in walrus_targets(function) if isinstance(name.node, Var)
+    } | collected.excluded
+    if receiver.node in elsewhere:
+        return None  # ``for rec in found: (rec := other)``
 
     def once(variable: Var) -> Expression | None:
         """The value of a local bound once (``None`` for a ``for`` target).
@@ -245,7 +267,7 @@ def _records_source(function: FuncItem, receiver: Expression) -> Expression | No
         Also of one bound again only to some of its own records (``x = x.filtered(...)``).
         Not of a parameter: under an ``if`` it may still hold the caller's records.
         """
-        if variable in parameters:
+        if variable in parameters or variable in elsewhere:
             return None
         names = bound.get(variable, [])
         bindings = collected.names.get(variable, [])
@@ -257,6 +279,8 @@ def _records_source(function: FuncItem, receiver: Expression) -> Expression | No
 
     names = bound.get(receiver.node, [])
     value = once(receiver.node)
+    if value is not None and loops_only:
+        return None
     if value is None and names:  # a ``for`` target, or a name bound more than once
         if len(names) == 1:
             iterated = _iterated(function, receiver.node)

@@ -35,7 +35,15 @@ the code proves:
   and skip the alias); and, for an earlier binding of the alias, unless the alias is
   such a statement (an ``if`` may skip it). A binding later in the function changes
   nothing: ``dates = (self.day and allowed) or []``, ``if not dates or
-  self.day.date() ...: return``, then ``self.day = dates[0]``.
+  self.day.date() ...: return``, then ``self.day = dates[0]``. A name also bound by
+  ``(x := v)``, ``except ... as x`` or a ``case`` capture is neither an alias nor one it
+  implies: the scan of statements does not see those bindings. A name the function
+  fills in place (``allowed.append(v)``, ``allowed[k] = v``, also through a local that
+  may hold the same object: ``rows = allowed``, ``rows = c and allowed``, then
+  ``rows.append(v)`` or ``rows += [v]``; and ``allowed = c and ...`` where ``c`` may hold
+  a filled object: ``allowed`` may be it; see :func:`odoo_typing.rebound.filled_names`)
+  is no alias, as it may be true whatever it was bound to; the names an alias implies
+  still count when filled (filling keeps them true).
 * **``self.assertTrue(value)``**, as a statement, is followed by ``assert value`` (the
   two in a block that takes the statement's place): the call is checked as before, and
   the test fails where the value is false, so mypy narrows it after.
@@ -74,7 +82,13 @@ from mypy.nodes import (
     WithStmt,
 )
 
-from odoo_typing.rebound import function_bindings, functions, nested_blocks
+from odoo_typing.rebound import (
+    filled_names,
+    function_bindings,
+    functions,
+    nested_blocks,
+    walrus_targets,
+)
 
 __all__ = ["narrow_conditions"]
 
@@ -95,7 +109,11 @@ class _Function:
     def __init__(self, function: FuncItem) -> None:
         self.function = function
         bindings = function_bindings(function)
-        self.excluded = bindings.excluded  # ``except ... as e``, ``case`` captures
+        # ``except ... as e``, ``case`` captures and ``(x := v)``: bound where the scan of
+        # statements does not look.
+        self.excluded = bindings.excluded | {
+            name.node for name in walrus_targets(function) if isinstance(name.node, Var)
+        }
         # Each statement of the body in source order: the blocks it is in, with its
         # position in each; the loops among them as (first, last statement, ``while``).
         self.chains: list[tuple[tuple[int, int], ...]] = []
@@ -105,10 +123,13 @@ class _Function:
         self.names: dict[Var, list[tuple[int, Expression | None]]] = {}
         self.members: dict[tuple[str, ...], list[int]] = {}
         self._walk(function.body, ())
+        # ``rows = x or []`` then ``rows.append(v)``: true whatever ``x`` is.
+        filled = filled_names(function)
         self.aliases = {
             variable
             for variable, names in bindings.names.items()
             if variable not in self.excluded
+            and variable not in filled
             and not variable.is_argument
             and any(value is not None and next(_implied(value, 0), None) for _, value in names)
         }
