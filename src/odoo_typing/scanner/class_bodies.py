@@ -198,7 +198,7 @@ def read_value_keys(node: ast.ClassDef) -> tuple[str, ...]:
         found = [
             (item.lineno, item.col_offset, key)
             for item in nodes
-            if (key := _read_key(item, names)) is not None
+            if isinstance(item, ast.expr) and (key := _read_key(item, names)) is not None
         ]
         for *_, key in sorted(found):  # in source order (ast.walk goes breadth first)
             keys[key] = None

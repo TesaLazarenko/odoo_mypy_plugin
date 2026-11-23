@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import dataclasses
 import sys
-from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Final, TypeGuard
@@ -39,7 +38,7 @@ from odoo_typing.scanner import (
 from odoo_typing.stamps import Stamp, Stamps, unchanged
 from odoo_typing.xmlids import DataScan, XmlId
 
-__all__ = ["DecodeError", "KeptScans", "ScanStore", "dataclass_fields", "decode", "encode"]
+__all__ = ["DecodeError", "ScanStore", "dataclass_fields", "decode", "encode"]
 
 # The classes a scan is made of, by name (the only ones ``decode`` builds).
 CLASSES: Final[Mapping[str, type]] = {
@@ -190,34 +189,6 @@ class _KeptRecord:
     """A record held in memory as a store returned it (its reader checks its stamps)."""
 
     record: Record
-
-
-class KeptScans(OrderedDict[str, object]):
-    """Decoded scans a process keeps across its registries and runs, the last used first.
-
-    mypy's API (``mypy.api.run``, a test run of many mypy runs) starts a new plugin for
-    each run: kept by the plugin instance, Odoo's ``base`` was decoded again from the
-    shared store on each one (46 ms a run of the plugin's tests). Each entry is still
-    checked against its stamps and load order before use (:meth:`ScanStore.load`). At most
-    ``size`` entries: the addons of a test live in a new directory each time.
-    """
-
-    def __init__(self, size: int) -> None:
-        super().__init__()
-        self._size = size
-
-    def get(self, key: str, default: object = None) -> object:
-        """The entry, marked as the last used."""
-        if key not in self:
-            return default
-        self.move_to_end(key)
-        return self[key]
-
-    def __setitem__(self, key: str, value: object) -> None:
-        super().__setitem__(key, value)
-        self.move_to_end(key)
-        while len(self) > self._size:
-            self.popitem(last=False)
 
 
 class ScanStore:
