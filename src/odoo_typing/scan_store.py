@@ -58,6 +58,9 @@ CLASSES: Final[Mapping[str, type]] = {
 }
 
 
+# A value as stored (encode), or anything a kept record holds.
+Encoded = object
+
 _FIELDS: dict[type, tuple[str, ...] | None] = {}
 
 
@@ -169,7 +172,7 @@ def _decode_tagged(tag: str, payload: object) -> object:
 class _KeptScan:
     """An addon scan held in memory (:class:`ScanStore`), with what makes it current."""
 
-    load_key: object
+    load_key: Encoded
     scan: AddonScan
     stamps: Stamps
 
@@ -179,7 +182,7 @@ class _KeptFile:
     """What one file gave, held in memory for its stamp."""
 
     stamp: Stamp | None
-    value: object
+    value: Encoded
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

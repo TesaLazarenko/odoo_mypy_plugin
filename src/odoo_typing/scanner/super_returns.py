@@ -116,7 +116,7 @@ def _statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
         yield statement
         if isinstance(statement, SCOPES):
             continue
-        blocks = [getattr(statement, name, ()) for name in BLOCKS]
+        blocks: list[list[ast.stmt]] = [getattr(statement, name, []) for name in BLOCKS]
         blocks += [handler.body for handler in getattr(statement, "handlers", ())]
         blocks += [case.body for case in getattr(statement, "cases", ())]
         for block in reversed(blocks):

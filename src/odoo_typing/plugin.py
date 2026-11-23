@@ -64,7 +64,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Final, TypeVar
+from typing import Final, TypeVar, cast
 
 from mypy.checker import TypeChecker
 from mypy.checker_state import checker_state
@@ -1440,7 +1440,7 @@ def _signature_then(
     signature = first(ctx)
     if not isinstance(signature, CallableType):
         return signature
-    return then(ctx._replace(default_signature=signature))
+    return then(cast(SigContextT, ctx._replace(default_signature=signature)))
 
 
 def _default_signature(ctx: MethodSigContext) -> FunctionLike:
