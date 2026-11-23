@@ -64,7 +64,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import TypeVar
+from typing import Final, TypeVar
 
 from mypy.checker import TypeChecker
 from mypy.checker_state import checker_state
@@ -216,7 +216,7 @@ from odoo_typing.rebound import ReboundVariables
 from odoo_typing.records import RecordStore, load_index
 from odoo_typing.references import RECORD_PATH_METHODS
 from odoo_typing.registry import Registry
-from odoo_typing.scan_store import ScanStore
+from odoo_typing.scan_store import KeptScans, ScanStore
 from odoo_typing.scanner import DOMAIN, LOG_ACCESS_USERS, AnnotationAlias
 from odoo_typing.stamps import Stamps, stamp
 from odoo_typing.startup import (
@@ -267,6 +267,10 @@ OWN_VIEW_DUNDERS = frozenset(
 VALS_METHODS = frozenset({"create", "write", "copy"})
 
 
+# The decoded addon scans of this process, for every plugin it starts (see KeptScans).
+KEPT_SCANS: Final = KeptScans(size=256)
+
+
 class OdooPlugin(Plugin):
     """Teach mypy how the Odoo registry assembles models.
 
@@ -296,7 +300,7 @@ class OdooPlugin(Plugin):
             print(warning, file=sys.stderr)
         self._store = RecordStore.for_cache_dir(options.cache_dir)
         self._kept_index: dict[str, tuple[list[Addon], Stamps]] = {}
-        self._kept_scans: dict[str, object] = {}
+        self._kept_scans = KEPT_SCANS
         self._hooks = _HookCache()
         self._config_stamp = stamp(options.config_file) if options.config_file else None
         self._inputs_checked = False
