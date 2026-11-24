@@ -11,7 +11,7 @@ import re
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
-from functools import cached_property, partial
+from functools import partial
 from pathlib import Path
 from typing import Final, NamedTuple, Protocol
 
@@ -177,12 +177,16 @@ class ScannedAddons:
         self._warned: set[str] = set()  # addons whose unparsable files were reported
         # Addons read only for the models they define (see _defined_models).
         self._peeked: dict[str, tuple[frozenset[str], Stamps]] = {}
+        # Built on first use (addons); not a cached_property: a class compiled with mypyc
+        # has no __dict__.
+        self._addon_index: AddonIndex | None = None
 
-    @cached_property
+    @property
     def addons(self) -> AddonIndex:
         """Index of all addons, built (manifests read) on first use."""
-        index, self._index_stamps = self._index_loader()
-        return index
+        if self._addon_index is None:
+            self._addon_index, self._index_stamps = self._index_loader()
+        return self._addon_index
 
     def index_stamps(self) -> Stamps:
         """The stamps of the files the addon index describes (roots, entries, manifests)."""
@@ -200,7 +204,7 @@ class ScannedAddons:
         A long-lived plugin (the mypy daemon) must then start over with a new registry:
         any answer may depend on the changed file.
         """
-        if "addons" not in self.__dict__:
+        if self._addon_index is None:
             return False  # nothing read yet
         if not unchanged(self._index_stamps):
             return True

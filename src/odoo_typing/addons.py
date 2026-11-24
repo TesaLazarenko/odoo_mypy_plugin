@@ -15,7 +15,6 @@ import sys
 import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
-from functools import cached_property
 from pathlib import Path
 
 __all__ = [
@@ -212,6 +211,9 @@ class AddonIndex:
         # about every file mypy loads, often several times, and resolve() costs syscalls.
         self._real_dirs: dict[str, Path] = {}
         self._dir_addons: dict[str, Addon | None] = {}
+        # load_key's depths, computed on first use (not a cached_property: a class
+        # compiled with mypyc has no __dict__).
+        self._known_depths: dict[str, int] | None = None
         core_root = (odoo_path / "addons").resolve()
         for addon in known:
             # A core addon is a direct entry of odoo/addons with Odoo's spelling (a
@@ -322,10 +324,14 @@ class AddonIndex:
         (0 without dependencies, else one more than the deepest dependency), then by
         name. Dependencies that are not on disk do not count.
         """
-        return (-1, name) if name == BASE else (self._depths[name], name)
+        return (-1, name) if name == BASE else (self._depths()[name], name)
 
-    @cached_property
     def _depths(self) -> dict[str, int]:
+        if self._known_depths is None:
+            self._known_depths = self._compute_depths()
+        return self._known_depths
+
+    def _compute_depths(self) -> dict[str, int]:
         # Computed for all addons at once, in name order, so that a dependency cycle
         # (which Odoo refuses to load) still gives the same depths whatever is asked first.
         depths: dict[str, int] = {}
