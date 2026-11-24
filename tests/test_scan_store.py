@@ -161,8 +161,11 @@ def test_unreached_file_annotations_read_back(tmp_path: Path, mocker: MockerFixt
 
 
 def test_registry_file_saved_while_scanned_is_scanned_again(
-    tmp_path: Path, mocker: MockerFixture
+    tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The save is simulated in the Python walker's read: the Rust scan takes its stamps
+    # before each read the same way, but reads the file itself.
+    monkeypatch.setenv("ODOO_TYPING_NATIVE", "0")
     settings = _odoo(tmp_path)
     store = RecordStore(tmp_path / "cache")
     models = (settings.odoo_path / "addons/my_mod/models.py").resolve()

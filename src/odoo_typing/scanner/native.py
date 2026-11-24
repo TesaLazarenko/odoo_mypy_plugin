@@ -64,7 +64,10 @@ def _field(item: Any) -> FieldInfo:  # noqa: ANN401 (the shape the extension giv
     if unlinked:
         return UnlinkedField(
             **values,
-            positional=tuple((t, tuple(k) if k is not None else None, m) for t, k, m in positional),
+            positional=tuple(
+                (text, tuple(keys) if keys is not None else None, method)
+                for text, keys, method in positional
+            ),
         )
     return FieldInfo(**values)
 
@@ -93,12 +96,16 @@ def _contribution(item: Any) -> Contribution:  # noqa: ANN401
         parent_store=parent_store,
         abstract=abstract,
         value_keys=tuple(value_keys),
-        dispatches=tuple((m, p, tuple(ms)) for m, p, ms in dispatches),
-        passed=tuple((c, p, tuple(path), k) for c, p, path, k in passed),
-        assigned=tuple((m, a, tuple(k)) for m, a, k in assigned),
+        dispatches=tuple(
+            (method, parameter, tuple(models)) for method, parameter, models in dispatches
+        ),
+        passed=tuple(
+            (callee, parameter, tuple(path), kind) for callee, parameter, path, kind in passed
+        ),
+        assigned=tuple((method, name, tuple(kinds)) for method, name, kinds in assigned),
         assigned_any=tuple(assigned_any),
-        assigned_through=tuple((a, tuple(p)) for a, p in assigned_through),
-        filled=tuple((m, tuple(x)) for m, x in filled),
+        assigned_through=tuple((name, tuple(path)) for name, path in assigned_through),
+        filled=tuple((method, tuple(names)) for method, names in filled),
         super_returns=tuple(super_returns),
     )
 
@@ -123,9 +130,12 @@ def rust_scan_addon(
             path=Path(path),
             contributions=tuple(map(_contribution, contributions)),
             referenced_models=frozen(referenced),
-            guards=tuple(Guard(*g) for g in guards),
+            guards=tuple(Guard(*guard) for guard in guards),
             annotations=frozen(map(tuple, annotations)),
-            classes=tuple(FieldClass(n, tuple(b), c, a, tuple(p)) for n, b, c, a, p in classes),
+            classes=tuple(
+                FieldClass(name, tuple(bases), converts, arguments, tuple(passes))
+                for name, bases, converts, arguments, passes in classes
+            ),
         )
         for module, path, contributions, referenced, guards, annotations, classes in modules
     )
@@ -143,4 +153,8 @@ def native_references(
     if found is None:
         return None
     referenced, guards, annotations = found
-    return frozen(referenced), tuple(Guard(*g) for g in guards), frozen(map(tuple, annotations))
+    return (
+        frozen(referenced),
+        tuple(Guard(*guard) for guard in guards),
+        frozen(map(tuple, annotations)),
+    )
