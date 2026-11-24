@@ -70,6 +70,7 @@ mod assigned;
 mod value;
 mod walker;
 mod text;
+mod xml;
 
 const RELATIONAL_FIELDS: [&str; 3] = ["Many2one", "One2many", "Many2many"];
 const LOG_ACCESS_USERS: [&str; 2] = ["create_uid", "write_uid"];
@@ -508,6 +509,17 @@ fn imported_names(path: &str, package: &str) -> Option<Vec<String>> {
     Some(text::imported_names(parsed.suite(), package).into_iter().collect())
 }
 
+/// `xmlids._file_ids`: the (id, model) of a data file; `None` where Python must read
+/// it; `False` when it cannot be read.
+#[pyfunction]
+fn data_file_ids(py: Python<'_>, path: &str, addon: &str) -> PyResult<PyObject> {
+    Ok(match xml::file_ids(path, addon) {
+        xml::Ids::Fallback => py.None(),
+        xml::Ids::Unreadable => false.into_pyobject(py)?.to_owned().into_any().unbind(),
+        xml::Ids::Found(ids) => ids.into_pyobject(py)?.into_any().unbind(),
+    })
+}
+
 #[pymodule]
 fn odoo_scan_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let minor: u8 = m.py().import("sys")?.getattr("version_info")?.getattr("minor")?.extract()?;
@@ -525,5 +537,6 @@ fn odoo_scan_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(defined_names, m)?)?;
     m.add_function(wrap_pyfunction!(named_models, m)?)?;
     m.add_function(wrap_pyfunction!(imported_names, m)?)?;
+    m.add_function(wrap_pyfunction!(data_file_ids, m)?)?;
     Ok(())
 }

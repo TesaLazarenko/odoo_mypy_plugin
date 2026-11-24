@@ -10,6 +10,7 @@ may not read).
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,7 @@ from odoo_typing.scanner.results import (
     UnlinkedField,
 )
 from odoo_typing.stamps import Stamps
-from odoo_typing.xmlids import scan_data
+from odoo_typing.xmlids import XmlId, scan_data
 
 
 def _field(item: Any) -> FieldInfo:  # noqa: ANN401 (the shape the extension gives)
@@ -191,3 +192,15 @@ def native_imports(path: Path, package: str) -> frozenset[str] | None:
         return None
     found = odoo_scan_rs.imported_names(str(path), package)
     return None if found is None else frozenset(found)
+
+
+def native_data_ids(path: Path, addon_name: str) -> tuple[bool, list[XmlId]] | None:
+    """Whether a data file could be read, and its XML ids, in Rust; ``None`` if not here."""
+    if not _enabled():
+        return None
+    found = odoo_scan_rs.data_file_ids(str(path), addon_name)
+    if found is None:
+        return None
+    if found is False:
+        return False, []
+    return True, [XmlId(name, sys.intern(model)) for name, model in found]

@@ -47,6 +47,17 @@ from mypy.errorcodes import ErrorCode
 from odoo_typing.addons import UNREADABLE_MANIFEST, literal_manifest
 from odoo_typing.stamps import UNREADABLE, Stamps, stamp
 
+
+def native_data_ids(path: Path, addon_name: str) -> tuple[bool, list[XmlId]] | None:
+    """``_file_ids`` in Rust (:mod:`odoo_typing.scanner.native`).
+
+    Whether the file could be read, and its ids; ``None`` where Python must read it.
+    """
+    from odoo_typing.scanner.native import native_data_ids as read
+
+    return read(path, addon_name)
+
+
 __all__ = [
     "ODOO_XMLID",
     "ODOO_XMLID_DEPENDS",
@@ -184,6 +195,10 @@ def _qualified(xml_id: str, addon_name: str) -> str:
 
 def _file_ids(path: Path, addon_name: str) -> list[XmlId] | None:
     """The XML ids of one data file (none for another kind); ``None``: cannot be read."""
+    native = native_data_ids(path, addon_name)
+    if native is not None:
+        readable, found = native
+        return found if readable else None
     if path.suffix == ".xml":
         return _xml_ids(path, addon_name)
     if path.suffix == ".csv":
