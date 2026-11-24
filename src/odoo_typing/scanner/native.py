@@ -188,6 +188,14 @@ def native_decoder(classes: Mapping[str, type], error: type) -> Callable[[object
     )
 
 
+def native_falsy_guards() -> Any | None:  # noqa: ANN401 (the extension's class)
+    """``falsy_guards.FalsyGuards`` in Rust, ``None`` where Python reads the functions.
+
+    Its ``of(path, owner, name)`` gives the sets of a ``Guard`` as lists.
+    """
+    return odoo_scan_rs.FalsyGuards() if _enabled() else None
+
+
 def native_named(addon: Addon, path: str) -> frozenset[str] | None:
     """``class_index._named`` in Rust; ``None`` where Python must read the file."""
     if not _enabled():

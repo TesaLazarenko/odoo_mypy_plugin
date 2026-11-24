@@ -32,6 +32,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from odoo_typing.scanner.native import native_falsy_guards
+
 __all__ = ["FalsyGuards", "Guard", "guarded_parameters"]
 
 DEFINITION: Final = re.compile(r"^(?P<indent>[ \t]*)(?:async\s+)?def\s+(?P<name>\w+)\s*\(")
@@ -84,11 +86,18 @@ class FalsyGuards:
     def __init__(self) -> None:
         self._indexes: dict[Path, _Index | None] = {}
         self._guards: dict[tuple[Path, str, str], Guard] = {}
+        # The same reading in Rust (odoo_typing.scanner.native), where it is installed.
+        self._native = native_falsy_guards()
 
     def of(self, path: Path, owner: str, name: str) -> Guard:
         """The guard of function ``name`` of a file, a method of top-level class ``owner``."""
         key = (path, owner, name)
         found = self._guards.get(key)
+        if found is None and self._native is not None:
+            falsy, booleans, none_only_for, callable_first = self._native.of(str(path), owner, name)
+            found = self._guards[key] = Guard(
+                frozenset(falsy), frozenset(booleans), frozenset(none_only_for), callable_first
+            )
         if found is None:
             self._guards[key] = NO_GUARD  # a function that hands a parameter back to itself
             found = self._guards[key] = self._read(path, owner, name)

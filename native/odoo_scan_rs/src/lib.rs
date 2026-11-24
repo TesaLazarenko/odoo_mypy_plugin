@@ -72,6 +72,7 @@ mod walker;
 mod text;
 mod xml;
 mod decode;
+mod falsy;
 
 const RELATIONAL_FIELDS: [&str; 3] = ["Many2one", "One2many", "Many2many"];
 const LOG_ACCESS_USERS: [&str; 2] = ["create_uid", "write_uid"];
@@ -535,6 +536,32 @@ fn decode_value<'py>(
     decode::decode(py, value, &builders, 0)
 }
 
+/// `falsy_guards.FalsyGuards` (read once per file and function, as Python keeps them).
+#[pyclass]
+struct FalsyGuards {
+    state: falsy::State,
+}
+
+#[pymethods]
+impl FalsyGuards {
+    #[new]
+    fn new() -> Self {
+        FalsyGuards { state: falsy::State::default() }
+    }
+
+    /// `(falsy, booleans, none_only_for, callable_first)` of function `name` of a file, a
+    /// method of top-level class `owner` ("" for a module function).
+    fn of(&mut self, path: &str, owner: &str, name: &str) -> (Vec<String>, Vec<String>, Vec<String>, bool) {
+        let found = self.state.of(path, owner, name);
+        (
+            found.falsy.into_iter().collect(),
+            found.booleans.into_iter().collect(),
+            found.none_only_for.into_iter().collect(),
+            found.callable_first,
+        )
+    }
+}
+
 #[pymodule]
 fn odoo_scan_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let minor: u8 = m.py().import("sys")?.getattr("version_info")?.getattr("minor")?.extract()?;
@@ -554,5 +581,6 @@ fn odoo_scan_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(imported_names, m)?)?;
     m.add_function(wrap_pyfunction!(data_file_ids, m)?)?;
     m.add_function(wrap_pyfunction!(decode_value, m)?)?;
+    m.add_class::<FalsyGuards>()?;
     Ok(())
 }
