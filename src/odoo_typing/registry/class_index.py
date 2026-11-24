@@ -114,8 +114,10 @@ class ClassFileIndex:
         if self._files is None:
             key = f"class-files-{self.key}.json"
             record = self._keeper.load_record(key) if self._keeper is not None else None
-            if self._native_index(key, record):
-                return self._files  # type: ignore[return-value]  # set by _native_index
+            native = self._native_index(key, record)
+            if native is not None:
+                self._files = native
+                return native
             known = _parse(record)
             self._files = self._walk_addons(known)
             self._directory_stamps = {path: item.stamp for path, item in self._directories.items()}
@@ -123,25 +125,26 @@ class ClassFileIndex:
                 self._keeper.save_record(key, _encode(self._directories))
         return self._files
 
-    def _native_index(self, key: str, record: Record | None) -> bool:
-        """The index read in Rust (record, walk, record kept); whether it was."""
+    def _native_index(
+        self, key: str, record: Record | None
+    ) -> dict[str, tuple[tuple[str, Path], ...]] | None:
+        """The index read in Rust (record, walk, record kept); ``None`` where Python reads it."""
         native = native_class_walk(
             [(addon.name, str(addon.path), addon.module_prefix) for addon in self._addons],
             record,
             lambda index, path: _named(self._addons[index], path),
         )
         if native is None:
-            return False
+            return None
         found_files, self._stamps, self._directory_stamps, changed = native
         found: dict[str, list[tuple[str, Path]]] = {}
         for index, path, models in found_files:
             name, where = self._addons[index].name, Path(path)
             for model in models:
                 found.setdefault(model, []).append((name, where))
-        self._files = {model: tuple(files) for model, files in found.items()}
         if self._keeper is not None and changed is not None:
             self._keeper.save_record(key, changed)
-        return True
+        return {model: tuple(files) for model, files in found.items()}
 
     def _walk_addons(self, known: dict[str, _Directory]) -> dict[str, tuple[tuple[str, Path], ...]]:
         """The files of every addon that name each model (addon and path), addons in order."""

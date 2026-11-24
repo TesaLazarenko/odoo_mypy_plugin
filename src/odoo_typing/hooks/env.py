@@ -590,7 +590,7 @@ def add_request_attributes(ctx: ClassDefContext) -> None:
     semantic analysis of ``odoo.http``, so the attributes are part of its cache entry.
     """
     info = ctx.cls.info
-    for name in REQUEST_ATTRIBUTES - info.names.keys():
+    for name in REQUEST_ATTRIBUTES.difference(info.names):  # a frozenset, as typeshed says
         var = Var(name, AnyType(TypeOfAny.special_form))
         var.info = info
         var._fullname = f"{info.fullname}.{name}"  # pylint: disable=protected-access
