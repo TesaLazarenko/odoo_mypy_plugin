@@ -75,6 +75,7 @@ mod decode;
 mod falsy;
 mod classwalk;
 mod registry;
+mod fieldmerge;
 
 const RELATIONAL_FIELDS: [&str; 3] = ["Many2one", "One2many", "Many2many"];
 const LOG_ACCESS_USERS: [&str; 2] = ["create_uid", "write_uid"];
@@ -597,6 +598,22 @@ fn c3_merge(sequences: Vec<Vec<u32>>) -> (Vec<u32>, bool) {
     registry::c3_merge(&sequences)
 }
 
+/// `model_fields.merge_definitions` of each group of definitions (base first): the
+/// merged `FieldInfo` (the tip itself where it is the same), `None` where Python merges.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn merge_fields<'py>(
+    groups: Vec<Vec<Bound<'py, PyAny>>>,
+    field_info: Bound<'py, PyAny>,
+    frozen: Bound<'py, PyAny>,
+    parents: HashMap<String, String>,
+    overridable: Vec<String>,
+    any_argument: String,
+) -> PyResult<Vec<Option<Bound<'py, PyAny>>>> {
+    let rules = fieldmerge::Rules { parents, overridable, any_argument };
+    groups.iter().map(|group| fieldmerge::merge(&rules, group, &field_info, &frozen)).collect()
+}
+
 /// `falsy_guards.FalsyGuards` (read once per file and function, as Python keeps them).
 #[pyclass]
 struct FalsyGuards {
@@ -645,6 +662,7 @@ fn odoo_scan_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FalsyGuards>()?;
     m.add_function(wrap_pyfunction!(registry_bases, m)?)?;
     m.add_function(wrap_pyfunction!(c3_merge, m)?)?;
+    m.add_function(wrap_pyfunction!(merge_fields, m)?)?;
     m.add_function(wrap_pyfunction!(defined_names_many, m)?)?;
     m.add_function(wrap_pyfunction!(class_walk, m)?)?;
     Ok(())

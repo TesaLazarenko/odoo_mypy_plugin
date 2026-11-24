@@ -209,6 +209,24 @@ def native_c3_merge(rows: list[list[int]]) -> tuple[list[int], bool] | None:
     return found
 
 
+def native_merge_fields(groups: list[list[FieldInfo]]) -> list[FieldInfo | None] | None:
+    """``model_fields.merge_definitions`` of each group in Rust; ``None``: Python merges.
+
+    Each is the merged field (the tip itself where the merge gives it back), or ``None``
+    for a group Python merges. The rules are imported here: ``model_fields`` imports the
+    scanner, which imports this module.
+    """
+    if not _enabled():
+        return None
+    from odoo_typing.model_fields import FIELD_PARENTS, OVERRIDABLE
+    from odoo_typing.scanner.fields import ANY_ARGUMENT
+
+    found: list[FieldInfo | None] = odoo_scan_rs.merge_fields(
+        groups, FieldInfo, frozen, FIELD_PARENTS, list(OVERRIDABLE), ANY_ARGUMENT
+    )
+    return found
+
+
 def native_falsy_guards() -> Any | None:  # noqa: ANN401 (the extension's class)
     """``falsy_guards.FalsyGuards`` in Rust, ``None`` where Python reads the functions.
 

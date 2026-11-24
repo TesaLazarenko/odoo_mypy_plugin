@@ -29,6 +29,7 @@ from odoo_typing.registry.views import ModelViews
 from odoo_typing.registry.visible import defines
 from odoo_typing.scanner import Contribution, FieldInfo
 from odoo_typing.scanner.class_bodies import FORWARD
+from odoo_typing.scanner.native import native_merge_fields
 
 __all__ = ["ModelFields", "Passed", "chain_log_access"]
 
@@ -232,7 +233,13 @@ class ModelFields(ModelViews):
         }
         for name, found in chain_definitions(view.chain).items():
             definitions.setdefault(name, []).extend(found)
-        fields = {name: merge_definitions(found) for name, found in definitions.items()}
+        native = native_merge_fields(list(definitions.values()))
+        fields = {
+            name: merged if merged is not None else merge_definitions(found)
+            for (name, found), merged in zip(
+                definitions.items(), native or [None] * len(definitions), strict=True
+            )
+        }
         path = fields.get(PARENT_PATH)
         if path is not None and path.required is None and parent_path_filled(view.chain):
             fields[PARENT_PATH] = replace(path, required=True)
