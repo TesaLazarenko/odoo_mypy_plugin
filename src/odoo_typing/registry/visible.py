@@ -13,7 +13,7 @@ from pathlib import Path
 from odoo_typing.config import Settings
 from odoo_typing.registry.scans import IndexLoader, ScanCache, ScannedAddons
 from odoo_typing.scanner import Contribution, SourceError, read_source
-from odoo_typing.scanner.native import native_defined_names
+from odoo_typing.scanner.native import native_defined_names, native_defined_names_many
 
 __all__ = ["TipsKey", "VisibleClasses", "defines"]
 
@@ -189,8 +189,11 @@ class VisibleClasses(ScannedAddons):
         """
         if self._definition_index is None:
             index: dict[str, list[str]] = {}
-            for name in sorted(self.addons.addons, key=self.addons.load_key):
-                for model in _defined_names(self.addons.addons[name].path):
+            names = sorted(self.addons.addons, key=self.addons.load_key)
+            directories = [self.addons.addons[name].path for name in names]
+            found = native_defined_names_many(directories)  # in parallel, where it can be
+            for name, models in zip(names, found or map(_defined_names, directories), strict=True):
+                for model in models:
                     index.setdefault(model, []).append(name)
             self._definition_index = index
         return self._definition_index

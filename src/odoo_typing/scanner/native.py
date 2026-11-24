@@ -245,6 +245,13 @@ def native_defined_names(directory: Path) -> set[str] | None:
     return set(odoo_scan_rs.defined_names(str(directory))) if _enabled() else None
 
 
+def native_defined_names_many(directories: list[Path]) -> list[set[str]] | None:
+    """``native_defined_names`` of many directories, read in parallel; ``None``: Python."""
+    if not _enabled():
+        return None
+    return [set(names) for names in odoo_scan_rs.defined_names_many(list(map(str, directories)))]
+
+
 def native_imports(path: Path, package: str) -> frozenset[str] | None:
     """``edges.imported_names`` of a file in Rust; ``None`` where Python must parse it."""
     if not _enabled():

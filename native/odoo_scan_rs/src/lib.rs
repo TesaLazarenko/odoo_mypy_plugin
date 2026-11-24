@@ -484,6 +484,17 @@ fn defined_names(py: Python<'_>, directory: &str) -> Vec<String> {
     py.allow_threads(|| text::defined_names(std::path::Path::new(directory)).into_iter().collect())
 }
 
+/// `defined_names` of many addon directories at once, in parallel, in their order.
+#[pyfunction]
+fn defined_names_many(py: Python<'_>, directories: Vec<String>) -> Vec<Vec<String>> {
+    py.allow_threads(|| {
+        directories
+            .par_iter()
+            .map(|directory| text::defined_names(std::path::Path::new(directory)).into_iter().collect())
+            .collect()
+    })
+}
+
 /// `class_index._named`: the models of a file's `_name` / `_inherit`; `None` where
 /// Python must read it (it cannot be read, or the scan of its classes is needed and
 /// cannot be done here).
@@ -634,6 +645,7 @@ fn odoo_scan_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FalsyGuards>()?;
     m.add_function(wrap_pyfunction!(registry_bases, m)?)?;
     m.add_function(wrap_pyfunction!(c3_merge, m)?)?;
+    m.add_function(wrap_pyfunction!(defined_names_many, m)?)?;
     m.add_function(wrap_pyfunction!(class_walk, m)?)?;
     Ok(())
 }
