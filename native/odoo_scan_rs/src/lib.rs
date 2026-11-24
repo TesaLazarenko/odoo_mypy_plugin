@@ -76,6 +76,7 @@ mod falsy;
 mod classwalk;
 mod registry;
 mod fieldmerge;
+mod encode;
 
 const RELATIONAL_FIELDS: [&str; 3] = ["Many2one", "One2many", "Many2many"];
 const LOG_ACCESS_USERS: [&str; 2] = ["create_uid", "write_uid"];
@@ -614,6 +615,23 @@ fn merge_fields<'py>(
     groups.iter().map(|group| fieldmerge::merge(&rules, group, &field_info, &frozen)).collect()
 }
 
+/// `json.dumps(scan_store.encode(value), separators=(",", ":"))`: `fields_of` gives a
+/// dataclass's fields, `json_dumps` writes floats and what is rare, `encode` is Python's
+/// for a set of other values than plain strings.
+#[pyfunction]
+fn encode_json<'py>(
+    value: &Bound<'py, PyAny>,
+    fields_of: Bound<'py, PyAny>,
+    source_error: Bound<'py, pyo3::types::PyType>,
+    path: Bound<'py, pyo3::types::PyType>,
+    json_dumps: Bound<'py, PyAny>,
+    encode: Bound<'py, PyAny>,
+) -> PyResult<String> {
+    let mut out = String::new();
+    encode::Encoder::new(fields_of, source_error, path, json_dumps, encode).encode(value, &mut out)?;
+    Ok(out)
+}
+
 /// `falsy_guards.FalsyGuards` (read once per file and function, as Python keeps them).
 #[pyclass]
 struct FalsyGuards {
@@ -663,6 +681,7 @@ fn odoo_scan_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(registry_bases, m)?)?;
     m.add_function(wrap_pyfunction!(c3_merge, m)?)?;
     m.add_function(wrap_pyfunction!(merge_fields, m)?)?;
+    m.add_function(wrap_pyfunction!(encode_json, m)?)?;
     m.add_function(wrap_pyfunction!(defined_names_many, m)?)?;
     m.add_function(wrap_pyfunction!(class_walk, m)?)?;
     Ok(())

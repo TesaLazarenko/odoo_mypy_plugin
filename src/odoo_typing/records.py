@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import sys
+from collections.abc import Mapping
 from functools import cache
 from pathlib import Path
 from typing import TypeGuard
@@ -81,15 +82,22 @@ class RecordStore:
             return None
         return data
 
-    def save(self, key: str, record: Record) -> bool:
-        """Write a record; whether it was written (a directory that cannot be is ignored)."""
+    def save(self, key: str, record: Record, written: Mapping[str, str] | None = None) -> bool:
+        """Write a record; whether it was written (a directory that cannot be is ignored).
+
+        ``written`` are more of its values, each as JSON text already (an addon's scan).
+        """
         if self._directory is None:
             return False
         data = {**record, "version": source_digest()}
+        text = json.dumps(data, separators=(",", ":"))
+        if written:  # data is never empty: its text ends with "}"
+            parts = (f",{json.dumps(name)}:{value}" for name, value in written.items())
+            text = text[:-1] + "".join(parts) + "}"
         try:
             self._directory.mkdir(parents=True, exist_ok=True)
             temporary = self._directory / f".{key}.{os.getpid()}.tmp"
-            temporary.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+            temporary.write_text(text, encoding="utf-8")
             temporary.replace(self._directory / key)
         except OSError:
             return False

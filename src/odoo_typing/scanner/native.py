@@ -9,6 +9,7 @@ may not read).
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections.abc import Callable, Mapping
@@ -225,6 +226,23 @@ def native_merge_fields(groups: list[list[FieldInfo]]) -> list[FieldInfo | None]
         groups, FieldInfo, frozen, FIELD_PARENTS, list(OVERRIDABLE), ANY_ARGUMENT
     )
     return found
+
+
+def native_encode_json(
+    value: object,
+    fields_of: Callable[[type], tuple[str, ...] | None],
+    source_error: type,
+    encode: Callable[[object], object],
+) -> str | None:
+    """``json.dumps(scan_store.encode(value), separators=(",", ":"))`` written in Rust.
+
+    ``encode`` is Python's, for a set of other values than plain strings; ``None`` where
+    Python encodes.
+    """
+    if not _enabled():
+        return None
+    text: str = odoo_scan_rs.encode_json(value, fields_of, source_error, Path, json.dumps, encode)
+    return text
 
 
 def native_falsy_guards() -> Any | None:  # noqa: ANN401 (the extension's class)

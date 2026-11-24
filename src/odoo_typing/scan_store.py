@@ -35,7 +35,7 @@ from odoo_typing.scanner import (
     SourceError,
     UnlinkedField,
 )
-from odoo_typing.scanner.native import native_decoder
+from odoo_typing.scanner.native import native_decoder, native_encode_json
 from odoo_typing.stamps import Stamp, Stamps, unchanged
 from odoo_typing.xmlids import DataScan, XmlId
 
@@ -257,12 +257,11 @@ class ScanStore:
 
     def save(self, addon: Addon, load_key: LoadKey, scan: AddonScan, stamps: Stamps) -> None:
         """Keep an addon's scan with the stamps of the files it read (first writable store)."""
-        record = {
-            "load_key": encode(load_key),
-            "stamps": stamps,
-            "scan": encode(scan),
-        }
-        self._save(self._key(addon), record)
+        record: Record = {"load_key": encode(load_key), "stamps": stamps}
+        written = native_encode_json(scan, dataclass_fields, SourceError, encode)
+        if written is None:
+            record["scan"] = encode(scan)
+        self._save(self._key(addon), record, {"scan": written} if written is not None else None)
         self._memory[self._key(addon)] = _KeptScan(encode(load_key), scan, stamps)
 
     def load_file(self, path: Path, current: Stamp | None) -> FileReferences | None:
@@ -377,7 +376,7 @@ class ScanStore:
     def _classes_key(path: Path) -> str:
         return f"classes-{path.stem}-{digest([str(path)])[:16]}.json"
 
-    def _save(self, key: str, record: Record) -> None:
+    def _save(self, key: str, record: Record, written: Mapping[str, str] | None = None) -> None:
         for store in self._stores:  # the first one that can be written
-            if store.save(key, record):
+            if store.save(key, record, written):
                 return
