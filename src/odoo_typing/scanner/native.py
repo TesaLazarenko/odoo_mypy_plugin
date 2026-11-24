@@ -188,6 +188,27 @@ def native_decoder(classes: Mapping[str, type], error: type) -> Callable[[object
     )
 
 
+def native_registry_bases(
+    model: str, parents_of: list[tuple[str, ...]], dropped: set[str]
+) -> list[int | str] | None:
+    """``Linearization._registry_bases`` in Rust: class indexes and parent models.
+
+    ``None`` where Python builds the bases.
+    """
+    if not _enabled():
+        return None
+    found: list[int | str] = odoo_scan_rs.registry_bases(model, parents_of, dropped)
+    return found
+
+
+def native_c3_merge(rows: list[list[int]]) -> tuple[list[int], bool] | None:
+    """``graphs.c3_merge`` in Rust over node numbers; ``None`` where Python merges."""
+    if not _enabled():
+        return None
+    found: tuple[list[int], bool] = odoo_scan_rs.c3_merge(rows)
+    return found
+
+
 def native_falsy_guards() -> Any | None:  # noqa: ANN401 (the extension's class)
     """``falsy_guards.FalsyGuards`` in Rust, ``None`` where Python reads the functions.
 

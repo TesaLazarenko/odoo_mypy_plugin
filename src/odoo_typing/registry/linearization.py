@@ -18,6 +18,7 @@ from odoo_typing.graphs import c3_merge, components_from
 from odoo_typing.registry.scans import IndexLoader, ScanCache
 from odoo_typing.registry.visible import TipsKey, VisibleClasses
 from odoo_typing.scanner import Contribution
+from odoo_typing.scanner.native import native_c3_merge, native_registry_bases
 
 __all__ = ["Linearization", "MissingParent", "Nodes"]
 
@@ -107,7 +108,7 @@ class Linearization(VisibleClasses):
         key = (addon_name, parents)
         if key not in self._merged:
             mros = [self._registry_mro(parent, addon_name, None) for parent in parents]
-            merged, conflict = c3_merge([*mros, parents])
+            merged, conflict = _merge([*mros, parents])
             self._merged[key] = tuple(merged)
             if conflict:  # Odoo's own C3 fails here too
                 self._conflicts.add(key)
@@ -141,6 +142,9 @@ class Linearization(VisibleClasses):
         ]
         if through is not None and through not in classes:
             classes.append(through)  # an extension Odoo would reject: see missing_parents
+        native = self._native_bases(model, addon_name, classes, cyclic)
+        if native is not None:
+            return native
         bases: Nodes = ()
         for item in classes:
             new: dict[Contribution | str, None] = {item: None}
@@ -154,6 +158,22 @@ class Linearization(VisibleClasses):
                 _add_last(new, added)
             bases = tuple(new)
         return bases
+
+    def _native_bases(
+        self, model: str, addon_name: str, classes: list[Contribution], cyclic: frozenset[str]
+    ) -> Nodes | None:
+        """``_registry_bases`` in Rust (keys, not classes: no class is hashed)."""
+        parents_of = [_parents(item) for item in classes]
+        dropped = {
+            parent
+            for parents in parents_of
+            for parent in parents
+            if parent != model and (parent in cyclic or not self._candidates(parent, addon_name))
+        }
+        found = native_registry_bases(model, parents_of, dropped)
+        if found is None:
+            return None
+        return tuple(classes[node] if isinstance(node, int) else node for node in found)
 
     def _cyclic_models(self, model: str, addon_name: str) -> frozenset[str]:
         """The models on an ``_inherit`` cycle through this one, in an addon's view.
@@ -219,6 +239,31 @@ class Linearization(VisibleClasses):
                 )
             )
         return tuple(problems)
+
+
+def _merge(sequences: list[Nodes]) -> tuple[list[Contribution | str], bool]:
+    """``c3_merge`` of MROs, in Rust over node numbers where it is installed.
+
+    A class is its own node (``id``): two classes of the view are never equal.
+    """
+    numbers: dict[int | str, int] = {}
+    nodes: list[Contribution | str] = []
+    rows: list[list[int]] = []
+    for sequence in sequences:
+        row = []
+        for node in sequence:
+            key = node if isinstance(node, str) else id(node)
+            number = numbers.get(key)
+            if number is None:
+                number = numbers[key] = len(nodes)
+                nodes.append(node)
+            row.append(number)
+        rows.append(row)
+    native = native_c3_merge(rows)
+    if native is None:
+        return c3_merge(sequences)
+    order, conflict = native
+    return [nodes[number] for number in order], conflict
 
 
 def _add_last(nodes: dict[Contribution | str, None], added: Nodes) -> None:

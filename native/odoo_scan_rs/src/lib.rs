@@ -74,6 +74,7 @@ mod xml;
 mod decode;
 mod falsy;
 mod classwalk;
+mod registry;
 
 const RELATIONAL_FIELDS: [&str; 3] = ["Many2one", "One2many", "Many2many"];
 const LOG_ACCESS_USERS: [&str; 2] = ["create_uid", "write_uid"];
@@ -559,6 +560,32 @@ fn class_walk<'py>(
     }
 }
 
+/// `Linearization._registry_bases` over the parents of the classes: the class indexes
+/// (ints) and the parent models (strs) of the registry class's bases, in order.
+#[pyfunction]
+fn registry_bases<'py>(
+    py: Python<'py>,
+    model: &str,
+    parents_of: Vec<Vec<String>>,
+    dropped: HashSet<String>,
+) -> PyResult<Bound<'py, pyo3::types::PyList>> {
+    let nodes = registry::registry_bases(model, &parents_of, &dropped);
+    let out = pyo3::types::PyList::empty(py);
+    for node in nodes {
+        match node {
+            registry::Node::Class(index) => out.append(index)?,
+            registry::Node::Model(name) => out.append(name)?,
+        }
+    }
+    Ok(out)
+}
+
+/// `graphs.c3_merge` over node numbers: (merged, conflict).
+#[pyfunction]
+fn c3_merge(sequences: Vec<Vec<u32>>) -> (Vec<u32>, bool) {
+    registry::c3_merge(&sequences)
+}
+
 /// `falsy_guards.FalsyGuards` (read once per file and function, as Python keeps them).
 #[pyclass]
 struct FalsyGuards {
@@ -605,6 +632,8 @@ fn odoo_scan_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(data_file_ids, m)?)?;
     m.add_function(wrap_pyfunction!(decode_value, m)?)?;
     m.add_class::<FalsyGuards>()?;
+    m.add_function(wrap_pyfunction!(registry_bases, m)?)?;
+    m.add_function(wrap_pyfunction!(c3_merge, m)?)?;
     m.add_function(wrap_pyfunction!(class_walk, m)?)?;
     Ok(())
 }
