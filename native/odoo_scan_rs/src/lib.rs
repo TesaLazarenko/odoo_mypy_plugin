@@ -73,6 +73,7 @@ mod text;
 mod xml;
 mod decode;
 mod falsy;
+mod classwalk;
 
 const RELATIONAL_FIELDS: [&str; 3] = ["Many2one", "One2many", "Many2many"];
 const LOG_ACCESS_USERS: [&str; 2] = ["create_uid", "write_uid"];
@@ -486,7 +487,11 @@ fn defined_names(py: Python<'_>, directory: &str) -> Vec<String> {
 /// Python must read it (it cannot be read, or the scan of its classes is needed and
 /// cannot be done here).
 #[pyfunction]
-fn named_models(py: Python<'_>, path: &str, addon_path: &str, prefix: &str, name: &str) -> Option<Vec<String>> {
+fn named_models(path: &str, addon_path: &str, prefix: &str, name: &str) -> Option<Vec<String>> {
+    Some(named_of(path, addon_path, prefix, name)?.into_iter().collect())
+}
+
+pub fn named_of(path: &str, addon_path: &str, prefix: &str, name: &str) -> Option<std::collections::BTreeSet<String>> {
     let data = std::fs::read(path).ok()?;
     let (mut names, evaluate) = text::named_literals(&data);
     if evaluate {
@@ -498,8 +503,7 @@ fn named_models(py: Python<'_>, path: &str, addon_path: &str, prefix: &str, name
             names.extend(c.parents);
         }
     }
-    let _ = py;
-    Some(names.into_iter().collect())
+    Some(names)
 }
 
 /// `edges.imported_names` of a file; `None` where Python must parse it.
@@ -534,6 +538,25 @@ fn decode_value<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let builders = decode::Builders { classes, path, error, frozen };
     decode::decode(py, value, &builders, 0)
+}
+
+/// `ClassFileIndex._index` of one record: `addons` are (name, path, prefix) in load
+/// order, `record` the kept one (or `None`), `named(addon index, path)` Python's reading
+/// of a file Rust cannot read. `None` where Python must walk (a name not in UTF-8).
+#[pyfunction]
+#[pyo3(signature = (addons, record, named))]
+fn class_walk<'py>(
+    py: Python<'py>,
+    addons: Vec<(String, String, String)>,
+    record: Option<Bound<'py, PyAny>>,
+    named: Bound<'py, PyAny>,
+) -> PyResult<Option<Bound<'py, pyo3::types::PyTuple>>> {
+    let addons = addons.into_iter().map(|(name, path, prefix)| classwalk::Addon { name, path, prefix }).collect();
+    let mut walk = classwalk::Walk::new(addons, record.as_ref(), named);
+    match walk.run()? {
+        Err(classwalk::Fallback) => Ok(None),
+        Ok(()) => Ok(Some(walk.result(py)?)),
+    }
 }
 
 /// `falsy_guards.FalsyGuards` (read once per file and function, as Python keeps them).
@@ -582,5 +605,6 @@ fn odoo_scan_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(data_file_ids, m)?)?;
     m.add_function(wrap_pyfunction!(decode_value, m)?)?;
     m.add_class::<FalsyGuards>()?;
+    m.add_function(wrap_pyfunction!(class_walk, m)?)?;
     Ok(())
 }

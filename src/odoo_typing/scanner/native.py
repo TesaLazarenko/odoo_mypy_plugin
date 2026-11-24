@@ -196,6 +196,21 @@ def native_falsy_guards() -> Any | None:  # noqa: ANN401 (the extension's class)
     return odoo_scan_rs.FalsyGuards() if _enabled() else None
 
 
+def native_class_walk(
+    addons: list[tuple[str, str, str]],
+    record: object,
+    named: Callable[[int, str], frozenset[str] | None],
+) -> Any | None:  # noqa: ANN401 (the extension's tuple)
+    """``ClassFileIndex._index`` of one record in Rust, ``None`` where Python walks.
+
+    Gives ``(found, stamps, directory stamps, record to keep or None)``: the (addon
+    index, path, models) of the files that name models, in walk order.
+    """
+    if not _enabled():
+        return None
+    return odoo_scan_rs.class_walk(addons, record, named)
+
+
 def native_named(addon: Addon, path: str) -> frozenset[str] | None:
     """``class_index._named`` in Rust; ``None`` where Python must read the file."""
     if not _enabled():

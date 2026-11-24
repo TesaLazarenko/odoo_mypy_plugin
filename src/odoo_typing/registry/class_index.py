@@ -26,7 +26,7 @@ from odoo_typing.frozen import frozen
 from odoo_typing.records import Record, digest, parse_stamp
 from odoo_typing.registry.visible import SKIPPED_DIRS
 from odoo_typing.scanner import SourceError, read_source, scan_file_classes
-from odoo_typing.scanner.native import native_named
+from odoo_typing.scanner.native import native_class_walk, native_named
 from odoo_typing.stamps import UNREADABLE, Stamp, is_directory, matches, stamp, stat_result
 
 __all__ = ["ClassFileIndex", "RecordKeeper", "module_of"]
@@ -81,6 +81,7 @@ class ClassFileIndex:
         self._files: dict[str, tuple[tuple[str, Path], ...]] | None = None
         self._stamps: dict[str, Stamp | None] = {}  # of the files, as recorded
         self._directories: dict[str, _Directory] = {}
+        self._directory_stamps: dict[str, Stamp | None] = {}  # as recorded
 
     @property
     def key(self) -> str:
@@ -99,7 +100,7 @@ class ClassFileIndex:
         """Whether a directory or file the index read this run changed on disk since."""
         if self._files is None:
             return False
-        if not all(matches(path, entry.stamp) for path, entry in self._directories.items()):
+        if not all(matches(path, recorded) for path, recorded in self._directory_stamps.items()):
             return True
         return not all(matches(path, recorded) for path, recorded in self._stamps.items())
 
@@ -113,11 +114,34 @@ class ClassFileIndex:
         if self._files is None:
             key = f"class-files-{self.key}.json"
             record = self._keeper.load_record(key) if self._keeper is not None else None
+            if self._native_index(key, record):
+                return self._files  # type: ignore[return-value]  # set by _native_index
             known = _parse(record)
             self._files = self._walk_addons(known)
+            self._directory_stamps = {path: item.stamp for path, item in self._directories.items()}
             if self._keeper is not None and self._directories != known:
                 self._keeper.save_record(key, _encode(self._directories))
         return self._files
+
+    def _native_index(self, key: str, record: Record | None) -> bool:
+        """The index read in Rust (record, walk, record kept); whether it was."""
+        native = native_class_walk(
+            [(addon.name, str(addon.path), addon.module_prefix) for addon in self._addons],
+            record,
+            lambda index, path: _named(self._addons[index], path),
+        )
+        if native is None:
+            return False
+        found_files, self._stamps, self._directory_stamps, changed = native
+        found: dict[str, list[tuple[str, Path]]] = {}
+        for index, path, models in found_files:
+            name, where = self._addons[index].name, Path(path)
+            for model in models:
+                found.setdefault(model, []).append((name, where))
+        self._files = {model: tuple(files) for model, files in found.items()}
+        if self._keeper is not None and changed is not None:
+            self._keeper.save_record(key, changed)
+        return True
 
     def _walk_addons(self, known: dict[str, _Directory]) -> dict[str, tuple[tuple[str, Path], ...]]:
         """The files of every addon that name each model (addon and path), addons in order."""

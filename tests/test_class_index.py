@@ -54,7 +54,10 @@ def test_index_finds_the_files_that_name_a_model(tmp_path: Path) -> None:
     assert index.model_names() == {"shop.order", "mail.thread"}  # not tests
 
 
-def test_kept_index_reads_only_what_changed(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_kept_index_reads_only_what_changed(
+    tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ODOO_TYPING_NATIVE", "0")  # the reads counted are Python's
     shop = _shop(tmp_path)
     keeper = _Keeper()
     ClassFileIndex([shop], keeper).model_names()
@@ -76,6 +79,22 @@ def test_kept_index_reads_only_what_changed(tmp_path: Path, mocker: MockerFixtur
     assert changed.files("shop.line") == (("shop", shop.path / "models" / "line.py"),)
     assert changed.files("mail.thread") == ()
     assert read.call_count == 2  # line.py and tools.py
+
+
+def test_kept_index_does_not_read_a_file_whose_stamp_is_the_same(tmp_path: Path) -> None:
+    shop = _shop(tmp_path)  # in Python or in the extension, whichever reads the index
+    keeper = _Keeper()
+    ClassFileIndex([shop], keeper).model_names()
+    order = shop.path / "models" / "order.py"
+    before = order.stat()
+    order.write_text(order.read_text().replace("shop.order", "shop.ordex"))  # the same size
+    os.utime(order, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    kept = ClassFileIndex([shop], keeper)
+
+    assert kept.files("shop.order") == (("shop", order),)
+    assert kept.files("shop.ordex") == ()
+    assert not kept.changed()
 
 
 def test_index_skips_files_that_cannot_be_read(tmp_path: Path) -> None:
