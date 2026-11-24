@@ -77,6 +77,7 @@ mod classwalk;
 mod registry;
 mod fieldmerge;
 mod encode;
+mod canonical;
 
 const RELATIONAL_FIELDS: [&str; 3] = ["Many2one", "One2many", "Many2many"];
 const LOG_ACCESS_USERS: [&str; 2] = ["create_uid", "write_uid"];
@@ -632,6 +633,19 @@ fn encode_json<'py>(
     Ok(out)
 }
 
+/// `json.dumps(fingerprint._canonical(value), separators=(",", ":"))`: `fields_of` gives
+/// the fingerprinted fields of a dataclass (`None` for another class), `json_dumps` writes
+/// what is rare here (a big int, a float, a string with a lone surrogate).
+#[pyfunction]
+fn canonical_json<'py>(
+    value: &Bound<'py, PyAny>,
+    fields_of: Bound<'py, PyAny>,
+    path: Bound<'py, pyo3::types::PyType>,
+    json_dumps: Bound<'py, PyAny>,
+) -> PyResult<String> {
+    canonical::Canonical::new(fields_of, path, json_dumps).text(value)
+}
+
 /// `falsy_guards.FalsyGuards` (read once per file and function, as Python keeps them).
 #[pyclass]
 struct FalsyGuards {
@@ -682,6 +696,7 @@ fn odoo_scan_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(c3_merge, m)?)?;
     m.add_function(wrap_pyfunction!(merge_fields, m)?)?;
     m.add_function(wrap_pyfunction!(encode_json, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_json, m)?)?;
     m.add_function(wrap_pyfunction!(defined_names_many, m)?)?;
     m.add_function(wrap_pyfunction!(class_walk, m)?)?;
     Ok(())

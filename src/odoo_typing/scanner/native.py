@@ -245,6 +245,20 @@ def native_encode_json(
     return text
 
 
+def native_canonical_json(
+    value: object, fields_of: Callable[[type], tuple[str, ...] | None]
+) -> str | None:
+    """``json.dumps(fingerprint._canonical(value), separators=(",", ":"))`` in Rust.
+
+    ``fields_of`` gives the fingerprinted fields of a dataclass; ``None`` where Python
+    writes the text.
+    """
+    if not _enabled():
+        return None
+    text: str = odoo_scan_rs.canonical_json(value, fields_of, Path, json.dumps)
+    return text
+
+
 def native_falsy_guards() -> Any | None:  # noqa: ANN401 (the extension's class)
     """``falsy_guards.FalsyGuards`` in Rust, ``None`` where Python reads the functions.
 

@@ -35,6 +35,7 @@ A fully cached run reads these small files and calls ``stat``; it parses nothing
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 from collections.abc import Callable
@@ -54,6 +55,7 @@ from odoo_typing.records import (
 )
 from odoo_typing.registry import Registry
 from odoo_typing.scanner import VALUES, AddonScan
+from odoo_typing.scanner.native import native_canonical_json
 from odoo_typing.stamps import Stamp, Stamps, index_roots, matches, stamp
 
 __all__ = ["Fingerprints", "scan_digest"]
@@ -64,6 +66,11 @@ VALUES_PREFIX = f"odoo.{VALUES}."
 def scan_digest(scan: AddonScan) -> str:
     """Digest of what an addon scan found (independent of hash randomization)."""
     errors = [[str(error.path), error.reason] for error in scan.errors]
+    native = native_canonical_json(
+        [list(scan.modules), errors, scan.data.xml_ids], _fingerprint_fields
+    )
+    if native is not None:  # the text digest() takes the hash of
+        return hashlib.sha256(native.encode()).hexdigest()
     modules = [_canonical(module) for module in scan.modules]
     return digest([modules, errors, _canonical(scan.data.xml_ids)])
 
