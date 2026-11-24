@@ -58,7 +58,7 @@ def test_kept_index_reads_only_what_changed(tmp_path: Path, mocker: MockerFixtur
     shop = _shop(tmp_path)
     keeper = _Keeper()
     ClassFileIndex([shop], keeper).model_names()
-    read = mocker.spy(class_index, "read_source")
+    read = mocker.spy(class_index, "_named")  # a file read again (here or in the extension)
 
     unchanged = ClassFileIndex([shop], keeper).files("shop.order")
     reads_unchanged = read.call_count
