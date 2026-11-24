@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable, Mapping
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -171,6 +173,19 @@ def native_file_classes(addon: Addon, path: Path) -> tuple[Contribution, ...] | 
 
 def _enabled() -> bool:
     return odoo_scan_rs is not None and os.environ.get("ODOO_TYPING_NATIVE") != "0"
+
+
+def native_decoder(classes: Mapping[str, type], error: type) -> Callable[[object], object] | None:
+    """``scan_store._decode`` in Rust (``ValueError`` for a value ``encode`` did not make).
+
+    ``classes`` are the dataclasses by name, ``error`` builds a ``$error`` value; ``None``
+    where Python decodes.
+    """
+    if not _enabled():
+        return None
+    return partial(
+        odoo_scan_rs.decode_value, classes=dict(classes), path=Path, error=error, frozen=frozen
+    )
 
 
 def native_named(addon: Addon, path: str) -> frozenset[str] | None:

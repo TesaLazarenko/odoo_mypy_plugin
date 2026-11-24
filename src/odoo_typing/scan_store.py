@@ -35,6 +35,7 @@ from odoo_typing.scanner import (
     SourceError,
     UnlinkedField,
 )
+from odoo_typing.scanner.native import native_decoder
 from odoo_typing.stamps import Stamp, Stamps, unchanged
 from odoo_typing.xmlids import DataScan, XmlId
 
@@ -114,8 +115,9 @@ def decode(value: object) -> object:
         DecodeError: If the value was not made by :func:`encode` (an older format, or a
             record of the right version with another shape).
     """
+    decoder = native_decoder(CLASSES, SourceError)
     try:
-        return _decode(value)
+        return _decode(value) if decoder is None else decoder(value)
     except DecodeError:
         raise
     # TypeError: an unhashable set member or key; RecursionError: nested too deeply.

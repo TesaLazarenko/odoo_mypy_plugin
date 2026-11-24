@@ -71,6 +71,7 @@ mod value;
 mod walker;
 mod text;
 mod xml;
+mod decode;
 
 const RELATIONAL_FIELDS: [&str; 3] = ["Many2one", "One2many", "Many2many"];
 const LOG_ACCESS_USERS: [&str; 2] = ["create_uid", "write_uid"];
@@ -520,6 +521,20 @@ fn data_file_ids(py: Python<'_>, path: &str, addon: &str) -> PyResult<PyObject> 
     })
 }
 
+/// `scan_store._decode` of a stored value; `ValueError` for a value `encode` did not make.
+#[pyfunction]
+fn decode_value<'py>(
+    py: Python<'py>,
+    value: &Bound<'py, PyAny>,
+    classes: Bound<'py, pyo3::types::PyDict>,
+    path: Bound<'py, PyAny>,
+    error: Bound<'py, PyAny>,
+    frozen: Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let builders = decode::Builders { classes, path, error, frozen };
+    decode::decode(py, value, &builders, 0)
+}
+
 #[pymodule]
 fn odoo_scan_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let minor: u8 = m.py().import("sys")?.getattr("version_info")?.getattr("minor")?.extract()?;
@@ -538,5 +553,6 @@ fn odoo_scan_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(named_models, m)?)?;
     m.add_function(wrap_pyfunction!(imported_names, m)?)?;
     m.add_function(wrap_pyfunction!(data_file_ids, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_value, m)?)?;
     Ok(())
 }
