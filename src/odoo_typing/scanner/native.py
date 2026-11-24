@@ -158,3 +158,11 @@ def native_references(
         tuple(Guard(*guard) for guard in guards),
         frozen(map(tuple, annotations)),
     )
+
+
+def native_file_classes(addon: Addon, path: Path) -> tuple[Contribution, ...] | None:
+    """``scan_file_classes`` in Rust; ``None`` where Python must read the file."""
+    if odoo_scan_rs is None or os.environ.get("ODOO_TYPING_NATIVE") == "0":
+        return None
+    found = odoo_scan_rs.file_classes(str(path), str(addon.path), addon.module_prefix, addon.name)
+    return None if found is None else tuple(map(_contribution, found))

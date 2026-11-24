@@ -51,7 +51,7 @@ from odoo_typing.scanner.field_classes import (
     origin_of,
 )
 from odoo_typing.scanner.fields import declared_fields
-from odoo_typing.scanner.native import rust_scan_addon
+from odoo_typing.scanner.native import native_file_classes, rust_scan_addon
 from odoo_typing.scanner.referenced import referenced_models
 from odoo_typing.scanner.results import (
     AddonScan,
@@ -105,6 +105,9 @@ def scan_file_classes(addon: Addon, path: Path) -> tuple[Contribution, ...]:
     Raises:
         SourceError: If the file cannot be read: its classes are not known.
     """
+    native = native_file_classes(addon, path)
+    if native is not None:
+        return native
     source = read_source(path)
     walker = _FileWalker(addon, (0, addon.name))
     try:
