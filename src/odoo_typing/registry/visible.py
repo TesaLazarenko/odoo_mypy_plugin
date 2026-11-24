@@ -13,6 +13,7 @@ from pathlib import Path
 from odoo_typing.config import Settings
 from odoo_typing.registry.scans import IndexLoader, ScanCache, ScannedAddons
 from odoo_typing.scanner import Contribution, SourceError, read_source
+from odoo_typing.scanner.native import native_defined_names
 
 __all__ = ["TipsKey", "VisibleClasses", "defines"]
 
@@ -208,6 +209,9 @@ def _since_last_definition(classes: list[Contribution]) -> list[Contribution]:
 
 def _defined_names(directory: Path) -> set[str]:
     """Model names in ``_name = "..."`` assignments of an addon's files (a text search)."""
+    native = native_defined_names(directory)
+    if native is not None:
+        return native
     names: set[str] = set()
     for root, subdirs, files in os.walk(directory):
         subdirs[:] = [name for name in subdirs if name not in SKIPPED_DIRS]

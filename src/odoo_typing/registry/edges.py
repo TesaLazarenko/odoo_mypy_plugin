@@ -15,6 +15,7 @@ from odoo_typing.config import Settings
 from odoo_typing.registry.annotations import AnnotatedModels
 from odoo_typing.registry.scans import IndexLoader, ScanCache
 from odoo_typing.scanner import Contribution, SourceError, parse_source
+from odoo_typing.scanner.native import native_imports
 
 __all__ = ["DependencyEdges", "imported_names"]
 
@@ -145,11 +146,15 @@ class DependencyEdges(AnnotatedModels):
     def _imports_of(self, path: Path, module: str) -> frozenset[str]:
         """The modules a source file imports (and what it imports from them), as dotted names."""
         if path not in self._imports:
+            package = module if path.name == "__init__.py" else module.rpartition(".")[0]
+            native = native_imports(path, package)
+            if native is not None:
+                self._imports[path] = native
+                return native
             try:
                 tree = parse_source(path)
             except SourceError:
                 tree = None
-            package = module if path.name == "__init__.py" else module.rpartition(".")[0]
             self._imports[path] = imported_names(tree, package) if tree is not None else frozenset()
         return self._imports[path]
 

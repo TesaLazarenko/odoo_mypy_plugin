@@ -166,3 +166,28 @@ def native_file_classes(addon: Addon, path: Path) -> tuple[Contribution, ...] | 
         return None
     found = odoo_scan_rs.file_classes(str(path), str(addon.path), addon.module_prefix, addon.name)
     return None if found is None else tuple(map(_contribution, found))
+
+
+def _enabled() -> bool:
+    return odoo_scan_rs is not None and os.environ.get("ODOO_TYPING_NATIVE") != "0"
+
+
+def native_named(addon: Addon, path: str) -> frozenset[str] | None:
+    """``class_index._named`` in Rust; ``None`` where Python must read the file."""
+    if not _enabled():
+        return None
+    found = odoo_scan_rs.named_models(path, str(addon.path), addon.module_prefix, addon.name)
+    return None if found is None else frozen(found)
+
+
+def native_defined_names(directory: Path) -> set[str] | None:
+    """``visible._defined_names`` in Rust; ``None`` if the extension is not there."""
+    return set(odoo_scan_rs.defined_names(str(directory))) if _enabled() else None
+
+
+def native_imports(path: Path, package: str) -> frozenset[str] | None:
+    """``edges.imported_names`` of a file in Rust; ``None`` where Python must parse it."""
+    if not _enabled():
+        return None
+    found = odoo_scan_rs.imported_names(str(path), package)
+    return None if found is None else frozenset(found)

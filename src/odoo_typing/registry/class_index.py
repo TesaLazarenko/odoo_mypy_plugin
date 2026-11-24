@@ -26,6 +26,7 @@ from odoo_typing.frozen import frozen
 from odoo_typing.records import Record, digest, parse_stamp
 from odoo_typing.registry.visible import SKIPPED_DIRS
 from odoo_typing.scanner import SourceError, read_source, scan_file_classes
+from odoo_typing.scanner.native import native_named
 from odoo_typing.stamps import UNREADABLE, Stamp, is_directory, matches, stamp, stat_result
 
 __all__ = ["ClassFileIndex", "RecordKeeper", "module_of"]
@@ -237,6 +238,9 @@ def _named(addon: Addon, path: str) -> frozenset[str] | None:
     Returns:
         The names; ``None`` if the file cannot be read (a broken symlink, no permission).
     """
+    native = native_named(addon, path)
+    if native is not None:
+        return native
     try:
         data = read_source(Path(path))
     except SourceError:
