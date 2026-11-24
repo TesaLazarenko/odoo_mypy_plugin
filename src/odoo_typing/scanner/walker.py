@@ -51,6 +51,7 @@ from odoo_typing.scanner.field_classes import (
     origin_of,
 )
 from odoo_typing.scanner.fields import declared_fields
+from odoo_typing.scanner.native import rust_scan_addon
 from odoo_typing.scanner.referenced import referenced_models
 from odoo_typing.scanner.results import (
     AddonScan,
@@ -83,6 +84,9 @@ def scan_addon(addon: Addon, load_key: LoadKey, stamps: Stamps | None = None) ->
     Returns:
         The scanned files, and the files that could not be parsed.
     """
+    native = rust_scan_addon(addon, load_key, stamps)
+    if native is not None:
+        return native
     walker = _ImportWalker(addon, load_key, stamps)
     walker.visit_module(addon.module_prefix, addon.path)
     data = scan_data(addon.name, addon.path, find_manifest(addon.path), walker.stamps)

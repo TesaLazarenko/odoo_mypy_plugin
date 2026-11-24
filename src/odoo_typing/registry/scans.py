@@ -56,6 +56,7 @@ from odoo_typing.scanner import (
     referenced_models,
     scan_addon,
 )
+from odoo_typing.scanner.native import native_references
 from odoo_typing.stamps import UNREADABLE, Stamp, Stamps, matches, read_index, stamp, unchanged
 from odoo_typing.written_keys import WrittenKeys, written_keys
 
@@ -567,6 +568,12 @@ class ScannedAddons:
             source = read_source(path)
         except SourceError:  # mypy reports files it cannot read itself
             return _UnreachedFile(UNREADABLE if current is not None else None, NO_REFERENCES)
+        native = native_references(source)
+        if native is not None:
+            references = FileReferences(*native)
+            if self._scans is not None:
+                self._scans.save_file(path, current, references)
+            return _UnreachedFile(current, references)
         try:
             tree = parse_bytes(source, path)
         except SourceError:  # mypy reports unparsable files it checks itself
