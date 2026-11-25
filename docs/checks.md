@@ -967,7 +967,10 @@ With real recordset types, some plain mypy codes appear more often:
   in the source, in a loop around the test (unless the variable is bound again before
   the test in each pass), in a loop around the variable only, or on a path that skipped
   the variable's binding (an `if`). `self.assertTrue(value)` in a test narrows `value`
-  after it, as `assert value` does.
+  after it, as `assert value` does. A test of `bool(x)` narrows `x` as a test of `x`
+  does: `self.assertTrue(bool(attachment), msg)`, then `attachment[1]`; and `if
+  bool(self.method):` is reported as `if self.method:` is (`truthy-function`: a function
+  is always true). Not `bool(*values)`, the truth of the first value.
 - A **variable that the function binds more than once** (`products = []` then
   records, `proposal = lead.company_id` then `proposal = False`, `total = 0` then
   `total += line.balance`, one loop variable over two models, a wizard then the invoice

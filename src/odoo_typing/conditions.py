@@ -44,16 +44,23 @@ the code proves:
   a filled object: ``allowed`` may be it; see :func:`odoo_typing.rebound.filled_names`)
   is no alias, as it may be true whatever it was bound to; the names an alias implies
   still count when filled (filling keeps them true).
+* **``bool(x)``**, as the test of an ``if``, ``elif``, ``while`` or ``assert`` or an
+  operand of ``and`` / ``or`` / ``not`` in it, is replaced by ``x``: ``if bool(x):``
+  becomes ``if x:``. Python tests both by the truth of ``x``, but mypy narrows nothing
+  by a call.
 * **``self.assertTrue(value)``**, as a statement, is followed by ``assert value`` (the
-  two in a block that takes the statement's place): the call is checked as before, and
-  the test fails where the value is false, so mypy narrows it after.
+  two in a block that takes the statement's place), with the ``bool(x)`` operands of
+  ``value`` replaced as above: the call is checked as before, and the test fails where
+  the value is false, so mypy narrows it after.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from typing import TypeGuard
 
 from mypy.nodes import (
+    ARG_POS,
     AssertStmt,
     AssignmentStmt,
     Block,
@@ -135,14 +142,14 @@ class _Function:
         }
 
     def rewrite(self) -> None:
-        if not self.aliases and not _has_assert_true(self.function.body):
-            return
         for block in list(_blocks(self.function.body)):  # not the blocks made below
             for index, statement in enumerate(block.body):
                 if isinstance(statement, IfStmt):
-                    statement.expr = [self._test(test, statement) for test in statement.expr]
+                    statement.expr = [
+                        self._test(_unwrapped(test), statement) for test in statement.expr
+                    ]
                 elif isinstance(statement, WhileStmt | AssertStmt):
-                    statement.expr = self._test(statement.expr, statement)
+                    statement.expr = self._test(_unwrapped(statement.expr), statement)
                 elif (asserted := _asserted(statement)) is not None:
                     block.body[index] = asserted
 
@@ -261,13 +268,44 @@ def _implied(value: Expression, depth: int) -> Iterator[Expression]:
     elif isinstance(value, ConditionalExpr) and _falsy(value.else_expr):
         yield from _implied(value.cond, depth + 1)
         yield from _implied(value.if_expr, depth + 1)
-    elif (
+    elif _is_bool_call(value):
+        yield from _implied(value.args[0], depth + 1)
+
+
+def _is_bool_call(value: Expression) -> TypeGuard[CallExpr]:
+    """``bool(x)``: true exactly when ``x`` is, though mypy narrows nothing by it.
+
+    Not ``bool(*xs)`` (the truth of the first item) nor ``bool(o=x)`` (an error).
+    """
+    return (
         isinstance(value, CallExpr)
         and isinstance(value.callee, NameExpr)
         and value.callee.fullname == "builtins.bool"
-        and len(value.args) == 1
-    ):
-        yield from _implied(value.args[0], depth + 1)
+        and value.arg_kinds == [ARG_POS]
+    )
+
+
+def _unwrapped(test: Expression) -> Expression:
+    """A test with each ``bool(x)`` operand replaced by ``x``.
+
+    New nodes where anything changes: the value of ``self.assertTrue(value)`` is also the
+    call's argument.
+    """
+    if _is_bool_call(test):
+        return _unwrapped(test.args[0])
+    if isinstance(test, OpExpr) and test.op in {"and", "or"}:
+        left, right = _unwrapped(test.left), _unwrapped(test.right)
+        if left is test.left and right is test.right:
+            return test
+        rebuilt = OpExpr(test.op, left, right)
+        # What semantic analysis inferred: ``y`` of ``(c and not TYPE_CHECKING) and y`` was
+        # never analysed, and the checker skips it only by this flag.
+        rebuilt.right_always, rebuilt.right_unreachable = test.right_always, test.right_unreachable
+        return _located(rebuilt, test)
+    if isinstance(test, UnaryExpr) and test.op == "not":
+        inner = _unwrapped(test.expr)
+        return test if inner is test.expr else _located(UnaryExpr("not", inner), test)
+    return test
 
 
 def _plain(expression: Expression) -> bool:
@@ -334,15 +372,11 @@ def _asserted(statement: Statement) -> Block | None:
         or call.arg_names[0] is not None
     ):
         return None
-    asserted = AssertStmt(call.args[0])
+    asserted = AssertStmt(_unwrapped(call.args[0]))
     asserted.set_line(statement)
     block = Block([statement, asserted])
     block.set_line(statement)
     return block
-
-
-def _has_assert_true(block: Block) -> bool:
-    return any(_asserted(statement) is not None for statement in _statements(block))
 
 
 def _bound(statement: Statement) -> list[tuple[NameExpr | MemberExpr, Expression | None]]:
@@ -378,8 +412,3 @@ def _blocks(block: Block) -> Iterator[Block]:
         yield current
         for statement in current.body:
             pending.extend(nested_blocks(statement))
-
-
-def _statements(block: Block) -> Iterator[Statement]:
-    for current in _blocks(block):
-        yield from current.body

@@ -365,9 +365,12 @@ once it can be.
   (`rows.append(v)`, `rows.update(...)`, `rows[k] = v`, also through a local that may
   hold the same object, `more = rows` or `more = c and rows`, then `more += [v]`, and
   `rows = c and ...` where `c` may hold a filled object, as `rows` may be it: true
-  whatever it was bound to; names the alias implies still count). A
-  `self.assertTrue(value)` statement becomes a block of itself and `assert value`, in
-  its place in the list (the function may be the one mypy is walking).
+  whatever it was bound to; names the alias implies still count). A `bool(x)` test or
+  operand of `and` / `or` / `not` becomes `x` first (mypy narrows nothing by a call;
+  `bool(alias)` then gets what the alias implies). A `self.assertTrue(value)` statement
+  becomes a block of itself and `assert value`, with the same `bool(x)` operands
+  replaced in new nodes (`value` is the call's argument too), in its place in the list
+  (the function may be the one mypy is walking).
 
 - **Tests about installed modules** (`odoo_typing.module_tests`): where the env hooks
   type records, the function mypy checks (`checker.scope.top_level_function()`) is

@@ -80,6 +80,98 @@ def test_aliases_of_conditions_and_assert_true_narrow(run_mypy: RunMypy) -> None
     ]
 
 
+BOOL_TESTS = """
+from typing import TYPE_CHECKING, Any, Literal
+
+from odoo import models
+from odoo.tests import TransactionCase
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    def tested(self, other: str | Literal[False]) -> None:
+        if bool(self.name):
+            reveal_type(self.name)
+        if bool(self.name) or other:
+            reveal_type(other)
+        while not bool(other):
+            return
+        reveal_type(other)
+
+    def asserted(self, other: str | Literal[False]) -> None:
+        assert bool(self.name and other)
+        reveal_type(other)
+
+    def aliased(self, other: str | Literal[False]) -> None:
+        named = self.name and other
+        if bool(named):
+            reveal_type(other)
+        if str(other):
+            reveal_type(other)
+
+class TestOrder(TransactionCase):
+    def test_found(
+        self, rows: list[Any], text: str | Literal[False], when: Literal["day"] | None
+    ) -> None:
+        order = self.env["t.order"].create({})
+        found = next((row for row in rows if row), False)
+        self.assertTrue(bool(found), "found")
+        reveal_type(found)
+        self.assertTrue(bool(order.day) and bool(order.name))
+        reveal_type(order.day)
+        reveal_type(order.name)
+        self.assertTrue(bool(text) or not bool(found))
+        reveal_type(text)
+        self.assertTrue(not bool(when))
+        reveal_type(when)
+
+class Checked(models.Model):
+    _inherit = "t.order"
+
+    def hook(self) -> None: ...
+
+    def checked(self, xs: tuple[int], other: str | Literal[False]) -> None:
+        if not bool(*xs):
+            reveal_type(xs)
+        if bool(self.hook):
+            pass
+        if (bool(other) and not TYPE_CHECKING) and other.upper():
+            pass
+"""
+
+
+def test_a_test_of_bool_narrows_its_argument(run_mypy: RunMypy) -> None:
+    """``if bool(x):``, ``self.assertTrue(bool(attachment))``: true exactly when ``x`` is."""
+    result = run_mypy(
+        {
+            "t_base": {"models.py": T_BASE},
+            "t_use": {"depends": ["t_base"], "models.py": BOOL_TESTS},
+        },
+        check=["t_use"],
+    )
+
+    assert [message.split(";")[0] for message in result.messages("t_use/models.py")] == [
+        f'{line}: note: Revealed type is "{revealed}"'
+        for line, revealed in [
+            (12, "str"),
+            (14, "str | Literal[False]"),  # ``or``: either may be true
+            (17, "str"),  # after ``while not bool(other): return``
+            (21, "str"),  # ``assert bool(a and b)``
+            (26, "str"),  # ``bool(alias)``: what the alias implies
+            (28, "str | Literal[False]"),  # ``str(False)`` is ``"False"``
+            (37, "Any"),  # ``self.assertTrue(bool(found), msg)``
+            (39, "datetime.datetime"),
+            (40, "str"),
+            (42, "str | Literal[False]"),  # ``or``
+            (44, "None"),  # ``not bool(when)``
+            (53, "tuple[int]"),  # ``bool(*xs)`` is the truth of ``xs[0]``: not unwrapped
+        ]
+    ] + [
+        # ``bool(f)`` of a method is tested as ``f``, as mypy reports for ``if f:``
+        '54: error: Function "hook" could always be true in boolean context  [truthy-function]'
+    ]
+
+
 BOUND_AGAIN = """
 from odoo import models
 

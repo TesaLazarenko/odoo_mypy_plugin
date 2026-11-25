@@ -160,6 +160,8 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 - A condition kept in a local variable narrows what it tested where an `if`, `while` or
   `assert` tests the variable (`cron_enabled = cron and cron.active`, then `if
   cron_enabled: cron._trigger()`), and `self.assertTrue(value)` narrows `value` after it.
+  `bool(x)` in such a test narrows `x` as `x` does (`if bool(x):`, `assert not bool(x)`,
+  `self.assertTrue(bool(attachment), msg)`): Python tests both by the truth of `x`.
   What the function binds later does not matter, only a binding that may run between the
   variable and the test (in between, or through a loop): `allowed = (self.commitment_date
   and ...) or []`, `if not allowed or self.commitment_date.date() ...`, then
