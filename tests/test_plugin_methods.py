@@ -994,3 +994,88 @@ def test_an_override_that_passes_super_on_adds_no_override_error(run_mypy: RunMy
         ' "Thing"  [override]',
         'note: Revealed type is "str"',
     ]
+
+
+def test_name_create_of_a_model_with_a_name_field_creates_the_record(
+    run_mypy: RunMypy, odoo_version: int
+) -> None:
+    """Odoo 18 and 19 return ``False`` only for a model with no ``_rec_name``, and make
+    ``name`` the ``_rec_name`` of a model with that field, also one of the checked addon;
+    a model without it keeps ``False`` (Odoo 20 raises), so does an override that declares
+    it, and Odoo 17's undeclared result may still be false."""
+    result = run_mypy(
+        {
+            "t_base": {
+                "models.py": """
+                from typing import Literal
+
+                from odoo import api, fields, models
+
+                class Named(models.Model):
+                    _name = "t.named"
+
+                    name = fields.Char()
+
+                class Coded(models.Model):
+                    _name = "t.coded"
+
+                    code = fields.Char()
+
+                class Overridden(models.Model):
+                    _name = "t.overridden"
+
+                    name = fields.Char()
+
+                    @api.model
+                    def name_create(self, name: str) -> tuple[int, str] | Literal[False]:
+                        return False
+                """
+            },
+            "t_use": {
+                "depends": ["t_base"],
+                "models.py": """
+                from odoo import fields, models
+
+                class Coded(models.Model):
+                    _inherit = "t.coded"
+
+                    def make(self) -> None:
+                        named_id, _ = self.env["t.named"].with_context(a=1).name_create("x")
+                        self.env["t.named"].name_create("x")[0]
+                        coded_id, _ = self.name_create("x")
+                        self.env["t.later"].name_create("x")[0]
+                        self.env["t.overridden"].name_create("x")[0]
+                        reveal_type(self.env["t.named"].name_create("x"))
+                        created = self.env["t.named"].name_create("x")
+                        if not created:
+                            reveal_type(created)
+
+                class Later(models.Model):
+                    _name = "t.later"
+
+                    name = fields.Char()
+                """,
+            },
+        },
+        check=["t_use"],
+    )
+
+    false = '"tuple[int, str] | Literal[False]"'
+    overridden = f"12: error: Value of type {false} is not indexable  [index]"
+    if odoo_version == 17:
+        expected = [
+            overridden,
+            '13: note: Revealed type is "Any"',
+            '16: note: Revealed type is "Any"',
+        ]
+    else:
+        expected = [
+            *(
+                ['10: error: "Literal[False]" object is not iterable  [misc]']
+                if odoo_version in (18, 19)
+                else []
+            ),
+            overridden,
+            '13: note: Revealed type is "tuple[int, str]"',
+        ]
+    assert result.messages("t_use/models.py") == expected

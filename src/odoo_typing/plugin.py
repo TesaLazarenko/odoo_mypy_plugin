@@ -979,6 +979,8 @@ class OdooPlugin(Plugin):
             return partial(self._domains.check, name)
         if name in PARAMETER_DOMAIN_METHODS:
             return partial(self._domains.check_parameter, name, PARAMETER_DOMAIN_METHODS[name])
+        if name == "name_create":
+            return self._recordsets.name_create
         if name == "read":
             return partial(self._recordsets.read_result, name)
         if fullname in COMPARISON_HOOKS:

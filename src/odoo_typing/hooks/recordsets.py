@@ -147,6 +147,33 @@ class RecordsetHooks(Hooks):
                 arguments[position] = UnionType.make_union([arguments[position], *extra])
         return signature.copy_modified(arg_types=arguments)
 
+    def name_create(self, ctx: MethodContext) -> Type:
+        """``name_create(name)`` of a model with a ``name`` field: the ``(id, name)`` pair.
+
+        Odoo 18 and 19 declare ``tuple[int, str] | Literal[False]``: ``False`` only when
+        the model has no ``_rec_name``, and when it sets the model up Odoo makes ``name``
+        the ``_rec_name`` of a model with that field that names none. The fields are those
+        the calling addon sees; the running registry has at least those. Only a declared
+        union: Odoo 17 declares nothing, and ``true_only`` of that ``Any`` would make
+        ``if not r:`` after the call unreachable (Odoo 20 declares no ``False``). Only
+        ``BaseModel``'s own method: an override may return ``False``.
+        """
+        receiver = receiver_type(ctx.type)
+        if not isinstance(receiver, Instance):
+            return ctx.default_return_type
+        if not isinstance(get_proper_type(ctx.default_return_type), UnionType):
+            return ctx.default_return_type
+        method = receiver.type.get_method("name_create")
+        if method is None or method.info.fullname != self._profile.base_model:
+            return ctx.default_return_type
+        model = self._models.model_of(receiver.type)
+        addon_name = self.registry.addon_name_for_path(ctx.api.path)
+        if model is None or addon_name is None:
+            return ctx.default_return_type
+        if "name" not in self._fields_of(addon_name, ctx.api)(model):
+            return ctx.default_return_type
+        return true_only(ctx.default_return_type)
+
     def read_result(self, method: str, ctx: MethodContext) -> Type:
         """``read(["a", "b"])`` / ``search_read(fields=[...])``: a list of TypedDicts.
 

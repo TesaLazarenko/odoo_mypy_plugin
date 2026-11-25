@@ -11,6 +11,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
 
 ### Models and records
 
+- `name_create(...)` of a model with a `name` field that does not override it is
+  `tuple[int, str]` (Odoo 18-19 declare `| Literal[False]`, returned only for a model
+  with no `_rec_name`, which Odoo sets to `name` when the model has that field).
 - A field read off the records a search or `filtered(...)` gave keeps `False` until the
   code tests that there are some (`if found:`, `if not found: return`,
   `self.assertTrue(found)`, `found.ensure_one()`, `self.assertEqual(len(found), 1)`,

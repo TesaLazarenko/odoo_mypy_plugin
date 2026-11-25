@@ -48,6 +48,11 @@ plugin:
   addon sees them; so is `self.env.website` on Odoo 20 (declared as `BaseModel`: an
   attribute of the environment declared as records of no model is the model it is named
   after).
+- **`name_create("x")`** of a model with a `name` field that does not override it is
+  `tuple[int, str]`, not Odoo 18-19's `tuple[int, str] | Literal[False]`: Odoo returns
+  `False` only for a model with no `_rec_name`, and makes `name` the `_rec_name` of a
+  model that has the field (not through `super()`: see
+  [not implemented](not-implemented.md)).
 - **Methods added to `base`** (`self._phone_format(...)` from `phone_validation`) exist
   on every model of an addon that depends on the adding addon.
 - **`_inherits` and `delegate=True`**: `line.product_id.uom_id` (through `_inherits` of

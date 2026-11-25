@@ -412,3 +412,28 @@ yet. They are work to do:
     `nonlocal` or `global` in a nested function, by assigning to `self.partner` when
     the records are `self.partner`) or ask again (`hasattr`, `isinstance`, another
     `in`): nothing is reported there at all, since the name may hold other records.
+
+### `name_create` keeps `False` through `super()`, an override, or another `_rec_name`
+
+Odoo 18-19 declare `name_create` as `tuple[int, str] | Literal[False]`, and the plugin
+drops `False` only for a call of `BaseModel`'s own method on a model with a `name`
+field. The call keeps `False`:
+
+- when `_rec_name` names another field and the model has no `name` field
+  (`test_base_automation/models/test_base_automation.py:193` on 18, `:202` on 19,
+  `_rec_name = "description"`), although Odoo asserts that `_rec_name` is a field when
+  it sets the model up and then creates the record: the registry keeps a model's
+  fields, not its `_rec_name`;
+- through `super().name_create(...)` in an override: mypy asks no method hook for a
+  call of `super()`, only the function hook `"name_create of BaseModel"`. On the
+  big benchmark (Odoo 18) `mrp/models/mrp_bom.py:308` (`_rec_name =
+  "product_tmpl_id"`, `result[0]` of the `super()` call) stays reported;
+- on a model that overrides `name_create`, also one that only returns its `super()`
+  call (the override's result is what the method it overrides declares): an override
+  may return `False` (Odoo's `stock.quant` does).
+
+The other way round, the call loses `False` when an addon outside the calling addon's
+dependencies overrides `name_create` on a model with a `name` field and returns `False`
+there: the plugin sees the method as the calling addon's view resolves it. In Odoo
+17-20 the only override that returns `False` is `stock.quant`'s, a model with no `name`
+field.
