@@ -29,7 +29,9 @@ from odoo_typing.guards import (
     Guard,
     asked_fields,
     call_strings,
+    guarded_addons,
     guarded_fields,
+    guarded_models,
     is_guarded,
     model_guards,
     view_stays_inside,
@@ -419,6 +421,14 @@ class ScannedAddons:
         """The fields whose guards cover a line of a source file (see :meth:`guarded`)."""
         guards = self._guards(path)
         return guarded_fields(guards, line)
+
+    def guarded_models(self, path: str | Path, line: int) -> frozenset[str]:
+        """The models whose guards cover a line of a source file (see :meth:`guarded`)."""
+        return guarded_models(self._guards(path), line)
+
+    def guarded_addons(self, path: str | Path, line: int) -> frozenset[str]:
+        """The addons whose guards cover a line of a source file (see :meth:`guarded`)."""
+        return guarded_addons(self._guards(path), line)
 
     def asked_fields(
         self, path: str | Path, line: int, records: str, keeping: Callable[[], frozenset[str]]

@@ -24,7 +24,7 @@ records, for each file, the lines a guard covers:
   env["m"].search(...)``), and those of ``or`` after one that proves it is not.
 
 ``env`` is ``self.env``, ``env``, ``env.registry`` / ``self.pool`` (and ``.models`` of
-them). ``env.ref("sale.x", raise_if_not_found=False)`` in a test guards the XML ids of
+them). ``env.ref("sale.x", raise_if_not_found=False)`` guards the XML ids of
 the addon ``sale`` (:func:`module_guard`).
 
 A test can also be named: a flag assigned once in the function (``has_sale = "sale.order"
@@ -35,6 +35,11 @@ followed: an override may change it.
 A field is guarded the same way, by ``"f" in records._fields``, ``records._fields.get("f")``,
 ``"f" in env["model"]`` or ``hasattr(records, "f")`` (:func:`field_guard`): code that writes
 a field another addon may add. The field name alone counts, whatever the records are.
+
+A model guard also tells which addon runs: one that only one addon on the addons path
+defines is there only when that addon is installed (:func:`guarded_models`, read by
+``Models.running_with``), and so is the addon of an XML id the code found
+(:func:`guarded_addons`).
 
 Code that runs only with an addon outside the dependencies also uses that addon's models.
 Two more signs of it are read where such a model would be reported
@@ -64,7 +69,9 @@ __all__ = [
     "dotted",
     "ends",
     "field_guard",
+    "guarded_addons",
     "guarded_fields",
+    "guarded_models",
     "is_guarded",
     "model_guards",
     "module_guard",
@@ -78,6 +85,8 @@ ENV_RECORDS: Final = frozenset({"user", "company", "companies"})
 BLOCK_FIELDS: Final = ("body", "orelse", "finalbody")
 FIELD_PREFIX: Final = "field:"
 ASKED_PREFIX: Final = "asked:"
+ADDON_PREFIX: Final = "addon:"
+PREFIXES: Final = (FIELD_PREFIX, ASKED_PREFIX, ADDON_PREFIX)
 # Methods that give the same records with another environment.
 VIEWS: Final = frozenset(
     {"sudo", "with_company", "with_context", "with_env", "with_prefetch", "with_user"}
@@ -158,6 +167,24 @@ def guarded_fields(guards: Iterable[Guard], line: int) -> frozenset[str]:
         guard.model.removeprefix(FIELD_PREFIX)
         for guard in guards
         if guard.first <= line <= guard.last and guard.model.startswith(FIELD_PREFIX)
+    )
+
+
+def guarded_models(guards: Iterable[Guard], line: int) -> frozenset[str]:
+    """The models whose guards cover a line of a file (``if "sale.order" in self.env:``)."""
+    return frozenset(
+        guard.model
+        for guard in guards
+        if guard.first <= line <= guard.last and not guard.model.startswith(PREFIXES)
+    )
+
+
+def guarded_addons(guards: Iterable[Guard], line: int) -> frozenset[str]:
+    """The addons whose guards cover a line (``env.ref("sale.x", raise_if_not_found=False)``)."""
+    return frozenset(
+        guard.model.removeprefix(ADDON_PREFIX)
+        for guard in guards
+        if guard.first <= line <= guard.last and guard.model.startswith(ADDON_PREFIX)
     )
 
 
@@ -630,8 +657,8 @@ def asked_guard(records: str, field_name: str) -> str:
 
 
 def module_guard(addon_name: str) -> str:
-    """The guard name of an installed addon (``env.ref("sale.x", ...)`` in a test)."""
-    return f"addon:{addon_name}"
+    """The guard name of an installed addon (``env.ref("sale.x", raise_if_not_found=False)``)."""
+    return f"{ADDON_PREFIX}{addon_name}"
 
 
 def _is_optional_ref(call: ast.Call) -> bool:

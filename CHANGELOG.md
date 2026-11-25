@@ -249,9 +249,11 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   self.env["m"].search(...)`), those of `or` after a false test too.
 - What a line runs with is there with its dependencies: after
   `self.ensure_installed("sale")`, under a test about installed modules (also through
-  an attribute the class binds once, `cls.document_installed = ...`), and the addons
-  Odoo installs by itself with the closure (`auto_install`: `account_payment` with
-  `account`, `base_import` with `web`). Their models, XML ids and fields are no
+  an attribute the class binds once, `cls.document_installed = ...`), under the guard
+  of a model only one addon on the addons path defines (`if "hr.employee" in
+  self.env:`), under `env.ref("sale.x", raise_if_not_found=False)`, and the
+  addons Odoo installs by itself with the closure (`auto_install`: `account_payment`
+  with `account`, `base_import` with `web`). Their models, XML ids and fields are no
   `odoo-model-depends`, `odoo-xmlid-depends` or `odoo-vals-key` errors.
 - A list that the function adds dict displays to (`rows = []`, then
   `rows.append({...})`, `rows += [{...}]`), or extends with what may be no list

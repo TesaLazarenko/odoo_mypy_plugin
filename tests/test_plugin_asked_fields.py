@@ -312,7 +312,16 @@ ENSURED_SALE = {
         _inherit = "t.thing"
 
         sale_field = fields.Char()
+
+    class Order(models.Model):
+        _name = "t.sale.order"
+
+        name = fields.Char()
+
+    class Twice(models.Model):
+        _name = "t.twice"
     """,
+    "data": {"data.xml": '<odoo><record id="order_one" model="t.sale.order"/></odoo>'},
 }
 ENSURED_TEST = """
 from odoo.tests import TransactionCase
@@ -357,6 +366,89 @@ def test_lines_after_ensure_installed_run_with_the_addon_and_its_dependencies(
         ("15", "odoo-model-depends]"),
         ("16", "odoo-xmlid-depends]"),
         ("17", "odoo-vals-key]"),
+    ], messages
+
+
+TWICE = {
+    "depends": ["t_base"],
+    "models.py": """
+    from odoo import models
+
+    class Twice(models.Model):
+        _name = "t.twice"
+    """,
+}
+MODEL_GUARDED = """
+from odoo import fields, models
+
+class Thing(models.Model):
+    _inherit = "t.thing"
+
+    def use(self) -> None:
+        if "t.sale.order" in self.env:
+            self.env["t.team"].search([])
+            self.env.ref("t_team.team_one")
+            self.create({"sale_field": "x"})
+        if "t.sale.order" not in self.env:
+            return
+        self.create({"sale_field": "x"})
+
+    def unguarded(self) -> None:
+        self.create({"sale_field": "x"})
+        if "t.team" in self.env:
+            self.create({"sale_field": "x"})
+        if "t.twice" in self.env:
+            self.create({"sale_field": "x"})
+
+    guarded_ref = fields.Integer(
+        default=lambda self: self.env.ref("t_team.team_one").id if "t.sale.order" in self.env else 0
+    )
+    unguarded_ref = fields.Integer(default=lambda self: self.env.ref("t_team.team_one").id)
+"""
+REF_GUARDED = """
+from odoo.tests import TransactionCase
+
+class TestThing(TransactionCase):
+    def test_ref(self) -> None:
+        if self.env.ref("t_sale.order_one", raise_if_not_found=False):
+            self.env.ref("t_team.team_one")
+            self.env["t.thing"].create({"sale_field": "x"})
+        self.env["t.thing"].create({"sale_field": "x"})
+"""
+
+
+def test_a_guard_of_a_model_one_addon_defines_runs_with_that_addon(run_mypy: RunMypy) -> None:
+    """``if "t.sale.order" in self.env:``: only ``t_sale`` defines it, so it is installed,
+    with what it and its dependencies (``t_team``) have; ``env.ref("t_sale.x",
+    raise_if_not_found=False)`` in a test too. Not a model that ``t_team`` defines (it
+    adds no ``sale_field``), nor one two addons define (which one is installed is not
+    known), nor outside the guard."""
+    result = run_mypy(
+        {
+            "t_base": GUARDED_BASE,
+            "t_team": ENSURED_TEAM,
+            "t_sale": ENSURED_SALE,
+            "t_twice": TWICE,
+            "t_use": {
+                "depends": ["t_base"],
+                "models.py": MODEL_GUARDED,
+                "tests/__init__.py": "from . import test_thing\n",
+                "tests/test_thing.py": REF_GUARDED,
+            },
+        },
+        check=["t_use"],
+    )
+
+    messages = result.messages("t_use/models.py")
+    assert [(line.split(":")[0], line.rpartition("[")[2]) for line in messages] == [
+        ("17", "odoo-vals-key]"),
+        ("19", "odoo-vals-key]"),
+        ("21", "odoo-vals-key]"),
+        ("26", "odoo-xmlid-depends]"),
+    ], messages
+    messages = result.messages("tests/test_thing.py")
+    assert [(line.split(":")[0], line.rpartition("[")[2]) for line in messages] == [
+        ("9", "odoo-vals-key]"),
     ], messages
 
 

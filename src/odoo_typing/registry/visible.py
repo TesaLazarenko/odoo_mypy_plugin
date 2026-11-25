@@ -146,10 +146,15 @@ class VisibleClasses(ScannedAddons):
         closure = self.addons.closure(addon_name)
         return tuple(name for name in self._defining_addons(model) if name not in closure)
 
+    def defining_addons(self, model: str) -> tuple[str, ...]:
+        """Addons anywhere on the addons paths that define (not extend) a model."""
+        return self._defining_addons(model)
+
     def _defining_addons(self, model: str) -> tuple[str, ...]:
         """Addons anywhere on the addons paths that define (not extend) a model.
 
-        Only asked on an error path. Addons whose sources do not contain
+        Asked on an error path and for the models a line is guarded by
+        (``Models.running_with``). Addons whose sources do not contain
         ``_name = "<model>"`` are skipped without being parsed.
         """
         if model not in self._definers:

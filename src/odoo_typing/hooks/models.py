@@ -234,15 +234,16 @@ class Models:
     ) -> bool:
         """Whether a line runs only with an addon outside the dependencies that extends a model.
 
-        The function names the addon in a test about installed modules that decides
-        the line (:mod:`odoo_typing.module_tests`:
-        ``if modules._get("sale").state == "installed":``,
-        ``if ..._get("payment_custom").state != "installed": self.skipTest(...)``), or
-        the line is under the guard of a field no model of the dependencies has
-        (``if hasattr(self, "website_id"):``). The records there have what that addon
-        adds (``company.sale_automatic_invoice``), whose classes the addon does not
-        see: they are ``Any``, as records of a guarded model are. An addon the addons
-        path does not have (Odoo Enterprise's ``accountant``) may extend any model.
+        The line runs with the addon (:meth:`running_with`: a test about installed
+        modules that decides it, ``if modules._get("sale").state == "installed":``,
+        ``if ..._get("payment_custom").state != "installed": self.skipTest(...)``; the
+        guard of a model only that addon defines, ``if "sale.order" in self.env:``; that of
+        one of its XML ids), or it is under the guard of a field no model of the
+        dependencies has (``if hasattr(self, "website_id"):``). The records there have
+        what that addon adds (``company.sale_automatic_invoice``), whose classes the
+        addon does not see: they are ``Any``, as records of a guarded model are. An addon
+        the addons path does not have (Odoo Enterprise's ``accountant``) may extend any
+        model.
         """
         registry = self.registry
         guarded = registry.guarded_fields(api.path, line)
@@ -257,29 +258,40 @@ class Models:
     def running_with(
         self, addon_name: str, api: CheckerPluginInterface, line: int
     ) -> frozenset[str]:
-        """The addons outside the closure that a line runs with, as its function tests.
+        """The addons outside the closure that a line runs with, as its code tests.
 
         A test about installed modules that decides the line names them
         (:mod:`odoo_typing.module_tests`), or ``self.ensure_installed("sale")`` before it
-        in its block. Such an addon's own dependencies are installed too: what their
-        closure has (``sales_team.group_sale_salesman`` after ``ensure_installed("sale")``)
-        is there. A name the addons path does not have may be any addon.
+        in its block. So does the guard of a model only one addon on the addons path
+        defines (``if "sale.order" in self.env:``: the registry has a model only when an
+        installed addon defines it), and that of an XML id of an addon
+        (``env.ref("sale.x", raise_if_not_found=False)``, :mod:`odoo_typing.guards`); the
+        guards hold outside a function too (a ``lambda`` default of a field). Such an
+        addon's own dependencies are installed too: what their closure has
+        (``sales_team.group_sale_salesman`` after ``ensure_installed("sale")``) is there. A
+        name the addons path does not have may be any addon.
         """
+        registry = self.registry
+        names = set(registry.guarded_addons(api.path, line))
+        for model in registry.guarded_models(api.path, line):
+            defining = registry.defining_addons(model)
+            if len(defining) == 1:  # of several, which one is installed is not known
+                names.add(defining[0])
         function = type_checker(api).scope.top_level_function()
-        if function is None:
-            return frozenset()
-        tests = self._module_tests.get(id(function))
-        if tests is None or tests.function is not function or tests.body is not function.body:
-            tests = self._module_tests[id(function)] = ModuleTests(function, self._class_flags)
-        closure = self.registry.addons.closure(addon_name)
-        return frozenset(name for name in tests.names(line) if name not in closure)
+        if function is not None:
+            tests = self._module_tests.get(id(function))
+            if tests is None or tests.function is not function or tests.body is not function.body:
+                tests = self._module_tests[id(function)] = ModuleTests(function, self._class_flags)
+            names |= tests.names(line)
+        closure = registry.addons.closure(addon_name)
+        return frozenset(name for name in names if name not in closure)
 
     def runs_with_addon(
         self, addon_name: str, api: CheckerPluginInterface, line: int, defining: Iterable[str]
     ) -> bool:
         """Whether a line runs with one of the addons that define something.
 
-        The addons it runs with are those its function tests for (:meth:`running_with`)
+        The addons it runs with are those its code tests for (:meth:`running_with`)
         and those Odoo installs with the closure (``auto_install``), with their own
         dependencies. An addon the addons path does not have may define what no addon
         on it defines (``defining`` empty: an unknown model); what it depends on is not
@@ -511,8 +523,8 @@ class Hooks:
         """Whether a field of a model may be there on a line of a file.
 
         The line is under a guard of the field (``"f" in self._fields``), or runs with an
-        addon outside the closure whose view of the model has it: one its function tests
-        for (:meth:`Models.running_with`: ``self.ensure_installed("account_tax_python")``
+        addon outside the closure whose view of the model has it: one its code tests for
+        (:meth:`Models.running_with`: ``self.ensure_installed("account_tax_python")``
         before ``create({"formula": ...})``), or one Odoo installs with the closure
         (``account_payment``, ``auto_install: ["account"]``, adds ``payment_token_id``).
         """

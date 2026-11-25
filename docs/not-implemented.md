@@ -298,6 +298,46 @@ not followed:
   no tested local of those forms is counted down with `-=`, and 35, 44, 50 and 49 of the
   308, 358, 422 and 470 are read by item (an ast scan, 2026-11-22).
 
+### The other side of a model guard on its own line
+
+`env["sale.order"] if "sale.order" in self.env else self.env.ref("sale.x")`, or
+`"sale.order" in self.env and a or self.env.ref("sale.y")`, all on one line, in an addon
+that does not depend on `sale`: the line is taken to run with `sale` (the one addon that
+defines `sale.order`), and the XML id, the models and the vals keys of `sale`'s closure
+in the `else` branch or after `or` are not reported, although that part runs exactly
+when `sale` is not there. A guard covers lines, not columns: the true branch of a
+conditional expression and the operands of `and` after the test are its lines, and the
+other parts of the expression may share them. A guard by columns would need every check
+that asks for it (models, XML ids, vals keys, fields) to pass the column of what it
+reports. In Odoo 17, 18, 19 and 20 the only expression whose other side shares a line
+with a model test of `env` is one in `cloud_storage_migration/models/ir_attachment.py`
+(Odoo 18, 19 and 20), of `documents.document`, a model no addon on the path defines
+(an ast scan of the sources, 2026-11-25).
+
+### A file whose only mention of a model is its guard is not checked again when another addon comes to define it
+
+`if "sale.order" in self.env: partner.write({"sale_warn": ...})` in a file that never
+reads `env["sale.order"]`: whether the line runs with `sale` depends on how many addons
+on the path define `sale.order`. The incremental cache rechecks a file when an addon
+that defines a model the file names is added or removed (`fingerprint.py`,
+`_outside_definers`), and the models it names are those of `env[...]`, comodels and
+`env.<attr>`, not those of `"m" in env`. So after a second addon that defines
+`sale.order` is added to the path, or `sale` is removed, mypy keeps the result of the
+earlier run. The same holds for `self.ensure_installed("sale")`, whose closure the cache
+does not record. Recording the models of a file's guards is a change of the cache key
+that needs a check of its own; Odoo's own addons are not affected, as the cache does
+not take this digest for their files.
+
+### `env.ref("__export__.x", raise_if_not_found=False)` counts as an addon the path does not have
+
+A guard of an XML id names its addon; `__export__` and `__import__` are not addons but
+the modules Odoo gives the ids it makes for exported and imported records. Under such a
+guard the line is taken to run with an addon the path does not have, which may add any
+field and extend any model: fields are not reported and models are `Any` there, as
+under a guard of an Odoo Enterprise addon (`account_iso20022`,
+`point_of_sale/models/account_payment.py:32`, Odoo 18). In Odoo 17, 18, 19 and 20 no
+code guards an id of those modules (a grep of the sources, 2026-11-25).
+
 ## Not gone through yet
 
 Groups of errors that only the plugin reports and that have no entry above and no rule

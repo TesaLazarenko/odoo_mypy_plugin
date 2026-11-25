@@ -309,8 +309,12 @@ also read an attribute that the methods of the class bind once
 `setUpClass`, then `if self.document_installed:`).
 
 What an addon **runs with** is there with its own dependencies: after
-`self.ensure_installed("sale")` (the rest of its block), or under such a test, the
-models, XML ids and fields of `sale`'s closure (`sales_team.group_sale_salesman`, the
+`self.ensure_installed("sale")` (the rest of its block), or under such a test, under
+the guard of a model that only one addon on the path defines (`if "sale.order" in
+self.env:`, the `not in ... return` forms too: the registry has a model only when an
+installed addon defines it; of a model two addons define, which one is installed is
+not known), or under `if self.env.ref("sale.x", raise_if_not_found=False):` (the
+record exists only when the data of `sale` is loaded), the models, XML ids and fields of `sale`'s closure (`sales_team.group_sale_salesman`, the
 `formula` that `account_tax_python` adds) are not reported. So are those of the addons
 Odoo installs by itself with the closure: an addon whose `auto_install` addons are all
 in it (`account_payment`, `auto_install: ["account"]`, adds `payment_token_id`;
