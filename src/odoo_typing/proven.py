@@ -23,9 +23,14 @@ it:
 A test gives facts through ``not``, ``and`` / ``or``, ``x is None`` / ``x is not None``
 and ``len(x)``, ``len(x) < n``, ``len(x) == n`` (also of ``x or []``), ``bool(x)``,
 ``x.ids`` and ``x.exists()`` (matched by name: Odoo's records are true when these are),
-and through a local name to the value of its last binding, when that one surely ran
-(below; ``present = found.exists()``, then ``if present:`` proves ``found``; not the
-truth of a local filled in place, ``rows.append(v)``, see
+a true read of a field of the records (``if found.partner_id:``, given the names of
+their fields: Odoo's ``Field.__get__`` reads the null value of a field off no records,
+``False``, ``0`` or no records, which is false; also ``found.line_ids.ids``,
+``len(found.line_ids)``, ``bool(found.partner_id)``, but not a field of the comodel,
+``found.partner_id.name``), and through a local name to the value of
+its last binding, when that one surely ran (below; ``present = found.exists()``, then
+``if present:`` proves ``found``; not the truth of a local filled in place,
+``rows.append(v)``, see
 :func:`odoo_typing.rebound.filled_names`). A fact is about an expression
 with the same structure (``context.get("k")`` and ``context["k"]`` read the same
 item), and holds while no name it reads is bound again between the test and the
@@ -50,7 +55,7 @@ in may run after it does.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -129,8 +134,12 @@ class _Fact:
     line: int
 
 
-def proven(function: FuncItem, target: Expression) -> Proof | None:
-    """What the function proves about an expression where it is evaluated (see the module)."""
+def proven(function: FuncItem, target: Expression, fields: Collection[str] = ()) -> Proof | None:
+    """What the function proves about an expression where it is evaluated (see the module).
+
+    ``fields``: the names of the fields of the records ``target`` is, whose true read
+    proves them (:func:`_read_off`).
+    """
     facts: list[_Fact] = []
     if not _walk(function.body, target, facts):
         return None
@@ -160,7 +169,7 @@ def proven(function: FuncItem, target: Expression) -> Proof | None:
     ran = _bindings_before(function.body, target)
     filled = filled_names(function)
     for fact in _with_values(facts, values, loops, delayed, ran, unplaced, filled):
-        if not _same(fact.expression, target):
+        if not _same(fact.expression, target) and not _read_off(fact.expression, target, fields):
             continue
         nodes = delayed() if late else []
         outside = bool(nodes) and not _contains(nodes[-1], fact.expression)
@@ -390,6 +399,21 @@ def _truthy_parts(expression: Expression) -> Iterator[Expression]:
     ):
         if inner is not None:
             yield from _truthy_parts(inner)
+
+
+def _read_off(expression: Expression, target: Expression, fields: Collection[str]) -> bool:
+    """Whether an expression reads one of the fields off the target (``found.partner_id``).
+
+    Off no records Odoo reads the null value of a field (``Field.__get__``), and that is
+    false (``False``, ``0``, ``0.0``, no records): a true read proves there are records.
+    A field read off another one (``found.partner_id.name``) is not followed: which
+    names are fields of the comodel is not known here.
+    """
+    return (
+        isinstance(expression, MemberExpr)
+        and expression.name in fields
+        and _same(expression.expr, target)
+    )
 
 
 def _records_of(expression: Expression) -> Expression | None:

@@ -15,7 +15,9 @@ License: LGPL-3.0-or-later. Copyright (C) 2026 Taras Shabaranskyi.
   code tests that there are some (`if found:`, `if not found: return`,
   `self.assertTrue(found)`, `found.ensure_one()`, `self.assertEqual(len(found), 1)`,
   `self.assertRecordValues(found, [...])`, `if len(found) != 1: self.skipTest(...)`,
-  `if found.ids:`, `if found.exists():`, `bool(found)`, also through a local bound to
+  `if found.ids:`, `if found.exists():`, `bool(found)`, a true read of a field of
+  theirs, `if found.partner_id:` or `self.assertTrue(found.active)` (off no records a
+  field reads its null value, false), also through a local bound to
   such a test, `present = found.exists()`, not one filled in place, `ids.append(0)`,
   also through a local that may hold it, `rows = ids` then `rows += [0]`): of
   none, Odoo reads `False`. A fact from before a loop does not hold in it when the loop

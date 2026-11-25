@@ -260,7 +260,9 @@ once it can be.
   around the read are found by their source spans), when no other binding of it in
   that body is before the read or inside a loop of the body around the read. Read off
   the local itself, the field is set only where `odoo_typing.proven` finds the local
-  true (a test, also of `len(x)`, `bool(x)`, `x.ids` or `x.exists()`; an early
+  true (a test, also of `len(x)`, `bool(x)`, `x.ids` or `x.exists()`, or a true read
+  of a field of the model, `x.partner_id`, whose names `field_values` passes, a field
+  read off no records being false; an early
   `return` / `raise` / `skipTest(...)`; an `assert`; `ensure_one()`,
   `assertEqual(len(x), n)`, `assertRecordValues(x, [...])` of a list with an item that
   is not `*rows`), with no loop begun after the fact binding it again, nor, for a read

@@ -134,7 +134,7 @@ class FieldValueHooks(Hooks):
         required = self._settings.required_values and (
             name == "display_name" or self._value_required(info, records, ctx.api)
         )
-        if not required and not self._searched(member, info, ctx.api):
+        if not required and not self._searched(member, info, records, ctx.api):
             return signature
         value = get_proper_type(signature.ret_type)
         if not isinstance(value, UnionType):
@@ -354,13 +354,18 @@ class FieldValueHooks(Hooks):
         return signature.copy_modified(ret_type=view) if isinstance(view, Instance) else signature
 
     def _searched(
-        self, member: Context, info: FieldInfo | None, api: CheckerPluginInterface
+        self,
+        member: Context,
+        info: FieldInfo | None,
+        records: Instance,
+        api: CheckerPluginInterface,
     ) -> bool:
         """Whether the search or the ``filtered(...)`` that gave the records read sets the field.
 
         Read off the records themselves, it holds where the code has tested that there
         are some (``if found:``, ``if not found: return``, ``self.assertTrue(found)``,
-        ``found and found.name``: :func:`odoo_typing.proven.proven`): of none, a field
+        ``found and found.name``, a true read of another field of theirs,
+        ``if found.partner_id:``: :func:`odoo_typing.proven.proven`): of none, a field
         reads ``False``. A record of a ``for`` over them is one.
         """
         function = checked_function(api)
@@ -372,7 +377,16 @@ class FieldValueHooks(Hooks):
             kinds = sql_kinds({member.name: info}) if info is not None else {}
             if member.name not in restricted_fields(domain, checker.lookup_type_or_none, kinds):
                 return False
-        return loop_record(function, member.expr) or proven(function, member.expr) == "truthy"
+        if loop_record(function, member.expr):
+            return True
+        model = self._models.model_of(records.type)
+        addon_name = self.registry.addon_name_for_path(api.path)
+        fields = (
+            self._fields_of(addon_name, api)(model)
+            if model is not None and addon_name is not None
+            else {}
+        )
+        return proven(function, member.expr, fields) == "truthy"
 
     def _value_required(
         self, info: FieldInfo | None, records: Instance, api: CheckerPluginInterface

@@ -1060,6 +1060,115 @@ def test_a_test_that_asserts_the_search_found_records_reads_the_field_set(
     assert revealed[2].startswith("t_base.models.Order") and revealed[2].endswith("| str")
 
 
+SEARCHED_FIELD_READ = """
+from odoo.tests.common import TransactionCase
+
+class TestOrder(TransactionCase):
+    def test_read(self):
+        Order = self.env["t.order"]
+        a = Order.search([("name", "ilike", "x")])
+        if a.partner_id:
+            reveal_type(a.name)
+        b = Order.search([("name", "ilike", "x")], limit=1)
+        self.assertTrue(b.day)
+        reveal_type(b.name)
+        c = Order.search([("name", "ilike", "x")])
+        if c.env:
+            reveal_type(c.name)
+        d = Order.search([("name", "ilike", "x")])
+        partner = d.partner_id
+        if partner:
+            reveal_type(d.name)
+        e = Order.search([("name", "ilike", "x")])
+        if not e.partner_id:
+            return
+        reveal_type(e.name)
+        f = Order.search([("name", "ilike", "x")])
+        if f.partner_id.name:
+            reveal_type(f.name)
+        g = Order.search([("name", "ilike", "x")])
+        if g.partner_id is not None:
+            reveal_type(g.name)
+        h = Order.search([("name", "ilike", "x")])
+        if h._name:
+            reveal_type(h.name)
+        k = Order.search([("name", "ilike", "x")])
+        if not k.partner_id:
+            reveal_type(k.name)
+        m = Order.search([("name", "ilike", "x")])
+        if m.partner_id:
+            m = Order.search([("name", "ilike", "y")])
+            reveal_type(m.name)
+        n = Order.search([("name", "ilike", "x")])
+        if n.line_ids.ids:
+            reveal_type(n.name)
+        p = Order.search([("name", "ilike", "x")])
+        if len(p.line_ids):
+            reveal_type(p.name)
+        q = Order.search([("name", "ilike", "x")])
+        if bool(q.partner_id):
+            reveal_type(q.name)
+        r = Order.search([("name", "ilike", "x")])
+        if r.done:
+            reveal_type(r.name)
+        s = Order.search([("done", "=", True)])
+        if s.partner_id:
+            reveal_type(s.done)
+"""
+
+FIELD_READ_MODELS = """
+from odoo import fields, models
+
+class Order(models.Model):
+    _inherit = "t.order"
+
+    done = fields.Boolean()
+    line_ids = fields.Many2many("t.order")
+"""
+
+
+def test_a_true_read_of_a_field_of_the_searched_records_proves_there_are_some(
+    run_mypy: RunMypy,
+) -> None:
+    """``if found.partner_id:``: off no records a field reads its null value, false, so
+    there are records, and the domain set ``name``. Not a read that is no field
+    (``found.env``, ``found._name``), a field of the comodel (``found.partner_id.name``),
+    ``is not None``, a false read, nor records bound again after it. ``.ids``, ``len()``
+    and ``bool()`` of a field are true reads of it, a true Boolean field too; the value of
+    a Boolean field keeps ``True``."""
+    files = {
+        "t_use": {
+            "depends": ["t_base"],
+            "tests/__init__.py": "from . import test_order\n",
+            "models.py": FIELD_READ_MODELS,
+            "tests/test_order.py": SEARCHED_FIELD_READ,
+        }
+    }
+    result = run_mypy({"t_base": {"models.py": T_BASE}, **files}, check=["t_use"])
+
+    lines = {
+        line.split(":")[0]: line.partition('"')[2].rstrip('"')
+        for line in result.messages("t_use/tests/test_order.py")
+    }
+    assert lines == {
+        "9": "str",  # ``if a.partner_id:``
+        "12": "str",  # ``self.assertTrue(b.day)``
+        "15": "str | Literal[False]",  # ``env`` is no field
+        "19": "str",  # ``partner = d.partner_id``, then ``if partner:``
+        "23": "str",  # ``if not e.partner_id: return``
+        "26": "str | Literal[False]",  # a field of the comodel: not followed
+        "29": "str | Literal[False]",  # ``is not None`` proves nothing of records
+        "32": "str | Literal[False]",  # ``_name`` is no field
+        "35": "str | Literal[False]",  # a false read
+        "39": "str | Literal[False]",  # ``m`` bound again after the test
+        "42": "str",  # ``.ids`` of a field's records
+        "45": "str",  # ``len()`` of a field's records
+        "48": "str",  # ``bool()`` of a field
+        "51": "str",  # a true Boolean field
+        "54": "bool",  # a Boolean field reads ``bool``, no union: kept as it is
+    }, lines
+
+
 SEARCHED_COMPARED = """
 from datetime import datetime
 

@@ -905,7 +905,10 @@ With real recordset types, some plain mypy codes appear more often:
   that there are some (`if leads:`, `if not leads: return` / `self.skipTest(...)`,
   `self.assertTrue(leads)`, `leads.ensure_one()`, `self.assertEqual(len(leads), 1)`,
   `self.assertRecordValues(leads, [...])`, `if len(leads) == 1:`, `assert len(leads)`,
-  `if leads.ids:`, `if leads.exists():`, `self.assertTrue(bool(leads))`, through a local
+  `if leads.ids:`, `if leads.exists():`, `self.assertTrue(bool(leads))`, a true read of
+  a field of theirs, `if leads.partner_id:` (off no records Odoo reads the null value
+  of a field, `False`, `0` or no records; not `leads.env`, no field, nor a field of
+  the comodel, `leads.partner_id.name`), through a local
   bound to such a test, `present = leads.exists()` then `if present:`, not one filled in
   place, `ids = leads.ids` then `ids.append(0)` (or `rows = ids`, `rows += [0]`),
   `leads and leads.email_from`), and not in a loop, begun after the test, that binds

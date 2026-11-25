@@ -298,6 +298,21 @@ not followed:
   no tested local of those forms is counted down with `-=`, and 35, 44, 50 and 49 of the
   308, 358, 422 and 470 are read by item (an ast scan, 2026-11-22).
 
+### A field of the comodel, or a comparison, does not prove the records a search found
+
+`found = self.search(...)`, then `if found.partner_id.name:` or `if found.state ==
+"done":`, then `found.name`: the read keeps `False`, although a true
+`found.partner_id.name` or `found.state == "done"` proves there are records. A true
+read of a field of the records themselves does prove them (`if found.partner_id:`):
+off no records Odoo reads the null value of a field, false. A read off a field read
+proves the first one only when its name is a field of the comodel (`env` or a method
+is true of no records too), and `odoo_typing.proven.proven` is given the fields of the
+records' own model only, not those of their comodels; a comparison with a true value is
+a fact the tests do not give for any expression yet (`self.assertEqual(x, "done")`
+neither). The rule that
+these reads keep `False` until such a test added no error to the benchmarks (Odoo 17,
+18, 19 and 20), so neither form has a site there.
+
 ### The other side of a model guard on its own line
 
 `env["sale.order"] if "sale.order" in self.env else self.env.ref("sale.x")`, or
