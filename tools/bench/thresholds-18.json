@@ -1,15 +1,13 @@
 {
-  "*": 67,
-  "arg-type": 12,
-  "assignment": 1,
-  "index": 7,
-  "misc": 4,
+  "*": 29,
+  "arg-type": 8,
+  "attr-defined": 1,
+  "index": 3,
+  "misc": 1,
   "odoo-domain": 2,
-  "odoo-selection": 2,
-  "odoo-vals-type": 28,
+  "odoo-selection": 5,
   "operator": 1,
   "override": 4,
-  "str-format": 1,
   "type-var": 1,
-  "union-attr": 4
+  "union-attr": 3
 }
